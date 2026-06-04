@@ -1004,7 +1004,19 @@ function ReportCard({ report, showWorker, onDelete }) {
 }
 
 // ─── MANAGER — USERS TAB ──────────────────────────────────────────────────────
-function UsersTab({ users, token, onUsersChange }) {
+function UsersTab({ token, onUsersChange }) {
+  const [users, setUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  
+  const refreshUsers = async () => {
+    try { 
+      const data = await api.getUsers(token);
+      setUsers(data);
+    } catch(e) { console.error(e); }
+    finally { setLoadingUsers(false); }
+  };
+  
+  useEffect(() => { refreshUsers(); }, [token]);
   const [tab, setTab] = useState("workers"); // workers | admins
   const [newLogin, setNewLogin] = useState("");
   const [newPass, setNewPass] = useState("");
@@ -1040,7 +1052,7 @@ function UsersTab({ users, token, onUsersChange }) {
     try {
       await api.addUser(token, code, code, newAdminPass, "manager");
       setNewAdminLogin(""); setNewAdminPass(""); setErrAdmin("");
-      onUsersChange();
+      refreshUsers(); onUsersChange();
       flash("✓ Konto menedżera " + code + " utworzone.");
     } catch(err) { setErrAdmin(err.message); }
   };
@@ -1056,7 +1068,7 @@ function UsersTab({ users, token, onUsersChange }) {
   const deleteUser = async (login) => {
     try {
       await api.deleteUser(token, login);
-      onUsersChange();
+      refreshUsers(); onUsersChange();
     } catch(err) { flash(err.message); }
   };
 
@@ -2034,7 +2046,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange 
         <button style={S.tab(tab === "email")} onClick={() => setTab("email")}>📧 Raporty email</button>
       </div>
 
-      {tab === "users" && <UsersTab users={users} token={token} onUsersChange={onUsersChange} />}
+      {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} />}
       {tab === "photos" && <PhotoGallery reports={reports} users={users} />}
       {tab === "progress" && <ProjectProgressTab reports={reports} />}
       {tab === "warehouse" && <WarehouseTab reports={reports} />}
