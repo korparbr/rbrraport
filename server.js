@@ -1,5 +1,5 @@
 // RaportRBR v1.0 — Backend
-// require('dotenv').config();
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -13,10 +13,12 @@ const { sendDailyReport } = require('./mailer');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'raportrbr-dev-secret';
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
@@ -103,7 +105,7 @@ app.get('/api/reports', auth, async (req, res) => {
     const q = `
       SELECT r.id, r.worker_code, u.name as worker_name, r.report_date::text as date, r.created_at,
         json_agg(json_build_object('id',rl.id,'project',rl.project,'product',rl.product,
-          'stage',rl.stage,'contractor',rl.contractor_code,'note',rl.note) ORDER BY rl.id) as lines
+          'stage',rl.stage,'contractor',rl.contractor_code,'note',rl.note,'photos',rl.photos) ORDER BY rl.id) as lines
       FROM reports r JOIN users u ON r.worker_code=u.code JOIN report_lines rl ON rl.report_id=r.id
       ${isManager ? '' : 'WHERE r.worker_code=$1'}
       GROUP BY r.id, u.name ORDER BY r.report_date DESC, r.created_at DESC`;
@@ -123,8 +125,18 @@ app.post('/api/reports', auth, async (req, res) => {
     const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [req.user.code, date]);
     const reportId = r.rows[0].id;
     for (const line of lines) {
-      await client.query('INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
-        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '']);
+      const photoData = JSON.stringify({
+        photo: line.photo || null,
+        photo2: line.photo2 || null,
+        photo3: line.photo3 || null,
+        photo4: line.photo4 || null,
+        photo5: line.photo5 || null,
+        photo6: line.photo6 || null,
+        photo7: line.photo7 || null,
+        photoNA: line.photoNA || false,
+      });
+      await client.query('INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note,photos) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '', photoData]);
     }
     await client.query('COMMIT');
     res.json({ success: true, reportId });
@@ -190,13 +202,62 @@ cron.schedule('59 23 * * *', async () => {
   catch (err) { console.error('CRON error:', err.message); }
 }, { timezone: 'Europe/Warsaw' });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0', time: new Date() }));
+
+// ─── SEND MAP PDF ─────────────────────────────────────────────────────────────
+app.post('/api/send-map-pdf', auth, async (req, res) => {
+  const { email, hallName, date, pdfBase64, filename } = req.body;
+  if (!email || !pdfBase64) return res.status(400).json({ error: 'Brak danych' });
+  try {
+    const { sendDailyReport } = require('./mailer');
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+    const dateFormatted = new Date(date + 'T12:00:00').toLocaleDateString('pl-PL', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    });
+    await transporter.sendMail({
+      from: `"RaportRBR" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject: `🗺️ RaportRBR — Mapa hali: ${hallName} — ${dateFormatted}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+          <div style="background:#6C63FF;padding:24px;border-radius:8px 8px 0 0">
+            <h1 style="color:white;margin:0;font-size:20px">🗺️ Mapa hali — ${hallName}</h1>
+            <p style="color:#d4d0ff;margin:8px 0 0">${dateFormatted}</p>
+          </div>
+          <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
+            <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.1 © Ready Bathroom</p>
+          </div>
+        </div>`,
+      attachments: [{
+        filename: filename || `mapa_${date}.pdf`,
+        content: Buffer.from(pdfBase64, 'base64'),
+        contentType: 'application/pdf',
+      }],
+    });
+    res.json({ success: true, message: `PDF wysłany na ${email}` });
+  } catch (err) {
+    console.error('Send map PDF error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── SERVE FRONTEND ───────────────────────────────────────────────────────────
-const publicPath = path.join(__dirname);
+const publicPath = path.join(__dirname, '..', 'public');
 app.use(express.static(publicPath));
 app.get('*', (req, res) => {
-  res.sendFile(path.join(publicPath, 'index.html'));
+  if (!req.path.startsWith('/api')) {
+    res.sendFile(path.join(publicPath, 'index.html'));
+  } else {
+    res.status(404).json({ error: 'Not found' });
+  }
 });
+
+app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0', time: new Date() }));
 
 app.listen(PORT, () => console.log(`RaportRBR v1.0 running on port ${PORT}`));
