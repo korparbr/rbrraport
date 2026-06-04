@@ -18,8 +18,6 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://postgres:ZJNbiBGKnwXnQAjTdDVNfBhVTQdupvnQ@postgres.railway.internal:5432/railway',
   ssl: { rejectUnauthorized: false },
 });
-});
-
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
