@@ -193,7 +193,7 @@ cron.schedule('59 23 * * *', async () => {
 }, { timezone: 'Europe/Warsaw' });
 
 // ─── SERVE FRONTEND ───────────────────────────────────────────────────────────
-const publicPath = path.join(__dirname, 'public');
+const publicPath = path.join(__dirname);
 app.use(express.static(publicPath));
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
