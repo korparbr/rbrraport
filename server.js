@@ -15,8 +15,9 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'raportrbr-dev-secret';
 console.log('ALL ENV:', JSON.stringify(Object.keys(process.env)));
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:ZJNbiBGKnwXnQAjTdDVNfBhVTQdupvnQ@postgres.railway.internal:5432/railway',
   ssl: { rejectUnauthorized: false },
+});
 });
 
 app.use(cors());
