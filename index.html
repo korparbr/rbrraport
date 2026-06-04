@@ -1028,7 +1028,7 @@ function UsersTab({ token, onUsersChange }) {
 
   const flash = (m) => { setMsg(m); setTimeout(() => setMsg(""), 3000); };
 
-  const workers = users.filter(u => u.role !== "manager");
+  const workers = users.filter(u => (u.role || "worker") !== "manager");
   const admins = users.filter(u => u.role === "manager");
 
   const addWorker = async () => {
@@ -1090,7 +1090,7 @@ function UsersTab({ token, onUsersChange }) {
                 <label style={S.label}>Kod pracownika</label>
                 <select style={S.select} value={newLogin} onChange={e => { setNewLogin(e.target.value); setErr(""); }}>
                   <option value="">— wybierz z listy —</option>
-                  {CONTRACTORS.filter(c => !users.find(u => u.login.toUpperCase() === c.code.toUpperCase())).map(c => (
+                  {CONTRACTORS.filter(c => !users.find(u => (u.code || u.login || "").toUpperCase() === c.code.toUpperCase())).map(c => (
                     <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
                   ))}
                 </select>
@@ -1117,13 +1117,13 @@ function UsersTab({ token, onUsersChange }) {
                 <div>
                   <div style={{ fontWeight:"600", fontSize:"15px" }}>{u.name}</div>
                   <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"3px" }}>
-                    <span style={{ color:COLORS.accentLight }}>{u.login}</span>
+                    <span style={{ color:COLORS.accentLight }}>{u.code || u.login}</span>
                     {u.mustChangePassword && <span style={{ ...S.tag(COLORS.orange), marginLeft:"8px" }}>wymaga zmiany hasła</span>}
                   </div>
                 </div>
                 <div style={{ display:"flex", gap:"8px" }}>
-                  <button style={S.btnWarning} onClick={() => resetPassword(u.login)}>Reset hasła</button>
-                  <button style={S.btnDanger} onClick={() => deleteUser(u.login)}>Usuń</button>
+                  <button style={S.btnWarning} onClick={() => resetPassword(u.code || u.login)}>Reset hasła</button>
+                  <button style={S.btnDanger} onClick={() => deleteUser(u.code || u.login)}>Usuń</button>
                 </div>
               </div>
         ))}
@@ -1167,12 +1167,12 @@ function UsersTab({ token, onUsersChange }) {
                 <div>
                   <div style={{ fontWeight:"600", fontSize:"15px" }}>🔑 {u.name}</div>
                   <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"3px" }}>
-                    <span style={{ color:COLORS.accentLight }}>{u.login}</span>
+                    <span style={{ color:COLORS.accentLight }}>{u.code || u.login}</span>
                   </div>
                 </div>
                 <div style={{ display:"flex", gap:"8px" }}>
-                  <button style={S.btnWarning} onClick={() => resetPassword(u.login)}>Reset hasła</button>
-                  <button style={S.btnDanger} onClick={() => deleteUser(u.login)}>Usuń</button>
+                  <button style={S.btnWarning} onClick={() => resetPassword(u.code || u.login)}>Reset hasła</button>
+                  <button style={S.btnDanger} onClick={() => deleteUser(u.code || u.login)}>Usuń</button>
                 </div>
               </div>
             ))}
