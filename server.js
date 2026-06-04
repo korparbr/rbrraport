@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'raportrbr-dev-secret';
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://postgres:ZJNbiBGKnwXnQAjTdDVNfBhVTQdupvnQ@postgres.railway.internal:5432/railway',
+  connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 app.use(cors());
