@@ -1253,7 +1253,7 @@ function ReportCard({ report, showWorker, onDelete }) {
 }
 
 // ─── MANAGER — USERS TAB ──────────────────────────────────────────────────────
-function UsersTab({ token, onUsersChange }) {
+function UsersTab({ token, onUsersChange, isSupervisorUser }) {
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   
