@@ -1004,6 +1004,11 @@ function WorkerView({ user, token, reports, onSave, onLogout, onUsersChange }) {
         </div>
       </div>
 
+      <div style={S.card}>
+        <div style={S.h2}>🗺️ Mapy hal</div>
+        <HallMap reports={reports} />
+      </div>
+
       <HistorySection reports={myReports} showWorker={false} title="Moja historia" />
     </div>
   );
@@ -2507,27 +2512,30 @@ async function generateHallPDF(hallId, hallName, layout, productStages) {
   doc.setFont("helvetica", "normal");
   doc.text(today, pageW - margin, 9, { align: "right" });
   
-  // Column headers
+  // Row headers (A,B,C - pionowo)
   doc.setTextColor(108, 99, 255);
   doc.setFontSize(10);
   doc.setFont("helvetica", "bold");
   COLS.forEach((col, ci) => {
-    const x = margin + 15 + ci * colW + colW / 2;
-    doc.text(col, x, margin + headerH - 4, { align: "center" });
+    const y = margin + headerH + ci * rowH + rowH / 2 + 2;
+    doc.text(col, margin + 7, y, { align: "center" });
   });
-  
-  // Row numbers + cells
+
+  // Column numbers (1,2,3 - poziomo)
   ROWS.forEach((row, ri) => {
-    const y = margin + headerH + ri * rowH;
-    
-    // Row number
-    doc.setTextColor(150, 150, 150);
-    doc.setFontSize(7);
-    doc.setFont("helvetica", "normal");
-    doc.text(String(row), margin + 7, y + rowH / 2 + 2, { align: "center" });
-    
-    COLS.forEach((col, ci) => {
-      const x = margin + 15 + ci * colW;
+    const x = margin + 15 + ri * colW + colW / 2;
+    doc.setTextColor(108, 99, 255);
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "bold");
+    doc.text(String(row), x, margin + headerH - 4, { align: "center" });
+  });
+
+  // Cells — col=wiersz (A-F), row=kolumna (1-23)
+  COLS.forEach((col, ci) => {
+    const y = margin + headerH + ci * rowH;
+
+    ROWS.forEach((row, ri) => {
+      const x = margin + 15 + ri * colW;
       const cell = layout.find(c => c.col === col && c.row === row);
       
       if (!cell) {
@@ -2839,22 +2847,22 @@ function HallMap({ reports = [] }) {
         </div>
       </div>
 
-      {/* Grid */}
+      {/* Grid — A,B,C w pionie (wiersze), 1,2,3 w poziomie (kolumny) */}
       <div style={{ overflowX:"auto" }}>
         <table style={{ borderCollapse:"collapse" }}>
           <thead>
             <tr>
-              <th style={{ padding:"4px 8px", color:COLORS.textMuted, fontSize:"11px", width:"28px" }}>#</th>
-              {COLS.map(col => (
-                <th key={col} style={{ padding:"4px 10px", color:COLORS.accent, fontSize:"14px", fontWeight:"700", textAlign:"center", minWidth:"72px" }}>{col}</th>
+              <th style={{ padding:"4px 8px", color:COLORS.textMuted, fontSize:"11px", width:"28px" }}></th>
+              {ROWS.map(row => (
+                <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"13px", fontWeight:"700", textAlign:"center", minWidth:"68px" }}>{row}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {ROWS.map(row => (
-              <tr key={row}>
-                <td style={{ padding:"2px 6px", color:COLORS.textDim, fontSize:"11px", textAlign:"center", fontWeight:"600" }}>{row}</td>
-                {COLS.map(col => {
+            {[...COLS].reverse().map(col => (
+              <tr key={col}>
+                <td style={{ padding:"2px 8px", color:COLORS.accent, fontSize:"13px", textAlign:"center", fontWeight:"700" }}>{col}</td>
+                {ROWS.map(row => {
                   const cell = getCell(col, row);
                   const info = getCellInfo(cell);
                   const cellKey = `${col}-${row}`;
@@ -2865,11 +2873,11 @@ function HallMap({ reports = [] }) {
                   const isSelected = selected?.col === col && selected?.row === row;
 
                   return (
-                    <td key={col} style={{ padding:"2px" }}>
+                    <td key={row} style={{ padding:"2px" }}>
                       <div
                         onClick={() => cell ? setSelected(isSelected ? null : { col, row, cell, info }) : null}
                         style={{
-                          width:"72px", height:"44px",
+                          width:"68px", height:"44px",
                           background: !cell ? "transparent" : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
                           border: `1px solid ${isSelected ? COLORS.accent : cell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
@@ -2944,7 +2952,7 @@ function HallMap({ reports = [] }) {
 
 // ─── MANAGER VIEW ─────────────────────────────────────────────────────────────
 function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange }) {
-  const [tab, setTab] = useState("entries");
+  const [tab, setTab] = useState(isSupervisor ? "kierownik" : "entries");
   const [filterWorker, setFilterWorker] = useState("all");
   const [filterProject, setFilterProject] = useState("all");
   const [filterStage, setFilterStage] = useState("all");
@@ -2984,6 +2992,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange 
       </div>
 
       <div style={{ display: "flex", gap: "8px", marginBottom: "20px", overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: "4px" }} className="dl-tabs">
+        {isSupervisor && <button style={S.tab(tab === "kierownik")} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
         <button style={S.tab(tab === "entries")} onClick={() => setTab("entries")}>📝 Wpisy</button>
         <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
         <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
@@ -2996,6 +3005,24 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange 
 
       {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} />}
       {tab === "photos" && <PhotoGallery reports={reports} users={users} />}
+      {tab === "kierownik" && isSupervisor && (
+        <div>
+          <div style={{ ...S.card, background: COLORS.accent+"15", border:`1px solid ${COLORS.accent}33`, marginBottom:"20px" }}>
+            <div style={{ fontSize:"18px", fontWeight:"800", marginBottom:"4px" }}>🎯 Panel Kierownika</div>
+            <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
+              Widok dedykowany dla kierownika produkcji — mapy hal, alerty i statystyki.
+            </div>
+          </div>
+          <div style={S.card}>
+            <div style={S.h2}>🗺️ Mapy hal</div>
+            <HallMap reports={reports} />
+          </div>
+          <div style={S.card}>
+            <div style={S.h2}>⚠️ Alerty produkcyjne</div>
+            <StuckAlert reports={reports} />
+          </div>
+        </div>
+      )}
       {tab === "map" && <HallMap reports={reports} />}
       {tab === "progress" && <ProjectProgressTab reports={reports} />}
       {tab === "warehouse" && <WarehouseTab reports={reports} />}
@@ -3149,7 +3176,14 @@ function App() {
       try {
         const payload = JSON.parse(atob(token.split('.')[1]));
         if (payload.exp * 1000 > Date.now()) {
-          setUser({ login: payload.code, code: payload.code, name: payload.name, role: payload.role });
+          const restoredUser = { login: payload.code, code: payload.code, name: payload.name, role: payload.role };
+          setUser(restoredUser);
+          // Load reports immediately with token
+          window._rbrToken = token;
+          loadReports(token);
+          if (restoredUser.role === 'manager' || restoredUser.role === 'supervisor') {
+            loadUsers(token);
+          }
         } else {
           localStorage.removeItem('rrbr_token');
           setToken(null);
@@ -3232,8 +3266,6 @@ function App() {
       </div>
       {!user ? (
         <LoginScreen onLogin={handleLogin} />
-      ) : user.role === "supervisor" ? (
-        <SupervisorView user={user} token={token} reports={reports} onLogout={handleLogout} />
       ) : user.role === "worker" ? (
         <WorkerView user={user} token={token} reports={reports}
           onSave={async (date, lines) => { await api.addReport(token, date, lines); await loadReports(token); }}
@@ -3243,7 +3275,8 @@ function App() {
         <ManagerView users={users} reports={reports} token={token}
           onDelete={async (id) => { await api.deleteReport(token, id); await loadReports(token); }}
           onLogout={handleLogout}
-          onUsersChange={() => loadUsers(token)} />
+          onUsersChange={() => loadUsers(token)}
+          isSupervisor={user.role === "supervisor"} />
       )}
     </div>
   );
