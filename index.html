@@ -3541,8 +3541,6 @@ function HallMap({ reports = [], isAdmin = false }) {
         </button>
         {showUpdater && <div style={{ marginTop:"12px" }}><MapUpdater hallName={hall.name} onUpdate={handleLayoutUpdate} /></div>}
       </div>
-      </div>{/* end right panel */}
-    </div>{/* end main flex row */}
 
       {/* Detail panel — full history */}
       {selected && (
@@ -3640,6 +3638,7 @@ function HallMap({ reports = [], isAdmin = false }) {
           })()}
         </div>
       )}
+      </div>
     </div>
   );
 }
