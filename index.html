@@ -6,6 +6,7 @@
   <title>RaportRBR v1.1</title>
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#6c63ff">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="RaportRBR">
@@ -3430,7 +3431,7 @@ function HallMap({ reports = [], isAdmin = false }) {
         <button style={S.tab(tab === "email")} onClick={() => setTab("email")}>📧 Raporty email</button>
         <button style={S.tab(tab === "backup")} onClick={() => setTab("backup")}>🛡️ Backup</button>
       </div>
-      <div>
+      <div className="dl-tab-content">
 
       {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} />}
       {tab === "photos" && <PhotoGallery reports={reports} users={users} />}
