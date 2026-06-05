@@ -1087,6 +1087,7 @@ function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, 
   const [lines, setLines] = useState([]);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState(null);
   const [showChangePass, setShowChangePass] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [workerTab, setWorkerTab] = useState("report");
@@ -1099,9 +1100,6 @@ function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, 
       onDone={() => setShowChangePass(false)}
       onLogout={() => setShowChangePass(false)} />
   );
-
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState(null);
 
   const handleSave = async () => {
     if (lines.length === 0) return;
