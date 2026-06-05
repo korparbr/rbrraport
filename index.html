@@ -421,208 +421,216 @@ function getUsedStages(reports, project, product, currentLines = []) {
 
 // ─── LINE FORM ────────────────────────────────────────────────────────────────
 function LineForm({ onAdd, reports, currentLines, enabledStages }) {
-  const [project, setProject] = useState("");
-  const [product, setProduct] = useState("");
   const [stage, setStage] = useState("");
-
+  const [project, setProject] = useState("");
+  const [selectedProducts, setSelectedProducts] = useState([]); // multi-select
   const [note, setNote] = useState("");
-  const [photo2, setPhoto2] = useState(null); // taśma izolacyjna (5588 + 7.1)
-  const [photo3, setPhoto3] = useState(null); // manszeta izolacyjna (5588 + 7.1)
-  const [hall, setHall] = useState(""); // hala dla etapu 5
+  const [hall, setHall] = useState("");
   const [err, setErr] = useState("");
 
   const maxProd = project ? PROJECTS[project]?.maxProduct : 0;
-  const productOptions = maxProd ? Array.from({ length: maxProd }, (_, i) => i + 1) : [];
 
-  const handlePhotoChange = (e, setter) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => setter({ name: file.name, data: ev.target.result });
-    reader.readAsDataURL(file);
+  // Products already reported today for this project+stage combo
+  const usedProducts = new Set(
+    (currentLines || [])
+      .filter(l => l.project === project && l.stage === stage)
+      .map(l => l.product)
+  );
+
+  // Available stages filtered by enabledStages setting
+  const availableStages = getStagesForProject(project || Object.keys(PROJECTS)[0])
+    .filter(s => !enabledStages || enabledStages.has(s.id));
+
+  const toggleProduct = (num) => {
+    setSelectedProducts(prev =>
+      prev.includes(num) ? prev.filter(p => p !== num) : [...prev, num]
+    );
   };
 
-  const handleAdd = () => {
-    if (!project) return setErr("Wybierz projekt.");
-    if (!product) return setErr("Wybierz nr produktu.");
-    if (!stage) return setErr("Wybierz etap.");
+  const clearAll = () => setSelectedProducts([]);
 
-    // Zdjęcia są opcjonalne — brak walidacji wymagalności
-    onAdd({
-      project, product: parseInt(product), stage, note: note.trim(),
-      photo: requires151Photo ? (photoNA ? null : photo) : undefined,
-      photoNA: requires151Photo ? photoNA : undefined,
-      hall: stage === "5" ? hall : undefined,
+  const handleAdd = () => {
+    if (!stage) return setErr("Wybierz etap.");
+    if (!project) return setErr("Wybierz projekt.");
+    if (selectedProducts.length === 0) return setErr("Wybierz co najmniej jedną łazienkę.");
+    if (stage === "5" && !hall) return setErr("Wybierz halę dla etapu Nawożenie.");
+
+    selectedProducts.forEach(prod => {
+      onAdd({ project, product: prod, stage, note, hall: stage === "5" ? hall : undefined });
     });
-    setProduct(""); setStage(""); setNote("");
-    setHall(""); setErr("");
-    setHall(""); setErr("");
-    setPhoto8(null); setHall(""); setErr("");
+
+    // Reset
+    setSelectedProducts([]);
+    setNote("");
+    setHall("");
+    setErr("");
+    // Keep stage and project for quick re-entry
+  };
+
+  // Range selection helper
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+
+  const applyRange = () => {
+    const from = parseInt(rangeFrom);
+    const to = parseInt(rangeTo);
+    if (!from || !to || from > to || to > maxProd) return;
+    const range = Array.from({ length: to - from + 1 }, (_, i) => from + i)
+      .filter(n => !usedProducts.has(n));
+    setSelectedProducts(prev => [...new Set([...prev, ...range])]);
+    setRangeFrom(""); setRangeTo("");
   };
 
   return (
-    <div style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: "12px", padding: "18px", marginBottom: "12px" }}>
-      <div style={S.row3} className="dl-row3">
-        <div>
-          <label style={S.label}>Projekt</label>
-          <select style={S.select} value={project} onChange={e => { setProject(e.target.value); setProduct(""); setStage(""); setPhoto(null); setPhotoNA(false); setErr(""); }}>
-            <option value="">— wybierz —</option>
-            {Object.keys(PROJECTS).map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={S.label}>Nr produktu</label>
-          <select style={S.select} value={product} onChange={e => { setProduct(e.target.value); setStage(""); setErr(""); }} disabled={!project}>
-            <option value="">{project ? "— wybierz —" : "← najpierw projekt"}</option>
-            {productOptions.map(n => <option key={n} value={n}>{n}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={S.label}>Etap</label>
-          <select style={S.select} value={stage} onChange={e => { setStage(e.target.value); setPhoto(null); setPhotoNA(false); setErr(""); }} disabled={!product}>
-            <option value="">{product ? "— wybierz —" : "← najpierw produkt"}</option>
-            {getStagesForProject(project).filter(s => !enabledStages || enabledStages.has(s.id)).map(s => (
-              <option key={s.id} value={s.id}>{s.label}</option>
-            ))}
-          </select>
-        </div>
+    <div style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:"12px", padding:"16px", marginBottom:"12px" }}>
+
+      {/* KROK 1: Etap */}
+      <div style={{ marginBottom:"16px" }}>
+        <label style={{ ...S.label, fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.06em", color:COLORS.accent }}>
+          Krok 1 — Etap
+        </label>
+        <select style={S.select} value={stage} onChange={e => { setStage(e.target.value); setSelectedProducts([]); setErr(""); }}>
+          <option value="">— wybierz etap —</option>
+          {STAGES.filter(s => !enabledStages || enabledStages.has(s.id)).map(s => (
+            <option key={s.id} value={s.id}>{s.label}</option>
+          ))}
+        </select>
       </div>
 
-
-      {/* Zdjęcia izolacji — tylko dla projektu 5588 + etap 7.1 */}
-      {requires588Photos && (
-        <div style={{ marginTop: "14px", background: COLORS.surface, border: `1px solid ${COLORS.accentLight}44`, borderRadius: "10px", padding: "14px" }}>
-          <label style={{ ...S.label, color: COLORS.accentLight, marginBottom: "10px" }}>
-            📷 Zdjęcia izolacji <span style={{ color: COLORS.red }}>*</span>
+      {/* KROK 2: Projekt */}
+      {stage && (
+        <div style={{ marginBottom:"16px" }}>
+          <label style={{ ...S.label, fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.06em", color:COLORS.accent }}>
+            Krok 2 — Projekt
           </label>
-          {[
-            { key: "photo2", label: "Zdjęcie taśmy izolacyjnej", state: photo2, setter: setPhoto2 },
-            { key: "photo3", label: "Zdjęcie manszety izolacyjnej", state: photo3, setter: setPhoto3 },
-          ].map(({ key, label, state, setter }) => (
-            <div key={key} style={{ marginBottom: "12px" }}>
-              <div style={{ color: COLORS.text, fontSize: "14px", fontWeight: "600", marginBottom: "8px" }}>{label}</div>
-              <input type="file" accept="image/*" id={key} style={{ display: "none" }}
-                onChange={e => handlePhotoChange(e, setter)} />
-              <label htmlFor={key} style={{ ...S.btnSm, display: "inline-block", cursor: "pointer", background: state ? COLORS.green : COLORS.accent }}>
-                {state ? `✓ ${state.name}` : "📷 Dodaj zdjęcie"}
-              </label>
-              {state && (
-                <div style={{ marginTop: "8px" }}>
-                  <img src={state.data} alt={label} style={{ maxWidth: "200px", maxHeight: "120px", borderRadius: "8px", border: `1px solid ${COLORS.border}` }} />
-                  <button style={{ ...S.btnGhost, marginLeft: "8px", color: COLORS.red }} onClick={() => setter(null)}>✕ usuń</button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Zdjęcie sznura i taśmy — etap 11.1 */}
-      {requires111Photo && (
-        <div style={{ marginTop: "14px", background: COLORS.surface, border: `1px solid ${COLORS.green}44`, borderRadius: "10px", padding: "14px" }}>
-          <label style={{ ...S.label, color: COLORS.green, marginBottom: "10px" }}>
-            📷 Wymagane zdjęcie <span style={{ color: COLORS.red }}>*</span>
-          </label>
-          {[{ key: "photo4", label: "Zdjęcie sznura i taśmy izolacyjnej", state: photo4, setter: setPhoto4 }].map(({ key, label, state, setter }) => (
-            <div key={key}>
-              <div style={{ color: COLORS.text, fontSize: "14px", fontWeight: "600", marginBottom: "8px" }}>{label}</div>
-              <input type="file" accept="image/*" id={key} style={{ display: "none" }} onChange={e => handlePhotoChange(e, setter)} />
-              <label htmlFor={key} style={{ ...S.btnSm, display: "inline-block", cursor: "pointer", background: state ? COLORS.green : COLORS.accent }}>
-                {state ? `✓ ${state.name}` : "📷 Dodaj zdjęcie"}
-              </label>
-              {state && (
-                <div style={{ marginTop: "8px" }}>
-                  <img src={state.data} alt={label} style={{ maxWidth: "200px", maxHeight: "120px", borderRadius: "8px", border: `1px solid ${COLORS.border}` }} />
-                  <button style={{ ...S.btnGhost, marginLeft: "8px", color: COLORS.red }} onClick={() => setter(null)}>✕ usuń</button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Zdjęcia poziomicy — etap 11.2 */}
-      {requires112Photos && (
-        <div style={{ marginTop: "14px", background: COLORS.surface, border: `1px solid ${COLORS.green}44`, borderRadius: "10px", padding: "14px" }}>
-          <label style={{ ...S.label, color: COLORS.green, marginBottom: "10px" }}>
-            📷 Wymagane zdjęcia <span style={{ color: COLORS.red }}>*</span>
-          </label>
-          {[
-            { key: "photo5", label: "Zdjęcie sznura dylatacyjnego", state: photo5, setter: setPhoto5 },
-            { key: "photo6", label: "Zdjęcie poziomicy w kabinie prysznica", state: photo6, setter: setPhoto6 },
-            { key: "photo7", label: "Zdjęcie poziomicy przed kabiną prysznica", state: photo7, setter: setPhoto7 },
-          ].map(({ key, label, state, setter }) => (
-            <div key={key} style={{ marginBottom: "12px" }}>
-              <div style={{ color: COLORS.text, fontSize: "14px", fontWeight: "600", marginBottom: "8px" }}>{label}</div>
-              <input type="file" accept="image/*" id={key} style={{ display: "none" }} onChange={e => handlePhotoChange(e, setter)} />
-              <label htmlFor={key} style={{ ...S.btnSm, display: "inline-block", cursor: "pointer", background: state ? COLORS.green : COLORS.accent }}>
-                {state ? `✓ ${state.name}` : "📷 Dodaj zdjęcie"}
-              </label>
-              {state && (
-                <div style={{ marginTop: "8px" }}>
-                  <img src={state.data} alt={label} style={{ maxWidth: "200px", maxHeight: "120px", borderRadius: "8px", border: `1px solid ${COLORS.border}` }} />
-                  <button style={{ ...S.btnGhost, marginLeft: "8px", color: COLORS.red }} onClick={() => setter(null)}>✕ usuń</button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      
-      {/* Zdjęcie terminatora — tylko dla etapu 15.1 */}
-      {requires151Photo && (
-        <div style={{ marginTop: "14px", background: COLORS.surface, border: `1px solid ${COLORS.orange}44`, borderRadius: "10px", padding: "14px" }}>
-          <label style={{ ...S.label, color: COLORS.orange, marginBottom: "10px" }}>
-            📷 Zdjęcie terminatora (opcjonalne)
-          </label>
-          <div style={{ color: COLORS.text, fontSize: "14px", fontWeight: "600", marginBottom: "10px" }}>
-            Dodaj zdjęcie uszczelnienia terminatorów
-          </div>
-          {!photoNA && (
-            <div>
-              <input
-                type="file"
-                accept="image/*"
-                id="terminator-photo"
-                style={{ display: "none" }}
-                onChange={e => handlePhotoChange(e, setPhoto)}
-              />
-              <label htmlFor="terminator-photo" style={{ ...S.btnSm, display: "inline-block", cursor: "pointer", background: photo ? COLORS.green : COLORS.accent }}>
-                {photo ? `✓ ${photo.name}` : "📷 Dodaj zdjęcie"}
-              </label>
-              {photo && (
-                <div style={{ marginTop: "10px" }}>
-                  <img src={photo.data} alt="terminator" style={{ maxWidth: "200px", maxHeight: "120px", borderRadius: "8px", border: `1px solid ${COLORS.border}` }} />
-                  <button style={{ ...S.btnGhost, marginLeft: "8px", color: COLORS.red }} onClick={() => setPhoto(null)}>✕ usuń</button>
-                </div>
-              )}
-            </div>
-          )}
-          <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "8px" }}>
-            <input
-              type="checkbox"
-              id="photo-na"
-              checked={photoNA}
-              onChange={e => { setPhotoNA(e.target.checked); if (e.target.checked) setPhoto(null); }}
-              style={{ width: "16px", height: "16px", cursor: "pointer" }}
-            />
-            <label htmlFor="photo-na" style={{ ...S.label, marginBottom: 0, cursor: "pointer", color: COLORS.textMuted }}>
-              Nie dotyczy
-            </label>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:"6px" }}>
+            {Object.keys(PROJECTS)
+              .filter(p => stage !== "2.1" || ["5517","5529","5603"].includes(p))
+              .map(p => (
+                <button key={p}
+                  style={{ padding:"8px 14px", borderRadius:"8px", fontSize:"13px", fontWeight: project===p ? "700" : "400",
+                    background: project===p ? COLORS.accent : COLORS.surface,
+                    color: project===p ? "#fff" : COLORS.textMuted,
+                    border: `1px solid ${project===p ? COLORS.accent : COLORS.border}`,
+                    cursor:"pointer" }}
+                  onClick={() => { setProject(p); setSelectedProducts([]); }}>
+                  {p}
+                </button>
+              ))}
           </div>
         </div>
       )}
 
-      <div style={{ marginTop: "12px" }}>
-        <label style={S.label}>Uwagi (opcjonalnie)</label>
-        <input style={S.input} placeholder="Dodatkowe informacje..." value={note} onChange={e => setNote(e.target.value)} />
-      </div>
+      {/* KROK 3: Łazienki */}
+      {stage && project && (
+        <div style={{ marginBottom:"16px" }}>
+          <label style={{ ...S.label, fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.06em", color:COLORS.accent }}>
+            Krok 3 — Łazienki
+            {selectedProducts.length > 0 && <span style={{ color:COLORS.green, marginLeft:"8px", textTransform:"none", fontSize:"13px" }}>({selectedProducts.length} zaznaczonych)</span>}
+          </label>
+
+          {/* Range selector + clear */}
+          <div style={{ display:"flex", gap:"6px", marginBottom:"10px", flexWrap:"wrap", alignItems:"center" }}>
+            <div style={{ display:"flex", gap:"4px", alignItems:"center" }}>
+              <input style={{ ...S.input, width:"65px", padding:"7px 8px", fontSize:"13px" }}
+                placeholder="od" type="number" min="1" max={maxProd}
+                value={rangeFrom} onChange={e => setRangeFrom(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && applyRange()} />
+              <span style={{ color:COLORS.textMuted, fontSize:"13px" }}>—</span>
+              <input style={{ ...S.input, width:"65px", padding:"7px 8px", fontSize:"13px" }}
+                placeholder="do" type="number" min="1" max={maxProd}
+                value={rangeTo} onChange={e => setRangeTo(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && applyRange()} />
+              <button style={{ ...S.btnSm, fontSize:"12px" }} onClick={applyRange}>+ Zakres</button>
+            </div>
+            {selectedProducts.length > 0 && (
+              <button style={{ ...S.btnGhost, fontSize:"12px", color:COLORS.red }} onClick={clearAll}>✕ Wyczyść</button>
+            )}
+          </div>
+
+          {/* Product list — scrollable */}
+          <div style={{ maxHeight:"220px", overflowY:"auto", border:`1px solid ${COLORS.border}`, borderRadius:"8px", background:COLORS.surface }}>
+            {Array.from({ length: maxProd }, (_, i) => i + 1).map(num => {
+              const isSelected = selectedProducts.includes(num);
+              const isUsed = usedProducts.has(num);
+              return (
+                <div key={num}
+                  onClick={() => !isUsed && toggleProduct(num)}
+                  style={{
+                    display:"flex", alignItems:"center", gap:"10px",
+                    padding:"8px 12px",
+                    background: isSelected ? COLORS.accent+"18" : "transparent",
+                    borderBottom:`1px solid ${COLORS.border}`,
+                    cursor: isUsed ? "not-allowed" : "pointer",
+                    opacity: isUsed ? 0.4 : 1,
+                  }}>
+                  <div style={{
+                    width:"18px", height:"18px", borderRadius:"4px", flexShrink:0,
+                    background: isSelected ? COLORS.accent : "transparent",
+                    border:`2px solid ${isSelected ? COLORS.accent : COLORS.border}`,
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                  }}>
+                    {isSelected && <span style={{ color:"#fff", fontSize:"11px", fontWeight:"800" }}>✓</span>}
+                  </div>
+                  <span style={{
+                    fontSize:"14px", fontWeight: isSelected ? "700" : "400",
+                    color: isUsed ? COLORS.textDim : isSelected ? COLORS.text : COLORS.textMuted,
+                    textDecoration: isUsed ? "line-through" : "none",
+                  }}>
+                    Łazienka {num}
+                  </span>
+                  {isUsed && <span style={{ fontSize:"11px", color:COLORS.textDim, marginLeft:"auto" }}>już dodana</span>}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ color:COLORS.textDim, fontSize:"11px", marginTop:"4px" }}>
+            {selectedProducts.length > 0 ? `Zaznaczono: ${selectedProducts.sort((a,b)=>a-b).join(", ")}` : "Kliknij łazienki lub wpisz zakres"}
+          </div>
+        </div>
+      )}
+
+      {/* Hala dla etapu 5 */}
+      {stage === "5" && project && (
+        <div style={{ marginBottom:"16px" }}>
+          <label style={{ ...S.label, fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.06em", color:COLORS.accent }}>
+            Hala
+          </label>
+          <select style={S.select} value={hall} onChange={e => setHall(e.target.value)}>
+            <option value="">— wybierz halę —</option>
+            <option value="namiot1">Namiot 1</option>
+            <option value="namiot2">Namiot 2</option>
+            <option value="betonowanie">Hala Betonowanie</option>
+            <option value="iso">Hala ISO</option>
+          </select>
+        </div>
+      )}
+
+      {/* Uwagi */}
+      {stage && project && selectedProducts.length > 0 && (
+        <div style={{ marginBottom:"16px" }}>
+          <label style={{ ...S.label, fontSize:"12px", textTransform:"uppercase", letterSpacing:"0.06em", color:COLORS.accent }}>
+            Uwagi (opcjonalne)
+          </label>
+          <input style={S.input} placeholder="Dodatkowe informacje..." value={note}
+            onChange={e => setNote(e.target.value)} />
+        </div>
+      )}
+
       {err && <div style={S.errorText}>⚠ {err}</div>}
-      <button style={{ ...S.btnSm, marginTop: "12px" }} onClick={handleAdd}>+ Dodaj pozycję</button>
+
+      {stage && project && (
+        <button
+          style={{ ...S.btn, opacity: selectedProducts.length === 0 ? 0.4 : 1, marginTop:"4px" }}
+          onClick={handleAdd}
+          disabled={selectedProducts.length === 0}>
+          + Dodaj {selectedProducts.length > 0 ? `${selectedProducts.length} ${selectedProducts.length === 1 ? "łazienkę" : selectedProducts.length < 5 ? "łazienki" : "łazienek"}` : "do raportu"}
+        </button>
+      )}
     </div>
   );
 }
+
 
 function LineItem({ line, onRemove }) {
   const stageLabel = STAGES.find(s => s.id === line.stage)?.label || line.stage;
