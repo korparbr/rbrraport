@@ -133,7 +133,7 @@ app.get('/api/reports', auth, async (req, res) => {
     const q = `
       SELECT r.id, r.worker_code, u.name as worker_name, r.report_date::text as date, r.created_at,
         json_agg(json_build_object('id',rl.id,'project',rl.project,'product',rl.product,
-          'stage',rl.stage,'contractor',rl.contractor_code,'note',rl.note,'photos',rl.photos) ORDER BY rl.id) as lines
+          'stage',rl.stage,'contractor',rl.contractor_code,'note',rl.note) ORDER BY rl.id) as lines
       FROM reports r JOIN users u ON r.worker_code=u.code JOIN report_lines rl ON rl.report_id=r.id
       ${isManager ? '' : 'WHERE r.worker_code=$1'}
       GROUP BY r.id, u.name ORDER BY r.report_date DESC, r.created_at DESC`;
@@ -153,20 +153,8 @@ app.post('/api/reports', auth, async (req, res) => {
     const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [req.user.code, date]);
     const reportId = r.rows[0].id;
     for (const line of lines) {
-      const photoData = JSON.stringify({
-        photo: line.photo || null,
-        photo2: line.photo2 || null,
-        photo3: line.photo3 || null,
-        photo4: line.photo4 || null,
-        photo5: line.photo5 || null,
-        photo6: line.photo6 || null,
-        photo7: line.photo7 || null,
-        photo8: line.photo8 || null,
-        photoNA: line.photoNA || false,
-        hall: line.hall || null,
-      });
-      await client.query('INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note,photos) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '', photoData]);
+      await client.query('INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
+        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '']);
     }
     await client.query('COMMIT');
     res.json({ success: true, reportId });

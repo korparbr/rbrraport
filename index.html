@@ -426,25 +426,13 @@ function LineForm({ onAdd, reports, currentLines, enabledStages }) {
   const [stage, setStage] = useState("");
 
   const [note, setNote] = useState("");
-  const [photo, setPhoto] = useState(null);
-  const [photoNA, setPhotoNA] = useState(false);
   const [photo2, setPhoto2] = useState(null); // taśma izolacyjna (5588 + 7.1)
   const [photo3, setPhoto3] = useState(null); // manszeta izolacyjna (5588 + 7.1)
-  const [photo4, setPhoto4] = useState(null); // sznur i taśma izolacyjna (11.1)
-  const [photo5, setPhoto5] = useState(null); // sznur dylatacyjny (11.2)
-  const [photo6, setPhoto6] = useState(null); // poziomice w kabinie (11.2)
-  const [photo7, setPhoto7] = useState(null); // poziomice przed kabiną (11.2)
-  const [photo8, setPhoto8] = useState(null); // opcjonalne (8.1, 9.2, 15.2)
   const [hall, setHall] = useState(""); // hala dla etapu 5
   const [err, setErr] = useState("");
 
   const maxProd = project ? PROJECTS[project]?.maxProduct : 0;
   const productOptions = maxProd ? Array.from({ length: maxProd }, (_, i) => i + 1) : [];
-  const requires151Photo = stage === "15.1";
-  const requires588Photos = project === "5588" && stage === "7.1";
-  const requires111Photo = stage === "11.1";
-  const requires112Photos = stage === "11.2";
-  const optionalPhotoStage = ["8.1", "9.2", "15.2", "16.1", "19", "21"].includes(stage); // opcjonalne zdjęcie
 
   const handlePhotoChange = (e, setter) => {
     const file = e.target.files[0];
@@ -464,18 +452,11 @@ function LineForm({ onAdd, reports, currentLines, enabledStages }) {
       project, product: parseInt(product), stage, note: note.trim(),
       photo: requires151Photo ? (photoNA ? null : photo) : undefined,
       photoNA: requires151Photo ? photoNA : undefined,
-      photo2: requires588Photos ? photo2 : undefined,
-      photo3: requires588Photos ? photo3 : undefined,
-      photo4: requires111Photo ? photo4 : undefined,
-      photo5: requires112Photos ? photo5 : undefined,
-      photo6: requires112Photos ? photo6 : undefined,
-      photo7: requires112Photos ? photo7 : undefined,
-      photo8: optionalPhotoStage ? photo8 : undefined,
       hall: stage === "5" ? hall : undefined,
     });
     setProduct(""); setStage(""); setNote("");
-    setPhoto(null); setPhotoNA(false); setPhoto2(null); setPhoto3(null);
-    setPhoto4(null); setPhoto5(null); setPhoto6(null); setPhoto7(null);
+    setHall(""); setErr("");
+    setHall(""); setErr("");
     setPhoto8(null); setHall(""); setErr("");
   };
 
@@ -588,29 +569,7 @@ function LineForm({ onAdd, reports, currentLines, enabledStages }) {
         </div>
       )}
 
-      {/* Opcjonalne zdjęcie — etapy 8.1, 9.2, 15.2 */}
-      {optionalPhotoStage && (
-        <div style={{ marginTop: "14px", background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: "10px", padding: "14px" }}>
-          <label style={{ ...S.label, color: COLORS.textMuted, marginBottom: "10px" }}>
-            📷 Zdjęcie (opcjonalne)
-          </label>
-          <div style={{ color: COLORS.text, fontSize: "14px", fontWeight: "600", marginBottom: "8px" }}>
-            {stage === "8.1" ? "Zdjęcie montażu sanitarnego" : stage === "9.2" ? "Zdjęcie rekuperatora" : stage === "15.2" ? "Zdjęcie montażu elektrycznego" : stage === "16.1" ? "Zdjęcie testu szczelności wody" : stage === "19" ? "Zdjęcie pakowania" : "Zdjęcie załadunku"}
-          </div>
-          <input type="file" accept="image/*" id="photo8" style={{ display: "none" }}
-            onChange={e => handlePhotoChange(e, setPhoto8)} />
-          <label htmlFor="photo8" style={{ ...S.btnSm, display: "inline-block", cursor: "pointer", background: photo8 ? COLORS.green : COLORS.surface, border: `1px solid ${photo8 ? COLORS.green : COLORS.border}`, color: photo8 ? "#fff" : COLORS.textMuted }}>
-            {photo8 ? `✓ ${photo8.name}` : "📷 Dodaj zdjęcie"}
-          </label>
-          {photo8 && (
-            <div style={{ marginTop: "8px" }}>
-              <img src={photo8.data} alt="zdjęcie" style={{ maxWidth: "200px", maxHeight: "120px", borderRadius: "8px", border: `1px solid ${COLORS.border}` }} />
-              <button style={{ ...S.btnGhost, marginLeft: "8px", color: COLORS.red }} onClick={() => setPhoto8(null)}>✕ usuń</button>
-            </div>
-          )}
-        </div>
-      )}
-
+      
       {/* Zdjęcie terminatora — tylko dla etapu 15.1 */}
       {requires151Photo && (
         <div style={{ marginTop: "14px", background: COLORS.surface, border: `1px solid ${COLORS.orange}44`, borderRadius: "10px", padding: "14px" }}>
@@ -669,7 +628,6 @@ function LineItem({ line, onRemove }) {
   const stageLabel = STAGES.find(s => s.id === line.stage)?.label || line.stage;
   const contractorObj = CONTRACTORS.find(c => c.code === line.contractor);
   const contractorLabel = contractorObj ? `${contractorObj.code} — ${contractorObj.name}` : line.contractor;
-  const [showPhoto, setShowPhoto] = useState(false);
   return (
     <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: "8px", marginBottom: "8px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px" }}>
@@ -3673,7 +3631,6 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
         <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
         <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
         <button style={S.tab(tab === "warehouse")} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
-        <button style={S.tab(tab === "photos")} onClick={() => setTab("photos")}>📷 Zdjęcia</button>
         <button style={S.tab(tab === "stats")} onClick={() => setTab("stats")}>📈 Statystyki</button>
         <button style={S.tab(tab === "users")} onClick={() => setTab("users")}>👥 Pracownicy</button>
         <button style={S.tab(tab === "excel")} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
