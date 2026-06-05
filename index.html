@@ -421,6 +421,7 @@ function LineForm({ onAdd, reports, currentLines, enabledStages }) {
   const [photo6, setPhoto6] = useState(null); // poziomice w kabinie (11.2)
   const [photo7, setPhoto7] = useState(null); // poziomice przed kabiną (11.2)
   const [photo8, setPhoto8] = useState(null); // opcjonalne (8.1, 9.2, 15.2)
+  const [hall, setHall] = useState(""); // hala dla etapu 5
   const [err, setErr] = useState("");
 
   const maxProd = project ? PROJECTS[project]?.maxProduct : 0;
@@ -456,11 +457,12 @@ function LineForm({ onAdd, reports, currentLines, enabledStages }) {
       photo6: requires112Photos ? photo6 : undefined,
       photo7: requires112Photos ? photo7 : undefined,
       photo8: optionalPhotoStage ? photo8 : undefined,
+      hall: stage === "5" ? hall : undefined,
     });
     setProduct(""); setStage(""); setNote("");
     setPhoto(null); setPhotoNA(false); setPhoto2(null); setPhoto3(null);
     setPhoto4(null); setPhoto5(null); setPhoto6(null); setPhoto7(null);
-    setPhoto8(null); setErr("");
+    setPhoto8(null); setHall(""); setErr("");
   };
 
   return (
@@ -684,6 +686,11 @@ function LineItem({ line, onRemove }) {
             <button style={{ ...S.tag(COLORS.green), cursor: "pointer", border: "none" }} onClick={() => setShowPhoto(!showPhoto)}>📷 zdjęcie</button>
           )}
           {line.note && <span style={{ color: COLORS.textMuted, fontSize: "13px" }}>· {line.note}</span>}
+          {line.stage === "5" && line.hall && (
+            <span style={{ background:COLORS.accent+"22", color:COLORS.accentLight, border:`1px solid ${COLORS.accent}44`, borderRadius:"6px", padding:"1px 7px", fontSize:"11px", fontWeight:"600", marginLeft:"4px" }}>
+              🏭 {line.hall === "namiot1" ? "Namiot 1" : line.hall === "namiot2" ? "Namiot 2" : line.hall === "betonowanie" ? "Hala Betonowanie" : "Hala ISO"}
+            </span>
+          )}
         </div>
         {onRemove && <button style={S.btnGhost} onClick={onRemove}>✕</button>}
       </div>
@@ -1046,7 +1053,10 @@ function UsersTab({ token, onUsersChange }) {
   
   useEffect(() => { refreshUsers(); }, [token]);
   const [tab, setTab] = useState("workers"); // workers | admins
+  const [bulkMode, setBulkMode] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
   const [newLogin, setNewLogin] = useState("");
+  const [newManualName, setNewManualName] = useState("");
   const [newPass, setNewPass] = useState("");
   const [newAdminLogin, setNewAdminLogin] = useState("");
   const [newAdminPass, setNewAdminPass] = useState("");
@@ -1061,13 +1071,14 @@ function UsersTab({ token, onUsersChange }) {
 
   const addWorker = async () => {
     const code = newLogin.trim().toUpperCase();
-    if (!code) return setErr("Wybierz kod pracownika.");
+    if (!code) return setErr("Wybierz lub wpisz kod pracownika.");
     if (newPass.length < 4) return setErr("Hasło musi mieć co najmniej 4 znaki.");
+    if (users.find(u => (u.code || u.login || "").toUpperCase() === code)) return setErr("Konto o tym kodzie już istnieje.");
     const contractor = CONTRACTORS.find(c => c.code.toUpperCase() === code);
-    const name = contractor ? contractor.name : code;
+    const name = manualMode ? (newManualName.trim() || code) : (contractor ? contractor.name : code);
     try {
       await api.addUser(token, code, name, newPass, "worker");
-      setNewLogin(""); setNewPass(""); setErr("");
+      setNewLogin(""); setNewPass(""); setNewManualName(""); setErr("");
       onUsersChange();
       flash("✓ Konto pracownika " + code + " (" + name + ") utworzone.");
     } catch(err) { setErr(err.message); }
@@ -1112,27 +1123,70 @@ function UsersTab({ token, onUsersChange }) {
       {tab === "workers" && (
         <>
           <div style={S.card}>
-            <div style={S.h2}>Dodaj pracownika</div>
-            <div style={S.row2} className="dl-row2">
-              <div>
-                <label style={S.label}>Kod pracownika</label>
-                <select style={S.select} value={newLogin} onChange={e => { setNewLogin(e.target.value); setErr(""); }}>
-                  <option value="">— wybierz z listy —</option>
-                  {CONTRACTORS.filter(c => !users.find(u => (u.code || u.login || "").toUpperCase() === c.code.toUpperCase())).map(c => (
-                    <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label style={S.label}>Hasło tymczasowe</label>
-                <input style={S.input} placeholder="Min. 4 znaki" value={newPass} onChange={e => { setNewPass(e.target.value); setErr(""); }} />
-              </div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"18px" }}>
+              <div style={{ fontSize:"18px", fontWeight:"700" }}>Dodaj pracownika</div>
+              <button style={{ ...S.btnOutline, fontSize:"12px" }} onClick={() => setBulkMode(!bulkMode)}>
+                {bulkMode ? "➕ Pojedynczy" : "👥 Dodaj wielu naraz"}
+              </button>
             </div>
-            {err && <div style={S.errorText}>⚠ {err}</div>}
-            <div style={{ ...S.infoBox(COLORS.orange), marginTop: "16px" }}>
-              💡 Pracownik przy pierwszym logowaniu zostanie poproszony o ustawienie własnego hasła.
-            </div>
-            <button style={S.btnSm} onClick={addWorker}>+ Dodaj pracownika</button>
+
+            {!bulkMode ? (
+              <>
+                {/* Toggle: from list or manual */}
+                <div style={{ display:"flex", gap:"8px", marginBottom:"16px" }}>
+                  <button style={{ ...S.tab(!manualMode), fontSize:"12px" }} onClick={() => setManualMode(false)}>Z listy</button>
+                  <button style={{ ...S.tab(manualMode), fontSize:"12px" }} onClick={() => setManualMode(true)}>➕ Spoza bazy</button>
+                </div>
+
+                {!manualMode ? (
+                  <div style={S.row2} className="dl-row2">
+                    <div>
+                      <label style={S.label}>Kod pracownika</label>
+                      <select style={S.select} value={newLogin} onChange={e => { setNewLogin(e.target.value); setErr(""); }}>
+                        <option value="">— wybierz z listy —</option>
+                        {CONTRACTORS.filter(c => !users.find(u => (u.code || u.login || "").toUpperCase() === c.code.toUpperCase())).map(c => (
+                          <option key={c.code} value={c.code}>{c.code} — {c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={S.label}>Hasło tymczasowe</label>
+                      <input style={S.input} placeholder="Min. 4 znaki" value={newPass} onChange={e => { setNewPass(e.target.value); setErr(""); }} />
+                    </div>
+                  </div>
+                ) : (
+                  <div style={S.row2} className="dl-row2">
+                    <div>
+                      <label style={S.label}>Kod pracownika (unikalny)</label>
+                      <input style={{ ...S.input, textTransform:"uppercase" }} placeholder="np. ABC001" value={newLogin}
+                        onChange={e => { setNewLogin(e.target.value.toUpperCase()); setErr(""); }} />
+                    </div>
+                    <div>
+                      <label style={S.label}>Imię i nazwisko</label>
+                      <input style={S.input} placeholder="np. Kowalski Jan" value={newManualName}
+                        onChange={e => { setNewManualName(e.target.value); setErr(""); }} />
+                    </div>
+                    <div>
+                      <label style={S.label}>Hasło tymczasowe</label>
+                      <input style={S.input} placeholder="Min. 4 znaki" value={newPass} onChange={e => { setNewPass(e.target.value); setErr(""); }} />
+                    </div>
+                  </div>
+                )}
+
+                {err && <div style={S.errorText}>⚠ {err}</div>}
+                <div style={{ ...S.infoBox(COLORS.orange), marginTop:"16px" }}>
+                  💡 Pracownik przy pierwszym logowaniu zostanie poproszony o ustawienie własnego hasła.
+                </div>
+                <button style={S.btnSm} onClick={addWorker}>+ Dodaj pracownika</button>
+              </>
+            ) : (
+              <BulkWorkerAdd
+                contractors={CONTRACTORS}
+                users={users}
+                token={token}
+                onDone={() => { onUsersChange(); setBulkMode(false); flash("✓ Pracownicy dodani!"); }}
+              />
+            )}
           </div>
           <div style={S.card}>
             <div style={S.h2}>Lista pracowników ({workers.length})</div>
@@ -1345,111 +1399,191 @@ function PhotoGallery({ reports, users }) {
 }
 
 // ─── EMAIL TAB ───────────────────────────────────────────────────────────────
-function EmailTab({ token }) {
-  const [recipients, setRecipients] = useState([]);
-  const [newEmail, setNewEmail] = useState("");
-  const [err, setErr] = useState("");
-  const [msg, setMsg] = useState("");
-  const [sending, setSending] = useState(false);
-  const [loading, setLoading] = useState(true);
+// ─── EXCEL EXPORT ─────────────────────────────────────────────────────────────
+function ExcelExportTab({ reports, users }) {
+  const today = () => new Date().toISOString().slice(0,10);
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate()-30);
+    return d.toISOString().slice(0,10);
+  });
+  const [dateTo, setDateTo] = useState(today);
+  const [filterProject, setFilterProject] = useState("all");
+  const [filterProduct, setFilterProduct] = useState("");
+  const [filterStage, setFilterStage] = useState("all");
+  const [filterWorker, setFilterWorker] = useState("all");
+  const [generating, setGenerating] = useState(false);
+  const [msg, setMsg] = useState(null);
 
-  const flash = (m, isErr) => {
-    if (isErr) setErr(m); else setMsg(m);
-    setTimeout(() => { setMsg(""); setErr(""); }, 4000);
-  };
+  // Get unique values for filters
+  const allLines = reports.flatMap(r =>
+    (r.lines||[]).map(l => ({ ...l, date: r.date, workerLogin: r.workerLogin || r.worker_code, workerName: r.workerName || r.worker_name }))
+  );
+  const projects = [...new Set(allLines.map(l => l.project))].sort();
+  const workers = [...new Set(allLines.map(l => l.workerLogin))].sort();
 
-  useEffect(() => {
-    api.getEmailRecipients(token).then(setRecipients).catch(() => {}).finally(() => setLoading(false));
-  }, [token]);
+  // Filter lines
+  const filteredLines = allLines.filter(l => {
+    if (l.date < dateFrom || l.date > dateTo) return false;
+    if (filterProject !== "all" && l.project !== filterProject) return false;
+    if (filterProduct && String(l.product) !== filterProduct.trim()) return false;
+    if (filterStage !== "all" && l.stage !== filterStage) return false;
+    if (filterWorker !== "all" && l.workerLogin !== filterWorker) return false;
+    return true;
+  }).sort((a,b) => a.date.localeCompare(b.date) || a.project.localeCompare(b.project) || a.product - b.product);
 
-  const addEmail = async () => {
-    if (!newEmail.includes("@")) return flash("Wpisz prawidłowy adres email.", true);
+  const generateExcel = () => {
+    if (filteredLines.length === 0) {
+      setMsg({ type:"error", text:"Brak danych dla wybranych filtrów." });
+      return;
+    }
+    setGenerating(true);
+
     try {
-      await api.addEmailRecipient(token, newEmail.trim());
-      setNewEmail("");
-      const list = await api.getEmailRecipients(token);
-      setRecipients(list);
-      flash("✓ Adres dodany.");
-    } catch(err) { flash(err.message, true); }
-  };
+      // Build CSV (Excel-compatible with BOM)
+      const BOM = "﻿";
+      const headers = ["Data","Projekt","Łazienka","Etap","Pracownik","Uwagi"];
+      const rows = filteredLines.map(l => {
+        const stage = STAGES.find(s => s.id === l.stage);
+        const workerName = l.workerName || users.find(u => u.login === l.workerLogin || u.code === l.workerLogin)?.name || l.workerLogin;
+        return [
+          l.date,
+          l.project,
+          l.product,
+          stage ? `${l.stage} — ${stage.label}` : l.stage,
+          workerName || l.workerLogin,
+          (l.note || "").replace(/"/g, '""')
+        ].map(v => `"${v}"`).join(";");
+      });
 
-  const removeEmail = async (email) => {
-    await api.deleteEmailRecipient(token, email);
-    const list = await api.getEmailRecipients(token);
-    setRecipients(list);
-  };
-
-  const sendNow = async () => {
-    setSending(true);
-    try {
-      const r = await api.sendReportNow(token);
-      flash("✓ " + r.message);
-    } catch(err) { flash(err.message, true); }
-    finally { setSending(false); }
+      const csv = BOM + [headers.map(h => `"${h}"`).join(";"), ...rows].join("
+");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const dateRange = dateFrom === dateTo ? dateFrom : `${dateFrom}_do_${dateTo}`;
+      a.download = `raport_${dateRange}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMsg({ type:"success", text:`✓ Pobrano ${filteredLines.length} wierszy` });
+      setTimeout(() => setMsg(null), 3000);
+    } catch(err) {
+      setMsg({ type:"error", text:"Błąd: " + err.message });
+    } finally {
+      setGenerating(false);
+    }
   };
 
   return (
     <div>
-      {msg && <div style={S.infoBox(COLORS.green)}>{msg}</div>}
-      {err && <div style={S.infoBox(COLORS.red)}>{err}</div>}
-
       <div style={S.card}>
-        <div style={S.h2}>📧 Odbiorcy raportu dziennego</div>
-        <div style={{ color: COLORS.textMuted, fontSize: "14px", marginBottom: "20px" }}>
-          Raport Excel jest wysyłany automatycznie codziennie o <strong style={{ color: COLORS.accent }}>23:59</strong> na poniższe adresy.
-        </div>
-        <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
-          <input style={{ ...S.input, flex: 1 }} placeholder="np. manager@firma.pl" value={newEmail}
-            onChange={e => setNewEmail(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && addEmail()} />
-          <button style={S.btnSm} onClick={addEmail}>+ Dodaj</button>
-        </div>
-        {loading ? <div style={{ color: COLORS.textDim }}>Ładowanie...</div>
-          : recipients.length === 0
-          ? <div style={{ color: COLORS.textDim, padding: "20px", textAlign: "center" }}>
-              <div style={{ fontSize: "28px", marginBottom: "8px" }}>📭</div>
-              Brak odbiorców. Dodaj adres email powyżej.
-            </div>
-          : recipients.map(email => (
-            <div key={email} style={{ ...S.entryCard, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: "15px" }}>✉️ {email}</span>
-              <button style={S.btnDanger} onClick={() => removeEmail(email)}>Usuń</button>
-            </div>
-          ))}
-      </div>
+        <div style={S.h2}>📊 Generuj raport Excel</div>
 
-      <div style={S.card}>
-        <div style={S.h2}>📤 Wyślij raport ręcznie</div>
-        <div style={{ color: COLORS.textMuted, fontSize: "14px", marginBottom: "20px" }}>
-          Kliknij żeby natychmiast wygenerować i wysłać raport za dzisiejszy dzień na wszystkie adresy.
+        {/* Filters */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"14px", marginBottom:"20px" }} className="dl-row2">
+          <div>
+            <label style={S.label}>Data od</label>
+            <input type="date" style={S.input} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Data do</label>
+            <input type="date" style={S.input} value={dateTo} onChange={e => setDateTo(e.target.value)} max={today()} />
+          </div>
+          <div>
+            <label style={S.label}>Projekt</label>
+            <select style={S.select} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
+              <option value="all">Wszystkie projekty</option>
+              {projects.map(p => <option key={p} value={p}>Projekt {p}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Numer łazienki</label>
+            <input style={S.input} placeholder="np. 123 (puste = wszystkie)" value={filterProduct}
+              onChange={e => setFilterProduct(e.target.value)} />
+          </div>
+          <div>
+            <label style={S.label}>Etap</label>
+            <select style={S.select} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
+              <option value="all">Wszystkie etapy</option>
+              {STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Pracownik</label>
+            <select style={S.select} value={filterWorker} onChange={e => setFilterWorker(e.target.value)}>
+              <option value="all">Wszyscy pracownicy</option>
+              {workers.map(w => {
+                const u = users.find(u => u.login === w || u.code === w);
+                return <option key={w} value={w}>{u ? u.name : w}</option>;
+              })}
+            </select>
+          </div>
         </div>
-        <button style={{ ...S.btn, opacity: sending ? 0.6 : 1 }} onClick={sendNow} disabled={sending}>
-          {sending ? "Wysyłanie..." : "📤 Wyślij raport za dziś"}
-        </button>
+
+        {/* Preview */}
+        <div style={{ ...S.infoBox(filteredLines.length > 0 ? COLORS.accent : COLORS.textMuted), marginBottom:"16px" }}>
+          <span style={{ fontWeight:"700" }}>{filteredLines.length}</span> wierszy pasuje do filtrów
+          {filteredLines.length > 0 && (
+            <span style={{ color:COLORS.textMuted }}> · zakres: {dateFrom} — {dateTo}</span>
+          )}
+        </div>
+
+        {/* Preview table */}
+        {filteredLines.length > 0 && (
+          <div style={{ overflowX:"auto", marginBottom:"20px", maxHeight:"300px", overflowY:"auto" }}>
+            <table style={{ borderCollapse:"collapse", width:"100%", fontSize:"12px" }}>
+              <thead style={{ position:"sticky", top:0 }}>
+                <tr>
+                  {["Data","Projekt","Łazienka","Etap","Pracownik","Uwagi"].map(h => (
+                    <th key={h} style={{ padding:"6px 10px", background:COLORS.surface, border:`1px solid ${COLORS.border}`, color:COLORS.textMuted, fontWeight:"600", textAlign:"left", whiteSpace:"nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredLines.slice(0,50).map((l, i) => {
+                  const stage = STAGES.find(s => s.id === l.stage);
+                  const workerName = l.workerName || users.find(u => u.login === l.workerLogin || u.code === l.workerLogin)?.name || l.workerLogin;
+                  return (
+                    <tr key={i} style={{ background: i%2===0 ? COLORS.bg : COLORS.surface }}>
+                      <td style={{ padding:"5px 10px", border:`1px solid ${COLORS.border}`, color:COLORS.textMuted, whiteSpace:"nowrap" }}>{l.date}</td>
+                      <td style={{ padding:"5px 10px", border:`1px solid ${COLORS.border}` }}>{l.project}</td>
+                      <td style={{ padding:"5px 10px", border:`1px solid ${COLORS.border}`, fontWeight:"600" }}>{l.product}</td>
+                      <td style={{ padding:"5px 10px", border:`1px solid ${COLORS.border}` }}>{stage ? `${l.stage} — ${stage.label}` : l.stage}</td>
+                      <td style={{ padding:"5px 10px", border:`1px solid ${COLORS.border}`, whiteSpace:"nowrap" }}>{workerName}</td>
+                      <td style={{ padding:"5px 10px", border:`1px solid ${COLORS.border}`, color:COLORS.textMuted }}>{l.note}</td>
+                    </tr>
+                  );
+                })}
+                {filteredLines.length > 50 && (
+                  <tr>
+                    <td colSpan="6" style={{ padding:"8px 10px", textAlign:"center", color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }}>
+                      ... i {filteredLines.length - 50} więcej wierszy (wszystkie będą w pliku)
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+          <button
+            style={{ ...S.btn, opacity: filteredLines.length === 0 || generating ? 0.5 : 1 }}
+            onClick={generateExcel}
+            disabled={filteredLines.length === 0 || generating}>
+            {generating ? "⏳ Generuję..." : "⬇️ Pobierz CSV/Excel"}
+          </button>
+          {msg && <span style={{ fontSize:"13px", color: msg.type==="success" ? COLORS.green : COLORS.red, fontWeight:"600" }}>{msg.text}</span>}
+        </div>
+        <div style={{ color:COLORS.textDim, fontSize:"11px", marginTop:"8px" }}>
+          Plik CSV otwiera się bezpośrednio w Microsoft Excel. Separatorem jest średnik (;).
+        </div>
       </div>
     </div>
   );
 }
 
-
-// ─── SYSTEM MAGAZYNOWY ────────────────────────────────────────────────────────
-const WAREHOUSES = [
-  { id: "rolling",  label: "Magazyn rollingów",     color: "#f59e0b", icon: "🏗️" },
-  { id: "produkcja",label: "Produkcja",              color: "#6c63ff", icon: "⚙️" },
-  { id: "gotowe",   label: "Magazyn gotowych wyrobów", color: "#3ecf8e", icon: "📦" },
-  { id: "budowa",   label: "Na budowie",             color: "#ef4444", icon: "🚛" },
-];
-
-// Etap → akcja magazynowa
-const WAREHOUSE_TRIGGERS = {
-  "4":  { action: "move", to: "rolling" },
-  "5":  { action: "move", to: "produkcja" },
-  "19": { action: "move", to: "gotowe" },
-  "21": { action: "move", to: "budowa" },
-};
-
-// Oblicz stan magazynów na podstawie wszystkich raportów
-function computeWarehouseState(reports) {
+function EmailTab({ token }) {rehouseState(reports) {
   const state = {};
   const stagesByProduct = {}; // all stages per product key
 
@@ -2721,14 +2855,71 @@ function MapPdfButton({ hallId, hallName, layout, productStages, emailRecipients
   );
 }
 
+// ─── CELL EDITOR ──────────────────────────────────────────────────────────────
+function CellEditor({ cell, col, row, onSave, onDelete, onClose }) {
+  const [project, setProject] = useState(cell ? cell.project : "");
+  const [product, setProduct] = useState(cell ? String(cell.product) : "");
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.8)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}
+      onClick={onClose}>
+      <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"16px", padding:"24px", maxWidth:"360px", width:"100%" }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize:"17px", fontWeight:"800", marginBottom:"4px" }}>
+          ✏️ Edytuj komórkę {col}{row}
+        </div>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"20px" }}>
+          Zmień projekt i numer łazienki lub usuń komórkę
+        </div>
+
+        <div style={{ marginBottom:"14px" }}>
+          <label style={S.label}>Projekt (np. 5278)</label>
+          <input style={S.input} value={project} onChange={e => setProject(e.target.value)}
+            placeholder="np. 5278" maxLength="4" />
+        </div>
+        <div style={{ marginBottom:"20px" }}>
+          <label style={S.label}>Numer łazienki</label>
+          <input style={S.input} type="number" value={product} onChange={e => setProduct(e.target.value)}
+            placeholder="np. 123" />
+        </div>
+
+        <div style={{ display:"flex", gap:"8px" }}>
+          <button style={{ ...S.btn, flex:1 }}
+            onClick={() => {
+              if (!project || !product) return;
+              onSave({ col, row, project, product: parseInt(product) });
+            }}>
+            ✓ Zapisz
+          </button>
+          {cell && (
+            <button style={{ ...S.btnDanger, padding:"10px 16px" }}
+              onClick={() => onDelete(col, row)}>
+              🗑️ Usuń
+            </button>
+          )}
+          <button style={S.btnOutline} onClick={onClose}>Anuluj</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function HallMap({ reports = [] }) {
   const [selectedHall, setSelectedHall] = useState("namiot2");
   const [selected, setSelected] = useState(null);
   const [filterProject, setFilterProject] = useState("all");
   const [filterStage, setFilterStage] = useState("all");
 
-  const [customLayouts, setCustomLayouts] = useState({});
+  const [customLayouts, setCustomLayouts] = useState(() => {
+    try {
+      const saved = localStorage.getItem("dl_hall_layouts");
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
   const [showUpdater, setShowUpdater] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [editingCell, setEditingCell] = useState(null); // { col, row, cell }
 
   const hall = HALLS[selectedHall];
   const COLS = hall.cols;
@@ -2740,14 +2931,31 @@ function HallMap({ reports = [] }) {
     : hall.layout;
 
   const handleLayoutUpdate = (newLayout) => {
-    setCustomLayouts(prev => ({ ...prev, [selectedHall]: newLayout }));
+    const updated = { ...customLayouts, [selectedHall]: newLayout };
+    setCustomLayouts(updated);
     setShowUpdater(false);
-    // Save to localStorage
-    try { localStorage.setItem("dl_hall_layouts", JSON.stringify({ ...customLayouts, [selectedHall]: newLayout })); } catch {}
+    try { localStorage.setItem("dl_hall_layouts", JSON.stringify(updated)); } catch {}
   };
 
-  // Compute last stage for each product
+  const handleCellSave = ({ col, row, project, product }) => {
+    const base = customLayouts[selectedHall] || activeLayout;
+    // Remove existing cell at this position and any duplicate project/product
+    const filtered = base.filter(c => !(c.col === col && c.row === row) && !(c.project === project && c.product === product));
+    const newLayout = [...filtered, { col, row, project, product }];
+    handleLayoutUpdate(newLayout);
+    setEditingCell(null);
+  };
+
+  const handleCellDelete = (col, row) => {
+    const base = customLayouts[selectedHall] || activeLayout;
+    const newLayout = base.filter(c => !(c.col === col && c.row === row));
+    handleLayoutUpdate(newLayout);
+    setEditingCell(null);
+  };
+
+  // Compute last stage + warehouse for each product
   const productStages = {};
+  const warehouseState = computeWarehouseState(reports);
   const allLines = [];
   reports.forEach(r => {
     (r.lines || []).forEach(l => {
@@ -2764,6 +2972,20 @@ function HallMap({ reports = [] }) {
     productStages[key].worker = l.worker;
   });
 
+  // Only show cells that are in "produkcja" warehouse
+  const inProdukcja = new Set(
+    Object.entries(warehouseState)
+      .filter(([k, v]) => v.warehouse === "produkcja")
+      .map(([k]) => k)
+  );
+
+  // Override getCellInfo to return null if not in produkcja
+  const getCellVisible = (cell) => {
+    if (!cell?.project || !cell?.product) return false;
+    const key = `${cell.project}__${cell.product}`;
+    return inProdukcja.has(key);
+  };
+
   const getCell = (col, row) => activeLayout.find(c => c.col === col && c.row === row);
   const getCellInfo = (cell) => {
     if (!cell?.project || !cell?.product) return null;
@@ -2775,6 +2997,7 @@ function HallMap({ reports = [] }) {
   const filteredKeys = new Set(
     activeLayout
       .filter(c => {
+        if (!editMode && !getCellVisible(c)) return false;
         if (filterProject !== "all" && c.project !== filterProject) return false;
         if (filterStage !== "all") {
           const info = getCellInfo(c);
@@ -2785,8 +3008,11 @@ function HallMap({ reports = [] }) {
       .map(c => `${c.col}-${c.row}`)
   );
 
-  const totalCells = activeLayout.length;
-  const withStage = activeLayout.filter(c => getCellInfo(c)).length;
+  // Stats based on visible cells only
+  const visibleCells = activeLayout.filter(c => editMode || getCellVisible(c));
+
+  const totalCells = editMode ? activeLayout.length : (visibleCells || activeLayout.filter(c => getCellVisible(c))).length;
+  const withStage = (editMode ? activeLayout : (visibleCells || [])).filter(c => getCellInfo(c)).length;
 
   return (
     <div>
@@ -2802,10 +3028,26 @@ function HallMap({ reports = [] }) {
       </div>
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px", flexWrap:"wrap", gap:"10px" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:"16px", flexWrap:"wrap" }}>
+        {editingCell && (
+        <CellEditor
+          cell={editingCell.cell}
+          col={editingCell.col}
+          row={editingCell.row}
+          onSave={handleCellSave}
+          onDelete={handleCellDelete}
+          onClose={() => setEditingCell(null)}
+        />
+      )}
+
+      <div style={{ display:"flex", alignItems:"center", gap:"16px", flexWrap:"wrap" }}>
           <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
             {totalCells} łazienek · {withStage} z etapem ({Math.round(withStage/totalCells*100)||0}%)
           </div>
+          <button
+            style={{ background: editMode ? COLORS.orange : "transparent", color: editMode ? "#fff" : COLORS.textMuted, border:`1px solid ${editMode ? COLORS.orange : COLORS.border}`, borderRadius:"8px", padding:"6px 12px", fontSize:"12px", cursor:"pointer", fontWeight: editMode ? "600" : "400" }}
+            onClick={() => { setEditMode(!editMode); setSelected(null); }}>
+            {editMode ? "✏️ Tryb edycji — WŁĄCZONY" : "✏️ Edytuj mapę"}
+          </button>
           <MapPdfButton
             hallId={selectedHall}
             hallName={hall.name}
@@ -2833,17 +3075,26 @@ function HallMap({ reports = [] }) {
         </div>
       </div>
 
-      {/* Legend — only production flow stages */}
-      <div style={{ display:"flex", gap:"5px", flexWrap:"wrap", marginBottom:"14px" }}>
-        {["4","6.1","7.1","11.2","13.1","10","15.1","13.2","17","18","19"].map(k => (
-          <div key={k} style={{ display:"flex", alignItems:"center", gap:"4px", background:COLORS.surface, borderRadius:"5px", padding:"3px 8px", fontSize:"11px" }}>
-            <div style={{ width:"12px", height:"12px", borderRadius:"3px", background:STAGE_COLORS[k]?.mapColor || "#888", border:"1px solid #00000022" }} />
-            <span style={{ color:COLORS.text, fontWeight:"500" }}>{k} {STAGE_COLORS[k]?.label}</span>
+      {/* Legend */}
+      <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"12px", padding:"14px 16px", marginBottom:"16px" }}>
+        <div style={{ fontSize:"12px", fontWeight:"700", color:COLORS.textMuted, marginBottom:"10px", textTransform:"uppercase", letterSpacing:"0.06em" }}>Legenda etapów produkcji</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:"6px" }}>
+          {["4","6.1","7.1","11.2","13.1","10","15.1","13.2","17","18","19"].map(k => (
+            <div key={k} style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+              <div style={{ width:"24px", height:"24px", borderRadius:"5px", background:STAGE_COLORS[k]?.mapColor || "#888", border:"1px solid #00000022", flexShrink:0 }} />
+              <div>
+                <div style={{ fontSize:"12px", fontWeight:"700", color:COLORS.text, lineHeight:1.2 }}>{k}</div>
+                <div style={{ fontSize:"10px", color:COLORS.textMuted, lineHeight:1.2 }}>{STAGE_COLORS[k]?.label}</div>
+              </div>
+            </div>
+          ))}
+          <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+            <div style={{ width:"24px", height:"24px", borderRadius:"5px", background:COLORS.surface, border:`1px solid ${COLORS.border}`, flexShrink:0 }} />
+            <div>
+              <div style={{ fontSize:"12px", fontWeight:"700", color:COLORS.textMuted, lineHeight:1.2 }}>—</div>
+              <div style={{ fontSize:"10px", color:COLORS.textDim, lineHeight:1.2 }}>Brak etapu</div>
+            </div>
           </div>
-        ))}
-        <div style={{ display:"flex", alignItems:"center", gap:"4px", background:COLORS.surface, borderRadius:"5px", padding:"3px 8px", fontSize:"11px" }}>
-          <div style={{ width:"12px", height:"12px", borderRadius:"3px", background:COLORS.surface, border:`1px solid ${COLORS.border}` }} />
-          <span style={{ color:COLORS.textDim }}>Brak etapu</span>
         </div>
       </div>
 
@@ -2864,37 +3115,52 @@ function HallMap({ reports = [] }) {
                 <td style={{ padding:"2px 8px", color:COLORS.accent, fontSize:"13px", textAlign:"center", fontWeight:"700" }}>{col}</td>
                 {ROWS.map(row => {
                   const cell = getCell(col, row);
-                  const info = getCellInfo(cell);
+                  const isVisible = editMode || getCellVisible(cell);
+                  const visibleCell = isVisible ? cell : null;
+                  const info = getCellInfo(visibleCell);
                   const cellKey = `${col}-${row}`;
                   const isFiltered = filterProject !== "all" || filterStage !== "all";
                   const isHighlighted = !isFiltered || filteredKeys.has(cellKey);
                   const prodStage = info ? getProductionStage(info.stages) : null;
                   const sc = prodStage ? STAGE_COLORS[prodStage] : null;
                   const isSelected = selected?.col === col && selected?.row === row;
+                  // In non-edit mode: show cell outline if position exists in layout but not in produkcja
+                  const isPositionDefined = !!cell;
+                  const isHiddenByWarehouse = isPositionDefined && !isVisible && !editMode;
 
                   return (
                     <td key={row} style={{ padding:"2px" }}>
                       <div
-                        onClick={() => cell ? setSelected(isSelected ? null : { col, row, cell, info }) : null}
+                        onClick={() => {
+                          if (editMode) {
+                            setEditingCell({ col, row, cell: cell || null });
+                          } else {
+                            if (visibleCell) setSelected(isSelected ? null : { col, row, cell: visibleCell, info });
+                          }
+                        }}
                         style={{
                           width:"68px", height:"44px",
-                          background: !cell ? "transparent" : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
-                          border: `1px solid ${isSelected ? COLORS.accent : cell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
+                          background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
+                          border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
-                          cursor: cell ? "pointer" : "default",
+                          cursor: editMode ? "pointer" : visibleCell ? "pointer" : "default",
                           display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-                          padding:"2px", opacity: !cell ? 0 : !isHighlighted ? 0.25 : 1,
+                          padding:"2px", opacity: !visibleCell ? (editMode ? 0.4 : 0) : !isHighlighted ? 0.25 : 1,
                           transition:"all 0.1s",
                           outline: isSelected ? `2px solid ${COLORS.accent}` : "none",
+                          position:"relative",
                         }}
                       >
-                        {cell && (
+                        {visibleCell ? (
                           <>
-                            <div style={{ fontSize:"8px", color: sc ? "#000000aa" : COLORS.textDim, fontWeight:"600", lineHeight:1 }}>{cell.project}</div>
-                            <div style={{ fontSize:"13px", fontWeight:"800", color: sc ? "#000000cc" : COLORS.textMuted, lineHeight:1.2 }}>{cell.product}</div>
+                            {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"9px", color:COLORS.orange }}>✏️</div>}
+                            <div style={{ fontSize:"8px", color: sc ? "#000000aa" : COLORS.textDim, fontWeight:"600", lineHeight:1 }}>{visibleCell.project}</div>
+                            <div style={{ fontSize:"13px", fontWeight:"800", color: sc ? "#000000cc" : COLORS.textMuted, lineHeight:1.2 }}>{visibleCell.product}</div>
                             {sc && <div style={{ fontSize:"8px", color:"#000000aa", lineHeight:1 }}>{prodStage}</div>}
                           </>
-                        )}
+                        ) : editMode ? (
+                          <div style={{ fontSize:"16px", color:COLORS.textDim, opacity:0.5 }}>{cell ? "🔒" : "+"}</div>
+                        ) : null}
                       </div>
                     </td>
                   );
@@ -2915,40 +3181,367 @@ function HallMap({ reports = [] }) {
         {showUpdater && <div style={{ marginTop:"12px" }}><MapUpdater hallName={hall.name} onUpdate={handleLayoutUpdate} /></div>}
       </div>
 
-      {/* Detail panel */}
+      {/* Detail panel — full history */}
       {selected && (
-        <div style={{ marginTop:"14px", background:COLORS.surface, border:`1px solid ${COLORS.accent}44`, borderRadius:"12px", padding:"16px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between" }}>
+        <div style={{ marginTop:"14px", background:COLORS.surface, border:`1px solid ${COLORS.accent}44`, borderRadius:"16px", padding:"20px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"16px" }}>
             <div>
-              <div style={{ fontSize:"17px", fontWeight:"800", marginBottom:"6px" }}>
-                {hall.name} — Pozycja {selected.col}{selected.row} · Projekt {selected.cell.project} / Łazienka {selected.cell.product}
+              <div style={{ fontSize:"18px", fontWeight:"800" }}>
+                Łazienka {selected.cell.product}
               </div>
-              {selected.info ? (
-                <div>
-                  <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"8px" }}>
-                    Ostatni etap: <span style={{ color:STAGE_COLORS[selected.info.lastStage]?.color||COLORS.text, fontWeight:"600" }}>
-                      {selected.info.lastStage} — {STAGE_COLORS[selected.info.lastStage]?.label}
-                    </span>
-                    {selected.info.lastDate && ` · ${selected.info.lastDate}`}
-                    {selected.info.worker && ` · ${selected.info.worker}`}
-                  </div>
-                  <div style={{ display:"flex", gap:"5px", flexWrap:"wrap" }}>
-                    {selected.info.stages.map(s => (
-                      <span key={s} style={{ background:(STAGE_COLORS[s]?.color||"#888")+"22", color:STAGE_COLORS[s]?.color||"#888", border:`1px solid ${(STAGE_COLORS[s]?.color||"#888")}44`, borderRadius:"5px", padding:"2px 8px", fontSize:"12px", fontWeight:"600" }}>{s}</span>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>Brak raportów dla tej łazienki.</div>
-              )}
+              <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"2px" }}>
+                Projekt {selected.cell.project} · Pozycja {selected.col}{selected.row} · {hall.name}
+              </div>
             </div>
-            <button onClick={() => setSelected(null)} style={{ background:"transparent", border:"none", color:COLORS.textMuted, cursor:"pointer", fontSize:"18px" }}>✕</button>
+            <button onClick={() => setSelected(null)} style={{ background:"transparent", border:"none", color:COLORS.textMuted, cursor:"pointer", fontSize:"20px" }}>✕</button>
+          </div>
+
+          {(() => {
+            // Build full history for this product
+            const historyLines = [];
+            reports.forEach(r => {
+              (r.lines||[]).forEach(l => {
+                if (String(l.project) === String(selected.cell.project) && String(l.product) === String(selected.cell.product)) {
+                  historyLines.push({
+                    ...l,
+                    date: r.date || r.report_date,
+                    worker: r.workerName || r.worker_name || r.workerLogin || r.worker_code,
+                  });
+                }
+              });
+            });
+            historyLines.sort((a,b) => (a.date||"").localeCompare(b.date||""));
+
+            if (historyLines.length === 0) return (
+              <div style={{ textAlign:"center", padding:"24px", color:COLORS.textDim }}>
+                <div style={{ fontSize:"28px", marginBottom:"8px" }}>📋</div>
+                Brak raportów dla tej łazienki.
+              </div>
+            );
+
+            return (
+              <div>
+                {/* Summary tags */}
+                <div style={{ display:"flex", gap:"6px", flexWrap:"wrap", marginBottom:"16px" }}>
+                  {[...new Set(historyLines.map(l => l.stage))].map(s => {
+                    const sc = STAGE_COLORS[s];
+                    const stageObj = STAGES.find(st => st.id === s);
+                    return (
+                      <span key={s} style={{ background:(sc?.mapColor||"#888")+"33", color: sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"6px", padding:"3px 10px", fontSize:"12px", fontWeight:"600" }}>
+                        {s} {stageObj?.label || ""}
+                      </span>
+                    );
+                  })}
+                </div>
+
+                {/* Timeline */}
+                <div style={{ position:"relative" }}>
+                  {historyLines.map((line, i) => {
+                    const stageObj = STAGES.find(s => s.id === line.stage);
+                    const sc = STAGE_COLORS[line.stage];
+                    const isLast = i === historyLines.length - 1;
+                    return (
+                      <div key={i} style={{ display:"flex", gap:"12px", marginBottom:"10px" }}>
+                        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", flexShrink:0 }}>
+                          <div style={{ width:"14px", height:"14px", borderRadius:"50%", background: sc?.mapColor || COLORS.border, marginTop:"3px", border:"2px solid #00000022" }} />
+                          {!isLast && <div style={{ width:"2px", flex:1, background:COLORS.border, minHeight:"16px" }} />}
+                        </div>
+                        <div style={{ flex:1, paddingBottom:"4px" }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:"4px" }}>
+                            <span style={{ fontWeight:"600", fontSize:"14px", color:COLORS.text }}>
+                              {stageObj?.label || line.stage}
+                            </span>
+                            <span style={{ background:(sc?.mapColor||COLORS.border)+"33", color:sc?.mapColor||COLORS.textMuted, borderRadius:"5px", padding:"1px 8px", fontSize:"11px", fontWeight:"600" }}>
+                              {line.stage}
+                            </span>
+                          </div>
+                          <div style={{ display:"flex", gap:"12px", marginTop:"3px", flexWrap:"wrap" }}>
+                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>📅 {line.date}</span>
+                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>👤 {line.worker}</span>
+                            {line.hall && (
+                              <span style={{ color:COLORS.accentLight, fontSize:"12px" }}>🏭 {line.hall === "namiot1" ? "Namiot 1" : line.hall === "namiot2" ? "Namiot 2" : line.hall === "betonowanie" ? "Hala Betonowanie" : "Hala ISO"}</span>
+                            )}
+                          </div>
+                          {line.note && <div style={{ color:COLORS.textDim, fontSize:"12px", marginTop:"2px" }}>💬 {line.note}</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div style={{ marginTop:"12px", paddingTop:"12px", borderTop:`1px solid ${COLORS.border}`, color:COLORS.textMuted, fontSize:"12px" }}>
+                  📊 {historyLines.length} wpisów · pierwszy: {historyLines[0].date} · ostatni: {historyLines[historyLines.length-1].date}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── DATABASE BACKUP UI ───────────────────────────────────────────────────────
+function BackupTab({ token }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState(null);
+
+  const downloadBackup = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/backup', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Błąd pobierania backupu');
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `raportrbr_backup_${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus({ type:'success', text:`✓ Backup pobrany: ${data.counts.reports} raportów, ${data.counts.report_lines} wpisów` });
+    } catch(err) { setStatus({ type:'error', text:'Błąd: ' + err.message }); }
+    finally { setLoading(false); }
+  };
+
+  const restoreBackup = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const backup = JSON.parse(ev.target.result);
+        if (!backup.data) throw new Error('Nieprawidłowy format pliku');
+        setLoading(true);
+        const res = await fetch('/api/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ data: backup.data })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        setRestoreMsg({ type:'success', text:'✓ ' + data.message });
+      } catch(err) { setRestoreMsg({ type:'error', text:'Błąd: ' + err.message }); }
+      finally { setLoading(false); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  return (
+    <div>
+      <div style={{ ...S.infoBox(COLORS.accent), marginBottom:"20px" }}>
+        🛡️ Backup chroni Twoje dane przed utratą. Zalecamy pobierać backup raz w tygodniu i przechowywać go lokalnie.
+      </div>
+
+      {/* Export */}
+      <div style={S.card}>
+        <div style={S.h2}>⬇️ Pobierz backup bazy danych</div>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>
+          Pobiera wszystkie raporty, wpisy i użytkowników jako plik JSON. Możesz go użyć do przywrócenia danych w razie awarii.
+        </div>
+        <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+          <button style={{ ...S.btn, opacity: loading ? 0.6 : 1 }} onClick={downloadBackup} disabled={loading}>
+            {loading ? "⏳ Pobieranie..." : "⬇️ Pobierz backup JSON"}
+          </button>
+          {status && <span style={{ fontSize:"13px", color: status.type==="success" ? COLORS.green : COLORS.red, fontWeight:"600" }}>{status.text}</span>}
+        </div>
+      </div>
+
+      {/* Import/Restore */}
+      <div style={S.card}>
+        <div style={S.h2}>⬆️ Przywróć z backupu</div>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"8px" }}>
+          Wgraj plik JSON z backupu. System doda brakujące wpisy — nie nadpisze istniejących danych.
+        </div>
+        <div style={{ ...S.infoBox(COLORS.orange), marginBottom:"16px" }}>
+          ⚠️ Przywracanie dodaje tylko brakujące rekordy. Nie usuwa ani nie nadpisuje istniejących danych.
+        </div>
+        <input type="file" accept=".json" id="restore-file" style={{ display:"none" }} onChange={restoreBackup} />
+        <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+          <label htmlFor="restore-file" style={{ ...S.btnOutline, display:"inline-block", cursor:"pointer" }}>
+            📂 Wybierz plik backup
+          </label>
+          {restoreMsg && <span style={{ fontSize:"13px", color: restoreMsg.type==="success" ? COLORS.green : COLORS.red, fontWeight:"600" }}>{restoreMsg.text}</span>}
+        </div>
+      </div>
+
+      {/* Health check */}
+      <div style={S.card}>
+        <div style={S.h2}>🩺 Status bazy danych</div>
+        <DbHealthCheck token={token} />
+      </div>
+    </div>
+  );
+}
+
+function DbHealthCheck({ token }) {
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const check = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/health', { headers: { 'Authorization': `Bearer ${token}` } });
+      setHealth(await res.json());
+    } catch(err) { setHealth({ status:'error', error: err.message }); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <button style={{ ...S.btnSm, marginBottom:"14px", opacity: loading ? 0.6:1 }} onClick={check} disabled={loading}>
+        {loading ? "⏳ Sprawdzam..." : "🔄 Sprawdź status"}
+      </button>
+      {health && (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px,1fr))", gap:"10px" }}>
+          <div style={S.statBox}>
+            <div style={{ fontSize:"20px", marginBottom:"4px" }}>{health.db?.connected ? "✅" : "❌"}</div>
+            <div style={{ ...S.statLabel }}>Połączenie</div>
+            <div style={{ fontSize:"13px", color: health.db?.connected ? COLORS.green : COLORS.red, fontWeight:"600" }}>
+              {health.db?.connected ? "Aktywne" : "Brak"}
+            </div>
+          </div>
+          <div style={S.statBox}>
+            <div style={{ ...S.statNum }}>{health.db?.reports ?? "—"}</div>
+            <div style={S.statLabel}>Raportów</div>
+          </div>
+          <div style={S.statBox}>
+            <div style={{ ...S.statNum }}>{health.db?.lines ?? "—"}</div>
+            <div style={S.statLabel}>Wpisów</div>
+          </div>
+          <div style={S.statBox}>
+            <div style={{ fontSize:"11px", color:COLORS.textMuted, marginTop:"4px" }}>{health.version || "—"}</div>
+            <div style={S.statLabel}>Wersja</div>
+            <div style={{ fontSize:"11px", color:COLORS.textDim }}>{health.time ? new Date(health.time).toLocaleTimeString('pl-PL') : ""}</div>
           </div>
         </div>
       )}
     </div>
   );
 }
+
+
+// ─── BULK WORKER ADD ─────────────────────────────────────────────────────────
+function BulkWorkerAdd({ contractors, users, token, onDone }) {
+  const [selected, setSelected] = useState(new Set());
+  const [password, setPassword] = useState("zmien123");
+  const [search, setSearch] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [progress, setProgress] = useState(null);
+
+  const available = contractors.filter(c =>
+    !users.find(u => (u.code || u.login || "").toUpperCase() === c.code.toUpperCase()) &&
+    (search === "" || c.code.toLowerCase().includes(search.toLowerCase()) || c.name.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  const toggleAll = () => {
+    if (selected.size === available.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(available.map(c => c.code)));
+    }
+  };
+
+  const toggle = (code) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      return next;
+    });
+  };
+
+  const addAll = async () => {
+    if (selected.size === 0) return;
+    if (password.length < 4) return;
+    setAdding(true);
+    let done = 0, errors = 0;
+    const toAdd = available.filter(c => selected.has(c.code));
+    setProgress({ done: 0, total: toAdd.length, errors: 0 });
+
+    for (const c of toAdd) {
+      try {
+        await api.addUser(token, c.code, c.name, password, "worker");
+        done++;
+      } catch { errors++; }
+      setProgress({ done, total: toAdd.length, errors });
+    }
+    setAdding(false);
+    if (done > 0) onDone();
+  };
+
+  return (
+    <div>
+      <div style={S.row2} className="dl-row2">
+        <div>
+          <label style={S.label}>Szukaj pracownika</label>
+          <input style={S.input} placeholder="Kod lub imię..." value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>Hasło tymczasowe dla wszystkich</label>
+          <input style={S.input} value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 4 znaki" />
+        </div>
+      </div>
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", margin:"12px 0 8px" }}>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
+          {available.length} dostępnych · <span style={{ color:COLORS.accent, fontWeight:"600" }}>{selected.size} zaznaczonych</span>
+        </div>
+        <div style={{ display:"flex", gap:"8px" }}>
+          <button style={{ ...S.btnSm, background:COLORS.surface, color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }} onClick={toggleAll}>
+            {selected.size === available.length ? "Odznacz wszystkie" : "Zaznacz wszystkie"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ maxHeight:"280px", overflowY:"auto", border:`1px solid ${COLORS.border}`, borderRadius:"10px", marginBottom:"16px" }}>
+        {available.length === 0 ? (
+          <div style={{ padding:"24px", textAlign:"center", color:COLORS.textDim }}>
+            {search ? "Brak wyników" : "Wszyscy pracownicy z listy mają już konta"}
+          </div>
+        ) : available.map(c => {
+          const isSelected = selected.has(c.code);
+          return (
+            <div key={c.code}
+              style={{ display:"flex", alignItems:"center", gap:"12px", padding:"10px 14px", background: isSelected ? COLORS.accent+"12" : "transparent", borderBottom:`1px solid ${COLORS.border}`, cursor:"pointer" }}
+              onClick={() => toggle(c.code)}>
+              <div style={{ width:"18px", height:"18px", borderRadius:"4px", background: isSelected ? COLORS.accent : "transparent", border:`2px solid ${isSelected ? COLORS.accent : COLORS.border}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                {isSelected && <span style={{ color:"#fff", fontSize:"11px", fontWeight:"800" }}>✓</span>}
+              </div>
+              <span style={{ color:COLORS.textMuted, fontSize:"12px", minWidth:"60px" }}>{c.code}</span>
+              <span style={{ fontSize:"14px", color:COLORS.text }}>{c.name}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {progress && (
+        <div style={{ ...S.infoBox(progress.errors > 0 ? COLORS.orange : COLORS.green), marginBottom:"12px" }}>
+          {adding ? `⏳ Dodaję... ${progress.done}/${progress.total}` : `✓ Dodano ${progress.done} pracowników${progress.errors > 0 ? ` (${progress.errors} błędów)` : ""}`}
+          <div style={{ background:COLORS.border, borderRadius:"99px", height:"6px", marginTop:"6px", overflow:"hidden" }}>
+            <div style={{ width:`${Math.round(progress.done/progress.total*100)}%`, height:"100%", background: progress.errors > 0 ? COLORS.orange : COLORS.green, borderRadius:"99px", transition:"width 0.2s" }} />
+          </div>
+        </div>
+      )}
+
+      <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+        <button
+          style={{ ...S.btn, opacity: selected.size === 0 || adding || password.length < 4 ? 0.4 : 1 }}
+          onClick={addAll}
+          disabled={selected.size === 0 || adding || password.length < 4}>
+          {adding ? "⏳ Dodaję..." : `+ Dodaj ${selected.size} pracowników`}
+        </button>
+        <div style={{ color:COLORS.textDim, fontSize:"12px" }}>
+          Hasło tymczasowe: <strong>{password}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ─── MANAGER VIEW ─────────────────────────────────────────────────────────────
 function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange }) {
@@ -3000,7 +3593,9 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange 
         <button style={S.tab(tab === "photos")} onClick={() => setTab("photos")}>📷 Zdjęcia</button>
         <button style={S.tab(tab === "stats")} onClick={() => setTab("stats")}>📈 Statystyki</button>
         <button style={S.tab(tab === "users")} onClick={() => setTab("users")}>👥 Pracownicy</button>
+        <button style={S.tab(tab === "excel")} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
         <button style={S.tab(tab === "email")} onClick={() => setTab("email")}>📧 Raporty email</button>
+        <button style={S.tab(tab === "backup")} onClick={() => setTab("backup")}>🛡️ Backup</button>
       </div>
 
       {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} />}
@@ -3010,8 +3605,12 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange 
           <div style={{ ...S.card, background: COLORS.accent+"15", border:`1px solid ${COLORS.accent}33`, marginBottom:"20px" }}>
             <div style={{ fontSize:"18px", fontWeight:"800", marginBottom:"4px" }}>🎯 Panel Kierownika</div>
             <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
-              Widok dedykowany dla kierownika produkcji — mapy hal, alerty i statystyki.
+              Widok dedykowany dla kierownika produkcji — planowanie, mapy hal i alerty.
             </div>
+          </div>
+          <div style={S.card}>
+            <div style={S.h2}>📋 Planer produkcji</div>
+            <ProductionPlanner reports={reports} />
           </div>
           <div style={S.card}>
             <div style={S.h2}>🗺️ Mapy hal</div>
@@ -3026,6 +3625,8 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange 
       {tab === "map" && <HallMap reports={reports} />}
       {tab === "progress" && <ProjectProgressTab reports={reports} />}
       {tab === "warehouse" && <WarehouseTab reports={reports} />}
+      {tab === "excel" && <ExcelExportTab reports={reports} users={users} />}
+      {tab === "backup" && <BackupTab token={token} />}
       {tab === "email" && <EmailTab token={token} />}
 
       {tab === "entries" && (
@@ -3118,6 +3719,288 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange 
 }
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
+// ─── PRODUCTION PLANNER ───────────────────────────────────────────────────────
+// Flow: 4 > 6.1+7.1 > 11.2 > [rest] > 13.1 > 9(x3) > 10 > 15.1 > 13.2 > 17 > 18
+// Days from stage 4:
+//  0: 4
+//  1: 6.1, 7.1
+//  2: 11.2
+//  3: REST
+//  4: 13.1
+//  5: 9 (day 1)
+//  6: 9 (day 2)
+//  7: 9 (day 3)
+//  8: 10
+//  9: 15.1
+// 10: 13.2
+// 11: 17
+// 12: 18
+
+const FLOW_SCHEDULE = [
+  { day: 0,  stages: ["4"],         label: "Skręcanie" },
+  { day: 1,  stages: ["6.1","7.1"], label: "Szlifowanie + Izolowanie" },
+  { day: 2,  stages: ["11.2"],      label: "Ceramika podłogi" },
+  { day: 3,  stages: [],            label: "Odpoczynek / schnięcie" },
+  { day: 4,  stages: ["13.1"],      label: "Fugowanie" },
+  { day: 5,  stages: [],            label: "Odpoczynek" },
+  { day: 6,  stages: ["9"],         label: "Szpachlowanie" },
+  { day: 7,  stages: ["10"],        label: "Malowanie (dzień 1/3)" },
+  { day: 8,  stages: ["10"],        label: "Malowanie (dzień 2/3)" },
+  { day: 9,  stages: ["10"],        label: "Malowanie (dzień 3/3 — zakończenie)" },
+  { day: 10, stages: ["15.1"],      label: "Montaż sanitarny" },
+  { day: 11, stages: ["13.2"],      label: "Silikonowanie" },
+  { day: 12, stages: ["17"],        label: "Czyszczenie" },
+  { day: 13, stages: ["18"],        label: "Kontrola jakości" },
+];
+
+// Count workdays between two dates (excluding weekends)
+function addWorkdays(dateStr, days) {
+  const d = new Date(dateStr + "T12:00:00");
+  let added = 0;
+  while (added < days) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) added++;
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+function workdaysBetween(from, to) {
+  let count = 0;
+  const d = new Date(from + "T12:00:00");
+  const end = new Date(to + "T12:00:00");
+  while (d < end) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
+
+function isWeekend(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  return d.getDay() === 0 || d.getDay() === 6;
+}
+
+function nextWorkday(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);
+  return d.toISOString().slice(0, 10);
+}
+
+function ProductionPlanner({ reports }) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const tomorrowStr = nextWorkday(todayStr);
+
+  const [planDate, setPlanDate] = useState(tomorrowStr);
+  const [showAll, setShowAll] = useState(false);
+
+  // Compute production stage and start date for each product
+  const productInfo = {};
+  const allLines = [];
+  reports.forEach(r => {
+    (r.lines||[]).forEach(l => {
+      allLines.push({ ...l, date: r.date || r.report_date });
+    });
+  });
+  allLines.sort((a,b) => (a.date||"").localeCompare(b.date||""));
+
+  allLines.forEach(l => {
+    const key = `${l.project}__${l.product}`;
+    if (!productInfo[key]) productInfo[key] = { project: l.project, product: l.product, stages: {}, stagesList: [], firstDate: l.date };
+    if (!productInfo[key].stages[l.stage]) {
+      productInfo[key].stages[l.stage] = l.date;
+      productInfo[key].stagesList.push(l.stage);
+    }
+  });
+
+  // For each product, determine what day of flow it started (day 4 was done)
+  // and calculate expected date for each subsequent stage
+  const planItems = []; // { project, product, stage, expectedDate, label, daysAhead }
+
+  Object.values(productInfo).forEach(info => {
+    const { project, product, stages, stagesList } = info;
+
+    // Find the date stage "4" was done
+    const date4 = stages["4"];
+    if (!date4) return; // hasn't started flow yet
+
+    // For each flow step, calculate expected workday
+    FLOW_SCHEDULE.forEach(step => {
+      if (step.stages.length === 0) return; // rest day
+      const stage = step.stages[0];
+
+      // Skip if already done
+      const alreadyDone = step.stages.every(s => stages[s]);
+      if (alreadyDone) return;
+
+      // Calculate expected date: date4 + step.day workdays
+      const expectedDate = step.day === 0 ? date4 : addWorkdays(date4, step.day);
+
+      // Only show items for planDate
+      if (expectedDate === planDate) {
+        planItems.push({
+          project,
+          product,
+          stage: step.stages.join("+"),
+          stageLabel: step.label,
+          expectedDate,
+          flowDay: step.day,
+        });
+      }
+    });
+  });
+
+  // Also show next few days if showAll
+  const allDayItems = {};
+  if (showAll) {
+    Object.values(productInfo).forEach(info => {
+      const { project, product, stages } = info;
+      const date4 = stages["4"];
+      if (!date4) return;
+
+      FLOW_SCHEDULE.forEach(step => {
+        if (step.stages.length === 0) return;
+        const alreadyDone = step.stages.every(s => stages[s]);
+        if (alreadyDone) return;
+        const expectedDate = step.day === 0 ? date4 : addWorkdays(date4, step.day);
+        const daysFromToday = workdaysBetween(todayStr, expectedDate);
+        if (daysFromToday >= 0 && daysFromToday <= 7) {
+          if (!allDayItems[expectedDate]) allDayItems[expectedDate] = [];
+          allDayItems[expectedDate].push({
+            project, product,
+            stage: step.stages.join("+"),
+            stageLabel: step.label,
+            flowDay: step.day,
+          });
+        }
+      });
+    });
+  }
+
+  const dateLabel = (d) => {
+    const wd = ["Nd","Pn","Wt","Śr","Cz","Pt","Sb"];
+    const date = new Date(d + "T12:00:00");
+    return `${wd[date.getDay()]} ${d}`;
+  };
+
+  const StageColor = ({ stage }) => {
+    const firstStage = stage.split("+")[0];
+    const sc = STAGE_COLORS[firstStage];
+    return <span style={{ background:(sc?.mapColor||"#888")+"33", color:sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"5px", padding:"2px 8px", fontSize:"11px", fontWeight:"700" }}>{stage}</span>;
+  };
+
+  // Group planItems by stageLabel
+  const byStage = {};
+  planItems.forEach(item => {
+    if (!byStage[item.stageLabel]) byStage[item.stageLabel] = [];
+    byStage[item.stageLabel].push(item);
+  });
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ display:"flex", gap:"12px", alignItems:"center", flexWrap:"wrap", marginBottom:"20px" }}>
+        <div>
+          <label style={S.label}>Dzień planowania</label>
+          <input type="date" style={{ ...S.input, maxWidth:"180px" }} value={planDate}
+            onChange={e => setPlanDate(e.target.value)}
+            min={todayStr} />
+        </div>
+        <div style={{ display:"flex", gap:"8px", marginTop:"18px" }}>
+          <button style={{ ...S.btnSm, background:COLORS.surface, color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }}
+            onClick={() => setPlanDate(nextWorkday(planDate === todayStr ? new Date(todayStr + "T12:00:00").toISOString().slice(0,10) : planDate))}>
+            Jutro →
+          </button>
+          <button style={{ ...S.btnSm, background:COLORS.surface, color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }}
+            onClick={() => setShowAll(!showAll)}>
+            {showAll ? "Ukryj tygodniowy" : "📅 Pokaż tydzień"}
+          </button>
+        </div>
+      </div>
+
+      {isWeekend(planDate) && (
+        <div style={{ ...S.infoBox(COLORS.orange), marginBottom:"16px" }}>
+          ⚠️ Wybrana data to weekend — brak pracy produkcyjnej.
+        </div>
+      )}
+
+      {/* Plan for selected day */}
+      <div style={S.card}>
+        <div style={{ fontSize:"17px", fontWeight:"800", marginBottom:"4px" }}>
+          📋 Plan na {dateLabel(planDate)}
+        </div>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>
+          {planItems.length > 0 ? `${planItems.length} łazienek do wykonania` : "Brak zaplanowanych prac"}
+        </div>
+
+        {planItems.length === 0 ? (
+          <div style={{ textAlign:"center", padding:"32px", color:COLORS.textDim }}>
+            <div style={{ fontSize:"32px", marginBottom:"8px" }}>🎉</div>
+            Brak zaplanowanych prac na ten dzień.
+          </div>
+        ) : (
+          Object.entries(byStage).map(([stageLabel, items]) => (
+            <div key={stageLabel} style={{ marginBottom:"20px" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"10px" }}>
+                <StageColor stage={items[0].stage} />
+                <span style={{ fontWeight:"700", fontSize:"15px" }}>{stageLabel}</span>
+                <span style={{ color:COLORS.textMuted, fontSize:"13px" }}>({items.length} łazienek)</span>
+              </div>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:"6px" }}>
+                {items.sort((a,b) => a.project.localeCompare(b.project) || a.product - b.product).map((item,i) => (
+                  <div key={i} style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"6px 12px", fontSize:"13px" }}>
+                    <span style={{ color:COLORS.textMuted, fontSize:"11px" }}>{item.project}</span>
+                    <span style={{ fontWeight:"700", marginLeft:"4px" }}>Łaz. {item.product}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Weekly view */}
+      {showAll && Object.keys(allDayItems).length > 0 && (
+        <div style={S.card}>
+          <div style={S.h2}>📅 Plan na kolejne 7 dni roboczych</div>
+          {Object.entries(allDayItems)
+            .sort(([a],[b]) => a.localeCompare(b))
+            .map(([date, items]) => {
+              const byS = {};
+              items.forEach(item => {
+                if (!byS[item.stageLabel]) byS[item.stageLabel] = [];
+                byS[item.stageLabel].push(item);
+              });
+              const isToday = date === todayStr;
+              const isPlan = date === planDate;
+              return (
+                <div key={date} style={{ marginBottom:"16px", paddingBottom:"16px", borderBottom:`1px solid ${COLORS.border}` }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"10px" }}>
+                    <span style={{ fontWeight:"700", fontSize:"15px", color: isPlan ? COLORS.accent : isToday ? COLORS.green : COLORS.text }}>
+                      {isPlan ? "📌 " : ""}{dateLabel(date)}
+                    </span>
+                    <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>{items.length} łazienek</span>
+                  </div>
+                  <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
+                    {Object.entries(byS).map(([sl, sitems]) => (
+                      <div key={sl} style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"6px 12px", fontSize:"12px" }}>
+                        <StageColor stage={sitems[0].stage} />
+                        <span style={{ marginLeft:"6px", color:COLORS.textMuted }}>{sl}</span>
+                        <span style={{ fontWeight:"700", marginLeft:"6px" }}>{sitems.length}×</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ─── SUPERVISOR VIEW ──────────────────────────────────────────────────────────
 function SupervisorView({ user, token, reports, onLogout }) {
   const [showChangePass, setShowChangePass] = useState(false);

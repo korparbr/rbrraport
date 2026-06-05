@@ -14,10 +14,38 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'raportrbr-dev-secret';
 
+// ─── DATABASE CONNECTION WITH RESILIENCE ─────────────────────────────────────
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl: { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
+
+pool.on('error', (err) => {
+  console.error('Unexpected DB pool error:', err.message);
+});
+
+async function testConnection() {
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      const client = await pool.connect();
+      await client.query('SELECT 1');
+      client.release();
+      console.log('✅ Database connected successfully');
+      return true;
+    } catch (err) {
+      retries--;
+      console.error(`❌ DB connection failed (${5-retries}/5): ${err.message}`);
+      if (retries > 0) await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  console.error('❌ Could not connect after 5 attempts');
+  return false;
+}
+testConnection();
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -133,7 +161,9 @@ app.post('/api/reports', auth, async (req, res) => {
         photo5: line.photo5 || null,
         photo6: line.photo6 || null,
         photo7: line.photo7 || null,
+        photo8: line.photo8 || null,
         photoNA: line.photoNA || false,
+        hall: line.hall || null,
       });
       await client.query('INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note,photos) VALUES ($1,$2,$3,$4,$5,$6,$7)',
         [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '', photoData]);
@@ -247,8 +277,88 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
   }
 });
 
+
+// ─── DATABASE BACKUP ──────────────────────────────────────────────────────────
+app.get('/api/backup', auth, managerOnly, async (req, res) => {
+  try {
+    const [users, reports, lines, recipients] = await Promise.all([
+      pool.query('SELECT * FROM users ORDER BY created_at'),
+      pool.query('SELECT * FROM reports ORDER BY created_at'),
+      pool.query('SELECT * FROM report_lines ORDER BY id'),
+      pool.query('SELECT * FROM email_recipients ORDER BY id'),
+    ]);
+
+    const backup = {
+      version: '1.1',
+      exportedAt: new Date().toISOString(),
+      data: {
+        users: users.rows,
+        reports: reports.rows,
+        report_lines: lines.rows,
+        email_recipients: recipients.rows,
+      },
+      counts: {
+        users: users.rows.length,
+        reports: reports.rows.length,
+        report_lines: lines.rows.length,
+      }
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="raportrbr_backup_${new Date().toISOString().slice(0,10)}.json"`);
+    res.json(backup);
+    console.log(`Backup exported: ${lines.rows.length} report lines`);
+  } catch (err) {
+    console.error('Backup error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── DATABASE RESTORE ─────────────────────────────────────────────────────────
+app.post('/api/restore', auth, managerOnly, async (req, res) => {
+  const { data } = req.body;
+  if (!data?.reports || !data?.report_lines) return res.status(400).json({ error: 'Nieprawidłowy format backupu' });
+  
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Restore reports (skip existing)
+    let added = 0;
+    for (const r of data.reports) {
+      const exists = await client.query('SELECT id FROM reports WHERE id=$1', [r.id]);
+      if (exists.rows.length === 0) {
+        await client.query(
+          'INSERT INTO reports (id, worker_code, report_date, created_at) VALUES ($1,$2,$3,$4)',
+          [r.id, r.worker_code, r.report_date, r.created_at]
+        );
+        added++;
+      }
+    }
+    
+    // Restore report lines (skip existing)
+    let linesAdded = 0;
+    for (const l of data.report_lines) {
+      const exists = await client.query('SELECT id FROM report_lines WHERE id=$1', [l.id]);
+      if (exists.rows.length === 0) {
+        await client.query(
+          'INSERT INTO report_lines (id, report_id, project, product, stage, contractor_code, note, photos, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [l.id, l.report_id, l.project, l.product, l.stage, l.contractor_code, l.note||'', l.photos||null, l.created_at]
+        );
+        linesAdded++;
+      }
+    }
+    
+    await client.query('COMMIT');
+    res.json({ success: true, message: `Przywrócono ${added} raportów, ${linesAdded} wpisów` });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
+});
+
 // ─── SERVE FRONTEND ───────────────────────────────────────────────────────────
-const publicPath = path.join(__dirname);
+const publicPath = path.join(__dirname, '..', 'public');
 app.use(express.static(publicPath));
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
@@ -258,6 +368,23 @@ app.get('*', (req, res) => {
   }
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0', time: new Date() }));
+app.get('/api/health', async (req, res) => {
+  try {
+    const r = await pool.query('SELECT COUNT(*) as reports FROM reports');
+    const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
+    res.json({
+      status: 'ok',
+      version: '1.1',
+      time: new Date(),
+      db: {
+        connected: true,
+        reports: parseInt(r.rows[0].reports),
+        lines: parseInt(r2.rows[0].lines),
+      }
+    });
+  } catch (err) {
+    res.status(503).json({ status: 'error', db: { connected: false, error: err.message } });
+  }
+});
 
 app.listen(PORT, () => console.log(`RaportRBR v1.0 running on port ${PORT}`));
