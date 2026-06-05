@@ -3418,6 +3418,7 @@ function HallMap({ reports = [], isAdmin = false }) {
   const withStage = (editMode ? activeLayout : (visibleCells || [])).filter(c => getCellInfo(c)).length;
 
   return (
+    <>
     <div style={{ display:"flex", gap:"8px", marginBottom:"20px", overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:"4px" }} className="dl-tabs">
         {isSupervisor && <button style={S.tab(tab === "kierownik")} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
         <button style={S.tab(tab === "add_report")} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
@@ -3566,10 +3567,9 @@ function HallMap({ reports = [], isAdmin = false }) {
       )}
       </div>
     </div>
+    </>
   );
 }
-
-// ─── MAIN ─────────────────────────────────────────────────────────────────────
 // ─── PRODUCTION PLANNER ───────────────────────────────────────────────────────
 // Flow: 4 > 6.1+7.1 > 11.2 > [rest] > 13.1 > 9(x3) > 10 > 15.1 > 13.2 > 17 > 18
 // Days from stage 4:
