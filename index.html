@@ -3336,19 +3336,20 @@ function HallMap({ reports = [], isAdmin = false }) {
   const withStage = (editMode ? activeLayout : (visibleCells || [])).filter(c => getCellInfo(c)).length;
 
   return (
-    <div>
+    <div style={{ display:"flex", gap:"0", minHeight:"600px", margin:"-16px" }}>
       {/* Hall selector — vertical tabs on left */}
-      <div style={{ display:"flex", gap:"16px", marginBottom:"20px" }}>
-        <div style={{ display:"flex", flexDirection:"column", gap:"6px", minWidth:"160px", flexShrink:0 }}>
-          {Object.entries(HALLS).map(([key, h]) => (
-            <button key={key}
-              style={{ padding:"14px 18px", borderRadius:"10px", border: selectedHall===key ? "none" : `1px solid ${COLORS.border}`, cursor:"pointer", fontSize:"16px", fontWeight: selectedHall===key ? "700" : "400", background: selectedHall===key ? COLORS.accent : COLORS.surface, color: selectedHall===key ? "#fff" : COLORS.textMuted, textAlign:"left" }}
-              onClick={() => { setSelectedHall(key); setSelected(null); setFilterProject("all"); setFilterStage("all"); }}>
-              {h.name}
-            </button>
-          ))}
-        </div>
-        <div style={{ flex:1, minWidth:0 }}>
+      <div style={{ display:"flex", flexDirection:"column", gap:"6px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"170px" }}>
+        <div style={{ fontSize:"11px", color:COLORS.textDim, fontWeight:"700", textTransform:"uppercase", letterSpacing:"0.06em", padding:"8px 10px 4px" }}>Hale</div>
+        {Object.entries(HALLS).map(([key, h]) => (
+          <button key={key}
+            style={{ padding:"14px 18px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"16px", fontWeight: selectedHall===key ? "700" : "400", background: selectedHall===key ? COLORS.accent : "transparent", color: selectedHall===key ? "#fff" : COLORS.textMuted, textAlign:"left", transition:"all 0.15s" }}
+            onClick={() => { setSelectedHall(key); setSelected(null); setFilterProject("all"); setFilterStage("all"); }}>
+            {h.name}
+          </button>
+        ))}
+      </div>
+      {/* Right panel */}
+      <div style={{ flex:1, minWidth:0, padding:"16px", overflowX:"auto" }}>
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px", flexWrap:"wrap", gap:"10px" }}>
         {editingNote && (
@@ -3468,7 +3469,7 @@ function HallMap({ reports = [], isAdmin = false }) {
                           }
                         }}
                         style={{
-                          width:"108px", height:"84px",
+                          width:"130px", height:"110px",
                           background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
                           border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
@@ -3486,27 +3487,34 @@ function HallMap({ reports = [], isAdmin = false }) {
                           return (
                             <>
                               {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"13px", color:COLORS.orange }}>✏️</div>}
-                              {isAdmin && !editMode && (
+                              {isAdmin && !editMode && note && (
                                 <div
-                                  style={{ position:"absolute", top:"2px", right:"2px", fontSize:"14px", cursor:"pointer", opacity: note ? 1 : 0.3, lineHeight:1 }}
+                                  style={{ position:"absolute", top:"3px", right:"3px", fontSize:"20px", cursor:"pointer", lineHeight:1, filter:"drop-shadow(0 1px 2px rgba(0,0,0,0.5))" }}
                                   onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>
                                   📌
                                 </div>
                               )}
-                              <div style={{ fontSize:"22px", color: sc ? "#000000cc" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
-                                {String(visibleCell.project).slice(-4)}
-                              </div>
-                              <div style={{ fontSize:"22px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
-                                {visibleCell.product}
-                              </div>
-                              {note && !editMode && (
-                                <div style={{ fontSize:"12px", color: sc ? "#000000cc" : COLORS.orange, lineHeight:1.1, fontWeight:"600", maxWidth:"100px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textAlign:"center" }}>
-                                  {note}
+                              {isAdmin && editMode && (
+                                <div
+                                  style={{ position:"absolute", top:"3px", right:"3px", fontSize:"18px", cursor:"pointer", lineHeight:1, opacity:0.5 }}
+                                  onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>
+                                  📌
                                 </div>
                               )}
-                              {!note && sc && (
-                                <div style={{ fontSize:"11px", color:"#000000aa", lineHeight:1.1, fontWeight:"700", textAlign:"center", maxWidth:"104px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                              <div style={{ fontSize:"20px", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
+                                {String(visibleCell.project).slice(-4)}
+                              </div>
+                              <div style={{ fontSize:"24px", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>
+                                {visibleCell.product}
+                              </div>
+                              {sc && (
+                                <div style={{ fontSize:"11px", color:"#000000aa", lineHeight:1.1, fontWeight:"700", textAlign:"center", maxWidth:"122px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                                   {STAGE_COLORS[prodStage]?.label?.split("—")[1]?.trim() || STAGE_COLORS[prodStage]?.label || prodStage}
+                                </div>
+                              )}
+                              {note && !editMode && (
+                                <div style={{ fontSize:"13px", color: sc ? "#000000dd" : COLORS.orange, lineHeight:1.2, fontWeight:"700", maxWidth:"122px", textAlign:"center", wordBreak:"break-word", marginTop:"2px", borderTop: sc ? "1px solid #00000022" : "none", paddingTop:"2px" }}>
+                                  {note}
                                 </div>
                               )}
                             </>
@@ -3534,7 +3542,7 @@ function HallMap({ reports = [], isAdmin = false }) {
         {showUpdater && <div style={{ marginTop:"12px" }}><MapUpdater hallName={hall.name} onUpdate={handleLayoutUpdate} /></div>}
       </div>
       </div>{/* end right panel */}
-      </div>{/* end vertical tabs row */}
+    </div>{/* end main flex row */}
 
       {/* Detail panel — full history */}
       {selected && (
@@ -4033,19 +4041,23 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
         <button style={S.btnOutline} onClick={onLogout}>Wyloguj</button>
       </div>
 
-      <div style={{ display: "flex", gap: "8px", marginBottom: "20px", overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: "4px" }} className="dl-tabs">
-        {isSupervisor && <button style={S.tab(tab === "kierownik")} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
-        <button style={S.tab(tab === "add_report")} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
-        <button style={S.tab(tab === "entries")} onClick={() => setTab("entries")}>📝 Wpisy</button>
-        <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
-        <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
-        <button style={S.tab(tab === "warehouse")} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
-        <button style={S.tab(tab === "stats")} onClick={() => setTab("stats")}>📈 Statystyki</button>
-        <button style={S.tab(tab === "users")} onClick={() => setTab("users")}>👥 Pracownicy</button>
-        <button style={S.tab(tab === "excel")} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
-        <button style={S.tab(tab === "email")} onClick={() => setTab("email")}>📧 Raporty email</button>
-        <button style={S.tab(tab === "backup")} onClick={() => setTab("backup")}>🛡️ Backup</button>
-      </div>
+      <div style={{ display:"flex", gap:"0", minHeight:"80vh" }}>
+        {/* Vertical sidebar */}
+        <div style={{ display:"flex", flexDirection:"column", gap:"4px", padding:"12px 8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"200px", width:"200px" }}>
+          {isSupervisor && <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="kierownik" ? "700" : "400", background: tab==="kierownik" ? COLORS.accent : "transparent", color: tab==="kierownik" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="add_report" ? "700" : "400", background: tab==="add_report" ? COLORS.accent : "transparent", color: tab==="add_report" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="entries" ? "700" : "400", background: tab==="entries" ? COLORS.accent : "transparent", color: tab==="entries" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("entries")}>📝 Wpisy</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="map" ? "700" : "400", background: tab==="map" ? COLORS.accent : "transparent", color: tab==="map" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="progress" ? "700" : "400", background: tab==="progress" ? COLORS.accent : "transparent", color: tab==="progress" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("progress")}>📊 Projekty</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="warehouse" ? "700" : "400", background: tab==="warehouse" ? COLORS.accent : "transparent", color: tab==="warehouse" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="stats" ? "700" : "400", background: tab==="stats" ? COLORS.accent : "transparent", color: tab==="stats" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("stats")}>📈 Statystyki</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="users" ? "700" : "400", background: tab==="users" ? COLORS.accent : "transparent", color: tab==="users" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("users")}>👥 Pracownicy</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="excel" ? "700" : "400", background: tab==="excel" ? COLORS.accent : "transparent", color: tab==="excel" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="email" ? "700" : "400", background: tab==="email" ? COLORS.accent : "transparent", color: tab==="email" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("email")}>📧 Raporty email</button>
+          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="backup" ? "700" : "400", background: tab==="backup" ? COLORS.accent : "transparent", color: tab==="backup" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("backup")}>🛡️ Backup</button>
+        </div>
+        {/* Main content */}
+        <div style={{ flex:1, minWidth:0, padding:"20px", overflowY:"auto" }}>
 
       {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} />}
       {tab === "photos" && <PhotoGallery reports={reports} users={users} />}
@@ -4071,7 +4083,11 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
           </div>
         </div>
       )}
-      {tab === "map" && <HallMap reports={reports} isAdmin={true} />}
+      {tab === "map" && (
+        <div style={{ margin:"-20px", background:COLORS.bg }}>
+          <HallMap reports={reports} isAdmin={true} />
+        </div>
+      )}
       {tab === "add_report" && <ManagerAddReport users={users} reports={reports} token={token} onSave={async (workerCode, date, lines) => {
         const res = await fetch("/api/reports/as-worker", {
           method: "POST",
