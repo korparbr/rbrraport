@@ -3436,14 +3436,14 @@ function HallMap({ reports = [], isAdmin = false }) {
             <tr>
               <th style={{ padding:"4px 8px", color:COLORS.textMuted, fontSize:"11px", width:"28px" }}></th>
               {ROWS.map(row => (
-                <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"13px", fontWeight:"700", textAlign:"center", minWidth:"68px" }}>{row}</th>
+                <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"18px", fontWeight:"700", textAlign:"center", minWidth:"108px" }}>{row}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {[...COLS].reverse().map(col => (
               <tr key={col}>
-                <td style={{ padding:"2px 8px", color:COLORS.accent, fontSize:"13px", textAlign:"center", fontWeight:"700" }}>{col}</td>
+                <td style={{ padding:"2px 12px", color:COLORS.accent, fontSize:"18px", textAlign:"center", fontWeight:"700" }}>{col}</td>
                 {ROWS.map(row => {
                   const cell = getCell(col, row);
                   const isVisible = editMode || getCellVisible(cell);
@@ -3470,7 +3470,7 @@ function HallMap({ reports = [], isAdmin = false }) {
                           }
                         }}
                         style={{
-                          width:"72px", height:"62px",
+                          width:"108px", height:"84px",
                           background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
                           border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
@@ -3487,26 +3487,26 @@ function HallMap({ reports = [], isAdmin = false }) {
                           const note = cellNotes[noteKey];
                           return (
                             <>
-                              {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"9px", color:COLORS.orange }}>✏️</div>}
+                              {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"13px", color:COLORS.orange }}>✏️</div>}
                               {isAdmin && !editMode && (
                                 <div
-                                  style={{ position:"absolute", top:"2px", right:"2px", fontSize:"10px", cursor:"pointer", opacity: note ? 1 : 0.3, lineHeight:1 }}
+                                  style={{ position:"absolute", top:"2px", right:"2px", fontSize:"14px", cursor:"pointer", opacity: note ? 1 : 0.3, lineHeight:1 }}
                                   onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>
                                   📌
                                 </div>
                               )}
-                              <div style={{ fontSize:"15px", color: sc ? "#000000cc" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
+                              <div style={{ fontSize:"22px", color: sc ? "#000000cc" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
                                 {String(visibleCell.project).slice(-4)}
                               </div>
-                              <div style={{ fontSize:"15px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
+                              <div style={{ fontSize:"22px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
                                 {visibleCell.product}
                               </div>
                               {note && !editMode && (
-                                <div style={{ fontSize:"8px", color: sc ? "#000000cc" : COLORS.orange, lineHeight:1.1, fontWeight:"600", maxWidth:"66px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textAlign:"center" }}>
+                                <div style={{ fontSize:"12px", color: sc ? "#000000cc" : COLORS.orange, lineHeight:1.1, fontWeight:"600", maxWidth:"100px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textAlign:"center" }}>
                                   {note}
                                 </div>
                               )}
-                              {!note && sc && <div style={{ fontSize:"9px", color:"#000000aa", lineHeight:1, fontWeight:"600" }}>{prodStage}</div>}
+                              {!note && sc && <div style={{ fontSize:"13px", color:"#000000aa", lineHeight:1, fontWeight:"600" }}>{prodStage}</div>}
                             </>
                           );
                         })() : editMode ? (
