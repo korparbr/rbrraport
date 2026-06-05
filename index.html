@@ -1214,6 +1214,7 @@ function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, 
           <HallMap reports={reports} />
         </div>
       )}
+
     </div>
   );
 }
@@ -3412,7 +3413,7 @@ function HallMap({ reports = [] }) {
                           }
                         }}
                         style={{
-                          width:"72px", height:"52px",
+                          width:"72px", height:"58px",
                           background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
                           border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
@@ -3427,10 +3428,10 @@ function HallMap({ reports = [] }) {
                         {visibleCell ? (
                           <>
                             {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"9px", color:COLORS.orange }}>✏️</div>}
-                            <div style={{ fontSize:"10px", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"700", lineHeight:1.1, letterSpacing:"0.02em" }}>
+                            <div style={{ fontSize:"15px", color: sc ? "#000000cc" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
                               {String(visibleCell.project).slice(-4)}
                             </div>
-                            <div style={{ fontSize:"16px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
+                            <div style={{ fontSize:"15px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
                               {visibleCell.product}
                             </div>
                             {sc && <div style={{ fontSize:"9px", color:"#000000aa", lineHeight:1, fontWeight:"600" }}>{prodStage}</div>}
@@ -4177,7 +4178,7 @@ function ProductionPlanner({ reports }) {
   const [planDate, setPlanDate] = useState(tomorrowStr);
   const [showAll, setShowAll] = useState(false);
 
-  // Compute production stage and start date for each product
+  // Build product info — last done stage and its date
   const productInfo = {};
   const allLines = [];
   reports.forEach(r => {
@@ -4189,75 +4190,79 @@ function ProductionPlanner({ reports }) {
 
   allLines.forEach(l => {
     const key = `${l.project}__${l.product}`;
-    if (!productInfo[key]) productInfo[key] = { project: l.project, product: l.product, stages: {}, stagesList: [], firstDate: l.date };
-    if (!productInfo[key].stages[l.stage]) {
-      productInfo[key].stages[l.stage] = l.date;
-      productInfo[key].stagesList.push(l.stage);
-    }
+    if (!productInfo[key]) productInfo[key] = { project: l.project, product: l.product, stages: {}, lastStage: null, lastDate: null };
+    productInfo[key].stages[l.stage] = l.date;
+    productInfo[key].lastStage = l.stage;
+    productInfo[key].lastDate = l.date;
   });
 
-  // For each product, determine what day of flow it started (day 4 was done)
-  // and calculate expected date for each subsequent stage
-  const planItems = []; // { project, product, stage, expectedDate, label, daysAhead }
+  // For each product find next step in flow and when it should be done
+  const getPlanItems = (targetDate) => {
+    const items = [];
+    Object.values(productInfo).forEach(info => {
+      const { project, product, stages, lastStage, lastDate } = info;
+      if (!lastStage || !lastDate) return;
 
-  Object.values(productInfo).forEach(info => {
-    const { project, product, stages, stagesList } = info;
+      // Find last completed step index across all flow variants
+      let bestNextStep = null;
+      let bestFlowDay = -1;
 
-    // Find the date stage "4" was done
-    const date4 = stages["4"];
-    if (!date4) return; // hasn't started flow yet
+      FLOW_SCHEDULE.forEach((step, idx) => {
+        if (step.stages.length === 0) return;
+        // Is this step done?
+        const done = step.stages.every(s => stages[s]);
+        if (!done) return;
 
-    // For each flow step, calculate expected workday
-    FLOW_SCHEDULE.forEach(step => {
-      if (step.stages.length === 0) return; // rest day
-      const stage = step.stages[0];
+        // What's the next non-rest step?
+        for (let nextIdx = idx + 1; nextIdx < FLOW_SCHEDULE.length; nextIdx++) {
+          const nextStep = FLOW_SCHEDULE[nextIdx];
+          if (nextStep.stages.length === 0) continue; // skip rest days
+          const nextDone = nextStep.stages.every(s => stages[s]);
+          if (nextDone) break; // already done, keep looking further done
 
-      // Skip if already done
-      const alreadyDone = step.stages.every(s => stages[s]);
-      if (alreadyDone) return;
+          // Calculate when this next step should happen
+          // Next step date = lastDate of current step + difference in flow days
+          const dayDiff = nextStep.day - step.day;
+          const expectedDate = addWorkdays(lastDate, dayDiff);
 
-      // Calculate expected date: date4 + step.day workdays
-      const expectedDate = step.day === 0 ? date4 : addWorkdays(date4, step.day);
+          if (expectedDate === targetDate && nextStep.day > bestFlowDay) {
+            bestFlowDay = nextStep.day;
+            bestNextStep = { ...nextStep, expectedDate };
+          }
+          break; // only look at immediate next step
+        }
+      });
 
-      // Only show items for planDate
-      if (expectedDate === planDate) {
-        planItems.push({
+      if (bestNextStep) {
+        items.push({
           project,
           product,
-          stage: step.stages.join("+"),
-          stageLabel: step.label,
-          expectedDate,
-          flowDay: step.day,
+          stage: bestNextStep.stages.join("+"),
+          stageLabel: bestNextStep.label,
+          expectedDate: bestNextStep.expectedDate,
         });
       }
     });
+    return items;
+  };
+
+  const planItems = getPlanItems(planDate);
+
+  // Group by stage
+  const byStage = {};
+  planItems.forEach(item => {
+    if (!byStage[item.stageLabel]) byStage[item.stageLabel] = [];
+    byStage[item.stageLabel].push(item);
   });
 
-  // Also show next few days if showAll
-  const allDayItems = {};
+  // Week view
+  const weekDays = [];
   if (showAll) {
-    Object.values(productInfo).forEach(info => {
-      const { project, product, stages } = info;
-      const date4 = stages["4"];
-      if (!date4) return;
-
-      FLOW_SCHEDULE.forEach(step => {
-        if (step.stages.length === 0) return;
-        const alreadyDone = step.stages.every(s => stages[s]);
-        if (alreadyDone) return;
-        const expectedDate = step.day === 0 ? date4 : addWorkdays(date4, step.day);
-        const daysFromToday = workdaysBetween(todayStr, expectedDate);
-        if (daysFromToday >= 0 && daysFromToday <= 7) {
-          if (!allDayItems[expectedDate]) allDayItems[expectedDate] = [];
-          allDayItems[expectedDate].push({
-            project, product,
-            stage: step.stages.join("+"),
-            stageLabel: step.label,
-            flowDay: step.day,
-          });
-        }
-      });
-    });
+    let d = todayStr;
+    for (let i = 0; i < 7; i++) {
+      d = nextWorkday(i === 0 ? new Date(new Date(todayStr+"T12:00:00").getTime()-86400000).toISOString().slice(0,10) : d);
+      weekDays.push(d);
+    }
   }
 
   const dateLabel = (d) => {
@@ -4266,37 +4271,31 @@ function ProductionPlanner({ reports }) {
     return `${wd[date.getDay()]} ${d}`;
   };
 
-  const StageColor = ({ stage }) => {
+  const StageChip = ({ stage }) => {
     const firstStage = stage.split("+")[0];
     const sc = STAGE_COLORS[firstStage];
-    return <span style={{ background:(sc?.mapColor||"#888")+"33", color:sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"5px", padding:"2px 8px", fontSize:"11px", fontWeight:"700" }}>{stage}</span>;
+    return (
+      <span style={{ background:(sc?.mapColor||"#888")+"33", color:sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"5px", padding:"2px 8px", fontSize:"11px", fontWeight:"700" }}>
+        {stage}
+      </span>
+    );
   };
-
-  // Group planItems by stageLabel
-  const byStage = {};
-  planItems.forEach(item => {
-    if (!byStage[item.stageLabel]) byStage[item.stageLabel] = [];
-    byStage[item.stageLabel].push(item);
-  });
 
   return (
     <div>
-      {/* Header */}
-      <div style={{ display:"flex", gap:"12px", alignItems:"center", flexWrap:"wrap", marginBottom:"20px" }}>
+      {/* Date picker */}
+      <div style={{ display:"flex", gap:"12px", alignItems:"flex-end", flexWrap:"wrap", marginBottom:"20px" }}>
         <div>
           <label style={S.label}>Dzień planowania</label>
           <input type="date" style={{ ...S.input, maxWidth:"180px" }} value={planDate}
-            onChange={e => setPlanDate(e.target.value)}
-            min={todayStr} />
+            onChange={e => setPlanDate(e.target.value)} />
         </div>
-        <div style={{ display:"flex", gap:"8px", marginTop:"18px" }}>
+        <div style={{ display:"flex", gap:"8px" }}>
           <button style={{ ...S.btnSm, background:COLORS.surface, color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }}
-            onClick={() => setPlanDate(nextWorkday(planDate === todayStr ? new Date(todayStr + "T12:00:00").toISOString().slice(0,10) : planDate))}>
-            Jutro →
-          </button>
+            onClick={() => setPlanDate(tomorrowStr)}>Jutro</button>
           <button style={{ ...S.btnSm, background:COLORS.surface, color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }}
             onClick={() => setShowAll(!showAll)}>
-            {showAll ? "Ukryj tygodniowy" : "📅 Pokaż tydzień"}
+            {showAll ? "Ukryj tydzień" : "📅 Pokaż tydzień"}
           </button>
         </div>
       </div>
@@ -4313,19 +4312,19 @@ function ProductionPlanner({ reports }) {
           📋 Plan na {dateLabel(planDate)}
         </div>
         <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>
-          {planItems.length > 0 ? `${planItems.length} łazienek do wykonania` : "Brak zaplanowanych prac"}
+          {planItems.length > 0 ? `${planItems.length} łazienek do wykonania` : "Brak zaplanowanych prac na ten dzień"}
         </div>
 
         {planItems.length === 0 ? (
           <div style={{ textAlign:"center", padding:"32px", color:COLORS.textDim }}>
             <div style={{ fontSize:"32px", marginBottom:"8px" }}>🎉</div>
-            Brak zaplanowanych prac na ten dzień.
+            Brak zaplanowanych prac.
           </div>
         ) : (
           Object.entries(byStage).map(([stageLabel, items]) => (
             <div key={stageLabel} style={{ marginBottom:"20px" }}>
               <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"10px" }}>
-                <StageColor stage={items[0].stage} />
+                <StageChip stage={items[0].stage} />
                 <span style={{ fontWeight:"700", fontSize:"15px" }}>{stageLabel}</span>
                 <span style={{ color:COLORS.textMuted, fontSize:"13px" }}>({items.length} łazienek)</span>
               </div>
@@ -4343,39 +4342,37 @@ function ProductionPlanner({ reports }) {
       </div>
 
       {/* Weekly view */}
-      {showAll && Object.keys(allDayItems).length > 0 && (
+      {showAll && (
         <div style={S.card}>
-          <div style={S.h2}>📅 Plan na kolejne 7 dni roboczych</div>
-          {Object.entries(allDayItems)
-            .sort(([a],[b]) => a.localeCompare(b))
-            .map(([date, items]) => {
-              const byS = {};
-              items.forEach(item => {
-                if (!byS[item.stageLabel]) byS[item.stageLabel] = [];
-                byS[item.stageLabel].push(item);
-              });
-              const isToday = date === todayStr;
-              const isPlan = date === planDate;
-              return (
-                <div key={date} style={{ marginBottom:"16px", paddingBottom:"16px", borderBottom:`1px solid ${COLORS.border}` }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"10px" }}>
-                    <span style={{ fontWeight:"700", fontSize:"15px", color: isPlan ? COLORS.accent : isToday ? COLORS.green : COLORS.text }}>
-                      {isPlan ? "📌 " : ""}{dateLabel(date)}
-                    </span>
-                    <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>{items.length} łazienek</span>
-                  </div>
-                  <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
-                    {Object.entries(byS).map(([sl, sitems]) => (
-                      <div key={sl} style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"6px 12px", fontSize:"12px" }}>
-                        <StageColor stage={sitems[0].stage} />
-                        <span style={{ marginLeft:"6px", color:COLORS.textMuted }}>{sl}</span>
-                        <span style={{ fontWeight:"700", marginLeft:"6px" }}>{sitems.length}×</span>
-                      </div>
-                    ))}
-                  </div>
+          <div style={S.h2}>📅 Plan na 7 dni roboczych</div>
+          {weekDays.map(date => {
+            const items = getPlanItems(date);
+            if (items.length === 0) return null;
+            const byS = {};
+            items.forEach(item => {
+              if (!byS[item.stageLabel]) byS[item.stageLabel] = [];
+              byS[item.stageLabel].push(item);
+            });
+            return (
+              <div key={date} style={{ marginBottom:"16px", paddingBottom:"16px", borderBottom:`1px solid ${COLORS.border}` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"8px" }}>
+                  <span style={{ fontWeight:"700", fontSize:"14px", color: date === planDate ? COLORS.accent : COLORS.text }}>
+                    {date === planDate ? "📌 " : ""}{dateLabel(date)}
+                  </span>
+                  <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>{items.length} łazienek</span>
                 </div>
-              );
-            })}
+                <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
+                  {Object.entries(byS).map(([sl, sitems]) => (
+                    <div key={sl} style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"5px 10px", fontSize:"12px", display:"flex", alignItems:"center", gap:"6px" }}>
+                      <StageChip stage={sitems[0].stage} />
+                      <span style={{ color:COLORS.textMuted }}>{sl}</span>
+                      <span style={{ fontWeight:"700" }}>{sitems.length}×</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
