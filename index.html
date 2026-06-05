@@ -3423,19 +3423,19 @@ function HallMap({ reports = [], isAdmin = false }) {
 
       {/* Legend */}
       <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"12px", padding:"18px 20px", marginBottom:"16px" }}>
-        <div style={{ fontSize:"16px", fontWeight:"700", color:COLORS.textMuted, marginBottom:"14px", textTransform:"uppercase", letterSpacing:"0.06em" }}>Legenda etapów produkcji</div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:"10px" }}>
+        <div style={{ fontSize:"12px", fontWeight:"700", color:COLORS.textMuted, marginBottom:"10px", textTransform:"uppercase", letterSpacing:"0.06em" }}>Legenda etapów produkcji</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(165px, 1fr))", gap:"8px" }}>
           {["4","6.1","7.1","11.2","13.1","10","15.1","13.2","17","18","19"].map(k => (
-            <div key={k} style={{ display:"flex", alignItems:"center", gap:"12px" }}>
-              <div style={{ width:"40px", height:"40px", borderRadius:"8px", background:STAGE_COLORS[k]?.mapColor || "#888", border:"1px solid #00000022", flexShrink:0 }} />
+            <div key={k} style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+              <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:STAGE_COLORS[k]?.mapColor || "#888", border:"1px solid #00000022", flexShrink:0 }} />
               <div>
-                <div style={{ fontSize:"18px", fontWeight:"800", color:COLORS.text, lineHeight:1.2 }}>{k} — {STAGE_COLORS[k]?.label}</div>
+                <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.text, lineHeight:1.2 }}>{k} — {STAGE_COLORS[k]?.label}</div>
               </div>
             </div>
           ))}
           <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
-            <div style={{ width:"40px", height:"40px", borderRadius:"8px", background:COLORS.surface, border:`2px solid ${COLORS.border}`, flexShrink:0 }} />
-            <div style={{ fontSize:"18px", fontWeight:"800", color:COLORS.textDim }}>Brak etapu</div>
+            <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:COLORS.surface, border:`2px solid ${COLORS.border}`, flexShrink:0 }} />
+            <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.textDim }}>Brak etapu</div>
           </div>
         </div>
       </div>
@@ -3549,19 +3549,19 @@ function HallMap({ reports = [], isAdmin = false }) {
                                   📌
                                 </div>
                               )}
-                              <div style={{ fontSize:"clamp(8px, 1.3vw, 16px)", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
+                              <div style={{ fontSize:"clamp(10px, 1.6vw, 20px)", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
                                 {String(visibleCell.project).slice(-4)}
                               </div>
-                              <div style={{ fontSize:"clamp(10px, 1.5vw, 20px)", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>
+                              <div style={{ fontSize:"clamp(13px, 1.9vw, 25px)", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>
                                 {visibleCell.product}
                               </div>
                               {sc && (
-                                <div style={{ fontSize:"clamp(8px, 0.9vw, 11px)", color:"#000000aa", lineHeight:1.1, fontWeight:"700", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                                <div style={{ fontSize:"clamp(10px, 1.1vw, 14px)", color:"#000000aa", lineHeight:1.1, fontWeight:"700", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                                   {STAGE_COLORS[prodStage]?.label?.split("—")[1]?.trim() || STAGE_COLORS[prodStage]?.label || prodStage}
                                 </div>
                               )}
                               {note && !editMode && (
-                                <div style={{ fontSize:"clamp(9px, 1vw, 13px)", color: sc ? "#000000dd" : COLORS.orange, lineHeight:1.2, fontWeight:"700", maxWidth:"100%", textAlign:"center", wordBreak:"break-word", marginTop:"2px", borderTop: sc ? "1px solid #00000022" : "none", paddingTop:"2px" }}>
+                                <div style={{ fontSize:"clamp(11px, 1.25vw, 16px)", color: sc ? "#000000dd" : COLORS.orange, lineHeight:1.2, fontWeight:"700", maxWidth:"100%", textAlign:"center", wordBreak:"break-word", marginTop:"2px", borderTop: sc ? "1px solid #00000022" : "none", paddingTop:"2px" }}>
                                   {note}
                                 </div>
                               )}
@@ -4315,7 +4315,10 @@ function nextWorkday(dateStr) {
 }
 
 function ProductionPlanner({ reports }) {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  })();
   const tomorrowStr = nextWorkday(todayStr);
 
   const [planDate, setPlanDate] = useState(tomorrowStr);
@@ -4364,7 +4367,7 @@ function ProductionPlanner({ reports }) {
           if (nextDone) break; // already done, keep looking further done
 
           // Calculate when this next step should happen
-          // Next step date = lastDate of current step + difference in flow days
+          // Next step = lastDate + number of workdays between steps
           const dayDiff = nextStep.day - step.day;
           const expectedDate = addWorkdays(lastDate, dayDiff);
 
@@ -4377,12 +4380,20 @@ function ProductionPlanner({ reports }) {
       });
 
       if (bestNextStep) {
+        // Find which hall this product is on
+        let productHall = "unknown";
+        Object.entries(HALLS).forEach(([hallKey, hallData]) => {
+          if (hallData.layout.find(c => String(c.project) === String(project) && String(c.product) === String(product))) {
+            productHall = hallKey;
+          }
+        });
         items.push({
           project,
           product,
           stage: bestNextStep.stages.join("+"),
           stageLabel: bestNextStep.label,
           expectedDate: bestNextStep.expectedDate,
+          hall: productHall,
         });
       }
     });
@@ -4464,23 +4475,44 @@ function ProductionPlanner({ reports }) {
             Brak zaplanowanych prac.
           </div>
         ) : (
-          Object.entries(byStage).map(([stageLabel, items]) => (
-            <div key={stageLabel} style={{ marginBottom:"20px" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"10px" }}>
-                <StageChip stage={items[0].stage} />
-                <span style={{ fontWeight:"700", fontSize:"15px" }}>{stageLabel}</span>
-                <span style={{ color:COLORS.textMuted, fontSize:"13px" }}>({items.length} łazienek)</span>
+          Object.entries(byStage).map(([stageLabel, items]) => {
+            // Group by hall
+            const byHall = {};
+            items.forEach(item => {
+              const hallKey = item.hall || "unknown";
+              if (!byHall[hallKey]) byHall[hallKey] = [];
+              byHall[hallKey].push(item);
+            });
+            const hallOrder = ["namiot1","namiot2","betonowanie","iso","unknown"];
+            const hallNames = { namiot1:"Namiot 1", namiot2:"Namiot 2", betonowanie:"Hala Betonowanie", iso:"Hala ISO", unknown:"Nieprzypisana" };
+            return (
+              <div key={stageLabel} style={{ marginBottom:"24px", background:COLORS.bg, borderRadius:"12px", padding:"16px", border:`1px solid ${COLORS.border}` }}>
+                <div style={{ display:"flex", alignItems:"center", gap:"10px", marginBottom:"14px" }}>
+                  <StageChip stage={items[0].stage} />
+                  <span style={{ fontWeight:"800", fontSize:"17px" }}>{stageLabel}</span>
+                  <span style={{ color:COLORS.textMuted, fontSize:"13px" }}>({items.length} łazienek łącznie)</span>
+                </div>
+                {hallOrder.filter(h => byHall[h]).map(hallKey => {
+                  const hallItems = byHall[hallKey].sort((a,b) => a.project.localeCompare(b.project) || a.product - b.product);
+                  return (
+                    <div key={hallKey} style={{ marginBottom:"12px" }}>
+                      <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.accent, marginBottom:"8px" }}>
+                        🏭 {hallNames[hallKey]} <span style={{ color:COLORS.textMuted, fontWeight:"400" }}>({hallItems.length} łazienek)</span>
+                      </div>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:"6px" }}>
+                        {hallItems.map((item,i) => (
+                          <div key={i} style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"6px 14px", fontSize:"14px" }}>
+                            <span style={{ color:COLORS.textMuted, fontSize:"11px" }}>{item.project}</span>
+                            <span style={{ fontWeight:"700", marginLeft:"4px", fontSize:"15px" }}>Łaz. {item.product}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:"6px" }}>
-                {items.sort((a,b) => a.project.localeCompare(b.project) || a.product - b.product).map((item,i) => (
-                  <div key={i} style={{ background:COLORS.bg, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"6px 12px", fontSize:"13px" }}>
-                    <span style={{ color:COLORS.textMuted, fontSize:"11px" }}>{item.project}</span>
-                    <span style={{ fontWeight:"700", marginLeft:"4px" }}>Łaz. {item.product}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
