@@ -981,7 +981,7 @@ function WorkerView({ user, token, reports, onSave, onLogout, onUsersChange }) {
 
       <div style={S.card}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"18px" }}>
-          <div style={S.h2} style={{ ...S.h2, marginBottom:0 }}>Nowy raport dzienny</div>
+          <div style={{ ...S.h2, marginBottom:0 }}>Nowy raport dzienny</div>
           <button style={{ ...S.btnGhost, fontSize:"12px", color:COLORS.textMuted }} onClick={() => setShowSettings(true)}>
             ⚙️ {enabledStages.size} etapów
           </button>
@@ -2804,7 +2804,7 @@ function HallMap({ reports = [] }) {
             layout={activeLayout}
             productStages={productStages}
             emailRecipients={[]}
-            token={window._rbrToken || token || ""}
+            token={window._rbrToken || ""}
           />
         </div>
         <div style={{ display:"flex", gap:"8px", flexWrap:"wrap" }}>
