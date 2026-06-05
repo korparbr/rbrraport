@@ -129,7 +129,7 @@ app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
 app.get('/api/reports', auth, async (req, res) => {
   try {
-    const isManager = req.user.role === 'manager';
+    const isManager = req.user.role === 'manager' || req.user.role === 'supervisor';
     const q = `
       SELECT r.id, r.worker_code, u.name as worker_name, r.report_date::text as date, r.created_at,
         json_agg(json_build_object('id',rl.id,'project',rl.project,'product',rl.product,
