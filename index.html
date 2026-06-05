@@ -1111,12 +1111,14 @@ function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, 
       if (result && result.skipped && result.skipped.length > 0) {
         setSaveMsg({
           type: "warning",
+          mainText: `Zapisano ${result.saved} ${result.saved === 1 ? "łazienkę" : result.saved < 5 ? "łazienki" : "łazienek"}.`,
+          skipped: result.skipped,
           text: result.message
         });
-        setTimeout(() => setSaveMsg(null), 8000);
+        setTimeout(() => setSaveMsg(null), 10000);
       } else {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 2500);
+        setSaveMsg({ type:"success", mainText:`✓ Zapisano ${result?.saved || lines.length} ${(result?.saved || lines.length) === 1 ? "łazienkę" : (result?.saved || lines.length) < 5 ? "łazienki" : "łazienek"}!`, text:"" });
+        setTimeout(() => setSaveMsg(null), 3000);
       }
     } catch(err) { setSaveMsg({ type:"error", text: err.message }); }
     finally { setSaving(false); }
@@ -1180,8 +1182,22 @@ function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, 
               {saved && <span style={{ color: COLORS.green, fontSize: "14px", fontWeight: "600" }}>✓ Zapisano!</span>}
             </div>
             {saveMsg && (
-              <div style={{ background: saveMsg.type==="warning" ? COLORS.orange+"18" : COLORS.red+"18", border:`1px solid ${saveMsg.type==="warning" ? COLORS.orange : COLORS.red}44`, borderRadius:"8px", padding:"10px 14px", fontSize:"13px", color: saveMsg.type==="warning" ? COLORS.orange : COLORS.red }}>
-                {saveMsg.type==="warning" ? "⚠️ " : "❌ "}{saveMsg.text}
+              <div style={{ background: saveMsg.type==="warning" ? COLORS.orange+"18" : saveMsg.type==="success" ? COLORS.green+"18" : COLORS.red+"18", border:`2px solid ${saveMsg.type==="warning" ? COLORS.orange : saveMsg.type==="success" ? COLORS.green : COLORS.red}66`, borderRadius:"12px", padding:"14px 18px", color: saveMsg.type==="warning" ? COLORS.orange : saveMsg.type==="success" ? COLORS.green : COLORS.red }}>
+                <div style={{ fontSize:"16px", fontWeight:"700", marginBottom: saveMsg.skipped?.length > 0 ? "8px" : "0" }}>
+                  {saveMsg.type==="warning" ? "⚠️ " : saveMsg.type==="success" ? "✓ " : "❌ "}{saveMsg.mainText || saveMsg.text}
+                </div>
+                {saveMsg.skipped?.length > 0 && (
+                  <div style={{ fontSize:"13px", opacity:0.9 }}>
+                    Pominięto {saveMsg.skipped.length} {saveMsg.skipped.length === 1 ? "łazienkę" : "łazienek"}:
+                    <div style={{ marginTop:"6px", display:"flex", flexWrap:"wrap", gap:"6px" }}>
+                      {saveMsg.skipped.map((s,i) => (
+                        <span key={i} style={{ background:"rgba(0,0,0,0.2)", borderRadius:"6px", padding:"2px 8px", fontSize:"12px", fontWeight:"600" }}>
+                          Proj. {s.project} / Łaz. {s.product} ({s.stage})
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
