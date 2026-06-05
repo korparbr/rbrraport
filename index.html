@@ -3613,7 +3613,7 @@ function BulkWorkerAdd({ contractors, users, token, onDone }) {
 
 
 // ─── MANAGER VIEW ─────────────────────────────────────────────────────────────
-function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange }) {
+function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange, isSupervisor }) {
   const [tab, setTab] = useState(isSupervisor ? "kierownik" : "entries");
   const [filterWorker, setFilterWorker] = useState("all");
   const [filterProject, setFilterProject] = useState("all");
