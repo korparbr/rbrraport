@@ -1582,7 +1582,77 @@ function ExcelExportTab({ reports, users }) {
   );
 }
 
-function EmailTab({ token }) {rehouseState(reports) {
+function EmailTab({ token }) {
+  const [recipients, setRecipients] = useState([]);
+  const [newEmail, setNewEmail] = useState("");
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api.getEmailRecipients(token).then(setRecipients).catch(() => {}).finally(() => setLoading(false));
+  }, [token]);
+
+  const flash = (text, isErr) => { setMsg({ type: isErr ? "error" : "success", text }); setTimeout(() => setMsg(null), 3000); };
+
+  const addEmail = async () => {
+    if (!newEmail.includes("@")) return flash("Wpisz prawidłowy adres email.", true);
+    try {
+      await api.addEmailRecipient(token, newEmail.trim());
+      setNewEmail("");
+      const list = await api.getEmailRecipients(token);
+      setRecipients(list);
+      flash("✓ Adres dodany.");
+    } catch(err) { flash(err.message, true); }
+  };
+
+  const removeEmail = async (email) => {
+    await api.deleteEmailRecipient(token, email);
+    const list = await api.getEmailRecipients(token);
+    setRecipients(list);
+  };
+
+  const sendNow = async () => {
+    setSending(true);
+    try {
+      const r = await api.sendReportNow(token);
+      flash("✓ " + r.message);
+    } catch(err) { flash(err.message, true); }
+    finally { setSending(false); }
+  };
+
+  return (
+    <div>
+      {msg && <div style={S.infoBox(msg.type === "success" ? COLORS.green : COLORS.red)}>{msg.text}</div>}
+      <div style={S.card}>
+        <div style={S.h2}>Odbiorcy raportów email</div>
+        <div style={{ display:"flex", gap:"10px", marginBottom:"16px" }}>
+          <input style={{ ...S.input, flex:1 }} placeholder="email@firma.pl" value={newEmail} onChange={e => setNewEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && addEmail()} />
+          <button style={S.btnSm} onClick={addEmail}>+ Dodaj</button>
+        </div>
+        {loading ? <div style={{ color:COLORS.textMuted }}>Ładowanie...</div> : recipients.length === 0 ? (
+          <div style={{ color:COLORS.textDim, textAlign:"center", padding:"20px" }}>Brak odbiorców. Dodaj adres email powyżej.</div>
+        ) : recipients.map(email => (
+          <div key={email} style={{ ...S.entryCard, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span>{email}</span>
+            <button style={S.btnDanger} onClick={() => removeEmail(email)}>Usuń</button>
+          </div>
+        ))}
+      </div>
+      <div style={S.card}>
+        <div style={S.h2}>Wyślij raport ręcznie</div>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>Raport jest wysyłany automatycznie codziennie o 23:59. Możesz też wysłać go ręcznie za dzisiaj.</div>
+        <button style={{ ...S.btn, opacity: sending ? 0.6 : 1 }} onClick={sendNow} disabled={sending}>
+          {sending ? "Wysyłanie..." : "📧 Wyślij raport teraz"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── WAREHOUSE STATE ──────────────────────────────────────────────────────────
+function computeWarehouseState(reports) {
   const state = {};
   const stagesByProduct = {}; // all stages per product key
 
