@@ -248,7 +248,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
 });
 
 // ─── SERVE FRONTEND ───────────────────────────────────────────────────────────
-const publicPath = path.join(__dirname, '..', 'public');
+const publicPath = path.join(__dirname);
 app.use(express.static(publicPath));
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
