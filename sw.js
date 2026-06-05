@@ -1,4 +1,4 @@
-const CACHE_NAME = 'raportrbr-v1.1';
+const CACHE_NAME = 'flowrbr-v1.2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

@@ -1,6 +1,6 @@
 {
-  "name": "RaportRBR — Ready Bathroom",
-  "short_name": "RaportRBR",
+  "name": "FlowRBR — Ready Bathroom",
+  "short_name": "FlowRBR",
   "description": "System raportów produkcyjnych Ready Bathroom",
   "start_url": "/",
   "display": "standalone",
