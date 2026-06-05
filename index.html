@@ -3926,6 +3926,404 @@ function SupervisorView({ user, token, reports, onLogout }) {
 
 
 
+// ─── DATABASE BACKUP UI ───────────────────────────────────────────────────────
+function BackupTab({ token }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState(null);
+
+  const downloadBackup = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/backup', { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!res.ok) throw new Error('Błąd pobierania backupu');
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `flowrbr_backup_${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus({ type:'success', text:`✓ Backup pobrany: ${data.counts.reports} raportów, ${data.counts.report_lines} wpisów` });
+    } catch(err) { setStatus({ type:'error', text:'Błąd: ' + err.message }); }
+    finally { setLoading(false); }
+  };
+
+  const restoreBackup = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const backup = JSON.parse(ev.target.result);
+        if (!backup.data) throw new Error('Nieprawidłowy format pliku');
+        setLoading(true);
+        const res = await fetch('/api/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({ data: backup.data })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        setRestoreMsg({ type:'success', text:'✓ ' + data.message });
+      } catch(err) { setRestoreMsg({ type:'error', text:'Błąd: ' + err.message }); }
+      finally { setLoading(false); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  return (
+    <div>
+      <div style={{ ...S.infoBox(COLORS.accent), marginBottom:"20px" }}>
+        🛡️ Backup chroni dane przed utratą. Zalecamy pobierać backup raz w tygodniu.
+      </div>
+      <div style={S.card}>
+        <div style={S.h2}>⬇️ Pobierz backup</div>
+        <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+          <button style={{ ...S.btn, opacity: loading ? 0.6 : 1 }} onClick={downloadBackup} disabled={loading}>
+            {loading ? "⏳ Pobieranie..." : "⬇️ Pobierz backup JSON"}
+          </button>
+          {status && <span style={{ fontSize:"13px", color: status.type==="success" ? COLORS.green : COLORS.red, fontWeight:"600" }}>{status.text}</span>}
+        </div>
+      </div>
+      <div style={S.card}>
+        <div style={S.h2}>⬆️ Przywróć z backupu</div>
+        <div style={{ ...S.infoBox(COLORS.orange), marginBottom:"16px" }}>
+          ⚠️ Dodaje tylko brakujące rekordy — nie nadpisuje istniejących danych.
+        </div>
+        <input type="file" accept=".json" id="restore-file" style={{ display:"none" }} onChange={restoreBackup} />
+        <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+          <label htmlFor="restore-file" style={{ ...S.btnOutline, display:"inline-block", cursor:"pointer" }}>
+            📂 Wybierz plik backup
+          </label>
+          {restoreMsg && <span style={{ fontSize:"13px", color: restoreMsg.type==="success" ? COLORS.green : COLORS.red, fontWeight:"600" }}>{restoreMsg.text}</span>}
+        </div>
+      </div>
+      <div style={S.card}>
+        <div style={S.h2}>🩺 Status bazy danych</div>
+        <DbHealthCheck token={token} />
+      </div>
+    </div>
+  );
+}
+
+function DbHealthCheck({ token }) {
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const check = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/health');
+      const data = await res.json();
+      setHealth(data);
+    } catch(err) {
+      setHealth({ status:'error', db: { connected: false }, error: err.message });
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div>
+      <button style={{ ...S.btnSm, marginBottom:"14px", opacity: loading ? 0.6:1 }} onClick={check} disabled={loading}>
+        {loading ? "⏳ Sprawdzam..." : "🔄 Sprawdź status"}
+      </button>
+      {health && (
+        health.status === 'error' ? (
+          <div style={{ ...S.infoBox(COLORS.red), fontSize:"13px" }}>
+            ❌ Brak połączenia z bazą danych.
+            {health.error && <div style={{ marginTop:"4px", fontSize:"12px" }}>{health.error}</div>}
+          </div>
+        ) : (
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px,1fr))", gap:"10px" }}>
+            <div style={S.statBox}><div style={{ fontSize:"20px" }}>✅</div><div style={S.statLabel}>Połączenie</div><div style={{ fontSize:"13px", color:COLORS.green, fontWeight:"600" }}>Aktywne</div></div>
+            <div style={S.statBox}><div style={S.statNum}>{health.db?.reports ?? "—"}</div><div style={S.statLabel}>Raportów</div></div>
+            <div style={S.statBox}><div style={S.statNum}>{health.db?.lines ?? "—"}</div><div style={S.statLabel}>Wpisów</div></div>
+            <div style={S.statBox}><div style={{ fontSize:"11px", color:COLORS.textMuted }}>{health.version || "—"}</div><div style={S.statLabel}>Wersja</div></div>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// ─── MANAGER ADD REPORT ───────────────────────────────────────────────────────
+function ManagerAddReport({ users, reports, token, onSave }) {
+  const workers = users.filter(u => (u.role || "worker") === "worker");
+  const [selectedWorker, setSelectedWorker] = useState("");
+  const [date, setDate] = useState(today());
+  const [lines, setLines] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState(null);
+  const [enabledStages] = useState(new Set(STAGES.map(s => s.id)));
+
+  const handleSave = async () => {
+    if (!selectedWorker) return setSaveMsg({ type:"error", text:"Wybierz pracownika." });
+    if (lines.length === 0) return setSaveMsg({ type:"error", text:"Dodaj co najmniej jedną pozycję." });
+    setSaving(true); setSaveMsg(null);
+    try {
+      const result = await onSave(selectedWorker, date, lines);
+      setLines([]);
+      if (result?.skipped?.length > 0) {
+        setSaveMsg({ type:"warning", text: result.message });
+        setTimeout(() => setSaveMsg(null), 8000);
+      } else {
+        setSaveMsg({ type:"success", text:`✓ Zapisano dla ${workers.find(w => (w.code||w.login) === selectedWorker)?.name || selectedWorker}` });
+        setTimeout(() => setSaveMsg(null), 3000);
+      }
+    } catch(err) { setSaveMsg({ type:"error", text: err.message }); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={S.h2}>➕ Dodaj raport w imieniu pracownika</div>
+      <div style={{ ...S.row2, marginBottom:"20px" }} className="dl-row2">
+        <div>
+          <label style={S.label}>Pracownik</label>
+          <select style={S.select} value={selectedWorker} onChange={e => { setSelectedWorker(e.target.value); setLines([]); }}>
+            <option value="">— wybierz pracownika —</option>
+            {workers.sort((a,b) => (a.name||"").localeCompare(b.name||"")).map(w => (
+              <option key={w.code||w.login} value={w.code||w.login}>{w.name} ({w.code||w.login})</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Data</label>
+          <input type="date" style={S.input} value={date} onChange={e => setDate(e.target.value)} max={today()} />
+        </div>
+      </div>
+      {selectedWorker && (
+        <>
+          {lines.map((line, i) => (
+            <LineItem key={i} line={line} onRemove={() => setLines(lines.filter((_, j) => j !== i))} />
+          ))}
+          <LineForm
+            onAdd={line => setLines(prev => [...prev, { ...line, contractor: selectedWorker }])}
+            onAddBatch={newLines => setLines(prev => [...prev, ...newLines.map(l => ({ ...l, contractor: selectedWorker }))])}
+            reports={reports} currentLines={lines} enabledStages={enabledStages} />
+          <div style={S.divider} />
+          <div style={{ display:"flex", gap:"12px", alignItems:"center" }}>
+            <button style={{ ...S.btn, opacity: lines.length === 0 || saving ? 0.4 : 1 }} onClick={handleSave} disabled={lines.length === 0 || saving}>
+              {saving ? "Zapisywanie..." : `Zapisz raport (${lines.length} ${lines.length === 1 ? "pozycja" : "pozycji"})`}
+            </button>
+          </div>
+          {saveMsg && <div style={{ ...S.infoBox(saveMsg.type === "success" ? COLORS.green : saveMsg.type === "warning" ? COLORS.orange : COLORS.red), marginTop:"12px" }}>{saveMsg.text}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── MANAGER VIEW ─────────────────────────────────────────────────────────────
+function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange, onReportsChange, isSupervisor }) {
+  const [tab, setTab] = useState(isSupervisor ? "kierownik" : "entries");
+  const [filterWorker, setFilterWorker] = useState("all");
+  const [filterProject, setFilterProject] = useState("all");
+  const [filterStage, setFilterStage] = useState("all");
+  const [filterDate, setFilterDate] = useState("");
+  const [showChangePass, setShowChangePass] = useState(false);
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    try {
+      const token_data = JSON.parse(atob(token.split('.')[1]));
+      setUser({ code: token_data.code, name: token_data.name, role: token_data.role });
+    } catch {}
+  }, [token]);
+
+  if (showChangePass) return (
+    <ChangePasswordScreen user={user || {}} token={token} forced={false}
+      onDone={() => setShowChangePass(false)}
+      onLogout={() => setShowChangePass(false)} />
+  );
+
+  const allLines = reports.flatMap(r => (r.lines||[]).map(l => ({ ...l, date: r.date, workerLogin: r.workerLogin || r.worker_code, workerName: r.workerName || r.worker_name })));
+  const projects = [...new Set(allLines.map(l => l.project))].sort();
+  const workers = [...new Set(reports.map(r => r.workerLogin || r.worker_code))].filter(Boolean).sort();
+
+  const filteredReports = reports.filter(r => {
+    if (filterWorker !== "all" && (r.workerLogin || r.worker_code) !== filterWorker) return false;
+    if (filterProject !== "all" && !(r.lines||[]).some(l => l.project === filterProject)) return false;
+    if (filterStage !== "all" && !(r.lines||[]).some(l => l.stage === filterStage)) return false;
+    if (filterDate && r.date !== filterDate) return false;
+    return true;
+  });
+
+  return (
+    <div style={S.main}>
+      <div style={{ padding:"0 0 20px 0", display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+        <div>
+          <div style={{ fontSize:"24px", fontWeight:"800", letterSpacing:"-0.5px" }}>Panel menedżera 📊</div>
+          <div style={{ color:COLORS.textMuted, marginTop:"4px", fontSize:"14px" }}>
+            {reports.length} raportów · {users.filter(u => u.role === "worker").length} pracowników · {allLines.length} pozycji
+          </div>
+        </div>
+        <div style={{ display:"flex", gap:"8px" }}>
+          <button style={S.btnOutline} onClick={() => setShowChangePass(true)}>🔐</button>
+          <button style={S.btnOutline} onClick={onLogout}>Wyloguj</button>
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:"8px", marginBottom:"20px", overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:"4px" }} className="dl-tabs">
+        {isSupervisor && <button style={S.tab(tab === "kierownik")} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
+        <button style={S.tab(tab === "add_report")} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
+        <button style={S.tab(tab === "entries")} onClick={() => setTab("entries")}>📝 Wpisy</button>
+        <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
+        <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
+        <button style={S.tab(tab === "warehouse")} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
+        <button style={S.tab(tab === "stats")} onClick={() => setTab("stats")}>📈 Statystyki</button>
+        <button style={S.tab(tab === "users")} onClick={() => setTab("users")}>👥 Pracownicy</button>
+        <button style={S.tab(tab === "excel")} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
+        <button style={S.tab(tab === "email")} onClick={() => setTab("email")}>📧 Raporty email</button>
+        <button style={S.tab(tab === "backup")} onClick={() => setTab("backup")}>🛡️ Backup</button>
+      </div>
+
+      <div>
+        {tab === "add_report" && <ManagerAddReport users={users} reports={reports} token={token} onSave={async (workerCode, date, lines) => {
+          const res = await fetch("/api/reports/as-worker", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+            body: JSON.stringify({ workerCode, date, lines })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error);
+          if (onReportsChange) onReportsChange();
+          return data;
+        }} />}
+
+        {tab === "entries" && (
+          <div>
+            <div style={{ display:"flex", gap:"8px", marginBottom:"16px", flexWrap:"wrap" }}>
+              <select style={S.selectFilter} value={filterWorker} onChange={e => setFilterWorker(e.target.value)}>
+                <option value="all">Wszyscy pracownicy</option>
+                {workers.map(w => { const u = users.find(u => (u.code||u.login) === w); return <option key={w} value={w}>{u ? u.name : w}</option>; })}
+              </select>
+              <select style={S.selectFilter} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
+                <option value="all">Wszystkie projekty</option>
+                {projects.map(p => <option key={p} value={p}>Projekt {p}</option>)}
+              </select>
+              <select style={S.selectFilter} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
+                <option value="all">Wszystkie etapy</option>
+                {STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+              <input type="date" style={S.selectFilter} value={filterDate} onChange={e => setFilterDate(e.target.value)} />
+              {(filterWorker!=="all"||filterProject!=="all"||filterStage!=="all"||filterDate) && (
+                <button style={{ ...S.btnGhost, fontSize:"12px" }} onClick={() => { setFilterWorker("all"); setFilterProject("all"); setFilterStage("all"); setFilterDate(""); }}>✕ Wyczyść</button>
+              )}
+            </div>
+            <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"12px" }}>{filteredReports.length} z {reports.length} raportów</div>
+            {filteredReports.sort((a,b) => (b.date||"").localeCompare(a.date||"")).map(r => (
+              <ReportCard key={r.id} report={r} showWorker={true} onDelete={onDelete ? () => onDelete(r.id) : null} />
+            ))}
+          </div>
+        )}
+
+        {tab === "map" && (
+          <div style={{ margin:"-20px" }}>
+            <HallMap reports={reports} isAdmin={true} />
+          </div>
+        )}
+        {tab === "progress" && <ProjectProgressTab reports={reports} />}
+        {tab === "warehouse" && <WarehouseTab reports={reports} />}
+        {tab === "stats" && <StatsTab reports={reports} users={users} />}
+        {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} isSupervisorUser={isSupervisor} />}
+        {tab === "excel" && <ExcelExportTab reports={reports} users={users} />}
+        {tab === "backup" && <BackupTab token={token} />}
+        {tab === "email" && <EmailTab token={token} />}
+        {tab === "kierownik" && isSupervisor && (
+          <div>
+            <div style={{ ...S.card, background: COLORS.accent+"15", border:`1px solid ${COLORS.accent}33`, marginBottom:"20px" }}>
+              <div style={{ fontSize:"18px", fontWeight:"800", marginBottom:"4px" }}>🎯 Panel Kierownika</div>
+              <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>Planowanie produkcji, mapy hal i alerty.</div>
+            </div>
+            <div style={S.card}>
+              <div style={S.h2}>📋 Planer produkcji</div>
+              <ProductionPlanner reports={reports} />
+            </div>
+            <div style={S.card}>
+              <div style={S.h2}>🗺️ Mapy hal</div>
+              <HallMap reports={reports} isAdmin={true} />
+            </div>
+            <div style={S.card}>
+              <div style={S.h2}>⚠️ Alerty produkcyjne</div>
+              <StuckAlert reports={reports} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ─── STATS TAB ────────────────────────────────────────────────────────────────
+function StatsTab({ reports, users }) {
+  const allLines = reports.flatMap(r => (r.lines||[]).map(l => ({ ...l, date: r.date, workerLogin: r.workerLogin || r.worker_code, workerName: r.workerName || r.worker_name })));
+  const today = new Date().toISOString().slice(0,10);
+  const weekStart = getWeekStart(today);
+
+  const workerStats = users.filter(u => u.role === "worker").map(u => {
+    const code = u.code || u.login;
+    const myReports = reports.filter(r => (r.workerLogin||r.worker_code) === code);
+    const myLines = myReports.flatMap(r => r.lines||[]);
+    const thisWeek = myReports.filter(r => r.date >= weekStart).length;
+    return { login: code, name: u.name, total: myReports.length, lines: myLines.length, thisWeek };
+  }).filter(w => w.total > 0).sort((a,b) => b.lines - a.lines);
+
+  const stageStats = STAGES.map(s => ({
+    id: s.id, label: s.label,
+    count: allLines.filter(l => l.stage === s.id).length
+  })).filter(s => s.count > 0).sort((a,b) => b.count - a.count);
+
+  return (
+    <div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px,1fr))", gap:"10px", marginBottom:"20px" }}>
+        <div style={S.statBox}><div style={S.statNum}>{reports.length}</div><div style={S.statLabel}>Raportów łącznie</div></div>
+        <div style={S.statBox}><div style={S.statNum}>{allLines.length}</div><div style={S.statLabel}>Wpisów łącznie</div></div>
+        <div style={S.statBox}><div style={{ ...S.statNum, color:COLORS.green }}>{reports.filter(r => r.date === today).length}</div><div style={S.statLabel}>Raportów dziś</div></div>
+        <div style={S.statBox}><div style={{ ...S.statNum, color:COLORS.accent }}>{workerStats.length}</div><div style={S.statLabel}>Aktywnych pracowników</div></div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Etapy — aktywność</div>
+        {stageStats.length === 0
+          ? <div style={{ color:COLORS.textDim, padding:"20px", textAlign:"center" }}>Brak danych</div>
+          : stageStats.map((s, i) => (
+            <div key={s.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"11px 0", borderBottom: i < stageStats.length-1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+                <span style={{ color:COLORS.textDim, fontSize:"13px", minWidth:"20px" }}>#{i+1}</span>
+                <span style={S.tag(COLORS.green)}>{s.label}</span>
+              </div>
+              <span style={{ fontWeight:"600" }}>{s.count} pozycji</span>
+            </div>
+          ))}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Aktywność pracowników</div>
+        {workerStats.length === 0
+          ? <div style={{ color:COLORS.textDim, padding:"20px", textAlign:"center" }}>Brak danych</div>
+          : workerStats.map(w => (
+            <div key={w.login} style={{ ...S.entryCard, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <div style={{ fontWeight:"600", fontSize:"15px" }}>{w.name}</div>
+                <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"3px" }}>
+                  Ten tydzień: <span style={{ color:COLORS.green }}>{w.thisWeek} rap.</span> · {w.lines} pozycji łącznie
+                </div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={S.statNum}>{w.total}</div>
+                <div style={S.statLabel}>raportów</div>
+              </div>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── OBSERVER MANAGE TAB ──────────────────────────────────────────────────────
 function ObserverManageTab({ token }) {
   const [users, setUsers] = useState([]);
