@@ -1455,8 +1455,7 @@ function ExcelExportTab({ reports, users }) {
         ].map(v => `"${v}"`).join(";");
       });
 
-      const csv = BOM + [headers.map(h => `"${h}"`).join(";"), ...rows].join("
-");
+      const csv = BOM + [headers.map(h => `"${h}"`).join(";"), ...rows].join("\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
