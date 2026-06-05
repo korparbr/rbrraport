@@ -1211,7 +1211,7 @@ function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, 
       {workerTab === "map" && (
         <div style={S.card}>
           <div style={S.h2}>🗺️ Mapy hal</div>
-          <HallMap reports={reports} />
+          <HallMap reports={reports} isAdmin={true} />
         </div>
       )}
 
@@ -2730,6 +2730,35 @@ function getProductionStage(doneStages) {
 }
 
 
+// ─── CELL NOTE EDITOR ────────────────────────────────────────────────────────
+function CellNoteEditor({ col, row, currentNote, onSave, onClose }) {
+  const [text, setText] = useState(currentNote || "");
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.8)", zIndex:2000, display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}
+      onClick={onClose}>
+      <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"16px", padding:"24px", maxWidth:"380px", width:"100%" }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize:"16px", fontWeight:"700", marginBottom:"4px" }}>
+          📌 Notatka — pozycja {col}{row}
+        </div>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>Widoczna dla wszystkich na mapie</div>
+        <textarea
+          style={{ ...S.input, width:"100%", height:"80px", resize:"vertical", boxSizing:"border-box", fontFamily:"inherit" }}
+          placeholder="Wpisz notatkę..."
+          value={text}
+          onChange={e => setText(e.target.value)}
+          autoFocus
+        />
+        <div style={{ display:"flex", gap:"8px", marginTop:"14px" }}>
+          <button style={{ ...S.btn, flex:1 }} onClick={() => onSave(col, row, text.trim())}>💾 Zapisz</button>
+          {currentNote && <button style={{ ...S.btnDanger }} onClick={() => onSave(col, row, "")}>🗑️ Usuń</button>}
+          <button style={{ ...S.btnOutline }} onClick={onClose}>Anuluj</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── MAP UPDATER (AI) ─────────────────────────────────────────────────────────
 function MapUpdater({ onUpdate, hallName }) {
   const [image, setImage] = useState(null);
@@ -3179,7 +3208,7 @@ function CellEditor({ cell, col, row, onSave, onDelete, onClose }) {
 }
 
 
-function HallMap({ reports = [] }) {
+function HallMap({ reports = [], isAdmin = false }) {
   const [selectedHall, setSelectedHall] = useState("namiot2");
   const [selected, setSelected] = useState(null);
   const [filterProject, setFilterProject] = useState("all");
@@ -3191,6 +3220,13 @@ function HallMap({ reports = [] }) {
       return saved ? JSON.parse(saved) : {};
     } catch { return {}; }
   });
+  const [cellNotes, setCellNotes] = useState(() => {
+    try {
+      const saved = localStorage.getItem("dl_cell_notes");
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+  const [editingNote, setEditingNote] = useState(null); // { col, row, key }
   const [showUpdater, setShowUpdater] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editingCell, setEditingCell] = useState(null); // { col, row, cell }
@@ -3225,6 +3261,17 @@ function HallMap({ reports = [] }) {
     const newLayout = base.filter(c => !(c.col === col && c.row === row));
     handleLayoutUpdate(newLayout);
     setEditingCell(null);
+  };
+
+  const getNoteKey = (col, row) => `${selectedHall}__${col}${row}`;
+
+  const saveNote = (col, row, text) => {
+    const key = getNoteKey(col, row);
+    const updated = { ...cellNotes, [key]: text };
+    if (!text) delete updated[key];
+    setCellNotes(updated);
+    try { localStorage.setItem("dl_cell_notes", JSON.stringify(updated)); } catch {}
+    setEditingNote(null);
   };
 
   // Compute last stage + warehouse for each product
@@ -3302,7 +3349,17 @@ function HallMap({ reports = [] }) {
       </div>
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px", flexWrap:"wrap", gap:"10px" }}>
-        {editingCell && (
+        {editingNote && (
+        <CellNoteEditor
+          col={editingNote.col}
+          row={editingNote.row}
+          currentNote={cellNotes[getNoteKey(editingNote.col, editingNote.row)] || ""}
+          onSave={saveNote}
+          onClose={() => setEditingNote(null)}
+        />
+      )}
+
+      {editingCell && (
         <CellEditor
           cell={editingCell.cell}
           col={editingCell.col}
@@ -3413,7 +3470,7 @@ function HallMap({ reports = [] }) {
                           }
                         }}
                         style={{
-                          width:"72px", height:"58px",
+                          width:"72px", height:"62px",
                           background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
                           border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
@@ -3425,18 +3482,34 @@ function HallMap({ reports = [] }) {
                           position:"relative",
                         }}
                       >
-                        {visibleCell ? (
-                          <>
-                            {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"9px", color:COLORS.orange }}>✏️</div>}
-                            <div style={{ fontSize:"15px", color: sc ? "#000000cc" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
-                              {String(visibleCell.project).slice(-4)}
-                            </div>
-                            <div style={{ fontSize:"15px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
-                              {visibleCell.product}
-                            </div>
-                            {sc && <div style={{ fontSize:"9px", color:"#000000aa", lineHeight:1, fontWeight:"600" }}>{prodStage}</div>}
-                          </>
-                        ) : editMode ? (
+                        {visibleCell ? (() => {
+                          const noteKey = getNoteKey(col, row);
+                          const note = cellNotes[noteKey];
+                          return (
+                            <>
+                              {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"9px", color:COLORS.orange }}>✏️</div>}
+                              {isAdmin && !editMode && (
+                                <div
+                                  style={{ position:"absolute", top:"2px", right:"2px", fontSize:"10px", cursor:"pointer", opacity: note ? 1 : 0.3, lineHeight:1 }}
+                                  onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>
+                                  📌
+                                </div>
+                              )}
+                              <div style={{ fontSize:"15px", color: sc ? "#000000cc" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
+                                {String(visibleCell.project).slice(-4)}
+                              </div>
+                              <div style={{ fontSize:"15px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
+                                {visibleCell.product}
+                              </div>
+                              {note && !editMode && (
+                                <div style={{ fontSize:"8px", color: sc ? "#000000cc" : COLORS.orange, lineHeight:1.1, fontWeight:"600", maxWidth:"66px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textAlign:"center" }}>
+                                  {note}
+                                </div>
+                              )}
+                              {!note && sc && <div style={{ fontSize:"9px", color:"#000000aa", lineHeight:1, fontWeight:"600" }}>{prodStage}</div>}
+                            </>
+                          );
+                        })() : editMode ? (
                           <div style={{ fontSize:"16px", color:COLORS.textDim, opacity:0.5 }}>{cell ? "🔒" : "+"}</div>
                         ) : null}
                       </div>
@@ -3994,7 +4067,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
           </div>
         </div>
       )}
-      {tab === "map" && <HallMap reports={reports} />}
+      {tab === "map" && <HallMap reports={reports} isAdmin={true} />}
       {tab === "add_report" && <ManagerAddReport users={users} reports={reports} token={token} onSave={async (workerCode, date, lines) => {
         const res = await fetch("/api/reports/as-worker", {
           method: "POST",
