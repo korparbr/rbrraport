@@ -3658,10 +3658,12 @@ function DbHealthCheck({ token }) {
   const check = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/health', { headers: { 'Authorization': `Bearer ${token}` } });
-      setHealth(await res.json());
-    } catch(err) { setHealth({ status:'error', error: err.message }); }
-    finally { setLoading(false); }
+      const res = await fetch('/api/health');
+      const data = await res.json();
+      setHealth(data);
+    } catch(err) {
+      setHealth({ status:'error', db: { connected: false }, error: err.message });
+    } finally { setLoading(false); }
   };
 
   return (
@@ -3670,28 +3672,34 @@ function DbHealthCheck({ token }) {
         {loading ? "⏳ Sprawdzam..." : "🔄 Sprawdź status"}
       </button>
       {health && (
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px,1fr))", gap:"10px" }}>
-          <div style={S.statBox}>
-            <div style={{ fontSize:"20px", marginBottom:"4px" }}>{health.db?.connected ? "✅" : "❌"}</div>
-            <div style={{ ...S.statLabel }}>Połączenie</div>
-            <div style={{ fontSize:"13px", color: health.db?.connected ? COLORS.green : COLORS.red, fontWeight:"600" }}>
-              {health.db?.connected ? "Aktywne" : "Brak"}
+        health.status === 'error' ? (
+          <div style={{ ...S.infoBox(COLORS.red), fontSize:"13px" }}>
+            ❌ Brak połączenia z bazą danych.
+            {health.db?.error && <div style={{ marginTop:"4px", fontSize:"12px", opacity:0.8 }}>{health.db.error}</div>}
+            {health.error && <div style={{ marginTop:"4px", fontSize:"12px", opacity:0.8 }}>{health.error}</div>}
+          </div>
+        ) : (
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px,1fr))", gap:"10px" }}>
+            <div style={S.statBox}>
+              <div style={{ fontSize:"20px", marginBottom:"4px" }}>✅</div>
+              <div style={S.statLabel}>Połączenie</div>
+              <div style={{ fontSize:"13px", color:COLORS.green, fontWeight:"600" }}>Aktywne</div>
+            </div>
+            <div style={S.statBox}>
+              <div style={S.statNum}>{health.db?.reports ?? "—"}</div>
+              <div style={S.statLabel}>Raportów</div>
+            </div>
+            <div style={S.statBox}>
+              <div style={S.statNum}>{health.db?.lines ?? "—"}</div>
+              <div style={S.statLabel}>Wpisów</div>
+            </div>
+            <div style={S.statBox}>
+              <div style={{ fontSize:"11px", color:COLORS.textMuted, marginTop:"4px" }}>{health.version || "—"}</div>
+              <div style={S.statLabel}>Wersja</div>
+              <div style={{ fontSize:"11px", color:COLORS.textDim }}>{health.time ? new Date(health.time).toLocaleTimeString("pl-PL") : ""}</div>
             </div>
           </div>
-          <div style={S.statBox}>
-            <div style={{ ...S.statNum }}>{health.db?.reports ?? "—"}</div>
-            <div style={S.statLabel}>Raportów</div>
-          </div>
-          <div style={S.statBox}>
-            <div style={{ ...S.statNum }}>{health.db?.lines ?? "—"}</div>
-            <div style={S.statLabel}>Wpisów</div>
-          </div>
-          <div style={S.statBox}>
-            <div style={{ fontSize:"11px", color:COLORS.textMuted, marginTop:"4px" }}>{health.version || "—"}</div>
-            <div style={S.statLabel}>Wersja</div>
-            <div style={{ fontSize:"11px", color:COLORS.textDim }}>{health.time ? new Date(health.time).toLocaleTimeString('pl-PL') : ""}</div>
-          </div>
-        </div>
+        )
       )}
     </div>
   );
@@ -3903,7 +3911,7 @@ function ManagerAddReport({ users, reports, token, onSave }) {
 
 
 // ─── MANAGER VIEW ─────────────────────────────────────────────────────────────
-function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange, isSupervisor }) {
+function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange, onReportsChange, isSupervisor }) {
   const [tab, setTab] = useState(isSupervisor ? "kierownik" : "entries");
   const [filterWorker, setFilterWorker] = useState("all");
   const [filterProject, setFilterProject] = useState("all");
@@ -3990,7 +3998,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
-        onReportsChange && onReportsChange();
+        if (onReportsChange) onReportsChange();
         return data;
       }} />}
       {tab === "progress" && <ProjectProgressTab reports={reports} />}
@@ -4509,7 +4517,6 @@ function App() {
       <div style={S.header}>
         <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
           <span style={{ color:"#e8e8f0", fontWeight:"800", fontSize:"18px", letterSpacing:"-0.5px" }}>RaportRBR</span><span style={{ color:"#555570", fontSize:"11px", marginLeft:"4px" }}>v1.1</span>
-          <span style={{ color:"#555570", fontSize:"11px" }}>v1.0</span>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
           {user && <span style={{ color: COLORS.textMuted, fontSize: "14px" }}>
@@ -4530,6 +4537,7 @@ function App() {
           onDelete={async (id) => { await api.deleteReport(token, id); await loadReports(token); }}
           onLogout={handleLogout}
           onUsersChange={() => loadUsers(token)}
+          onReportsChange={() => loadReports(token)}
           isSupervisor={user.code === "RBR056" || user.login === "RBR056"} />
       )}
     </div>
