@@ -1333,6 +1333,7 @@ function UsersTab({ token, onUsersChange }) {
       <div style={{ display:"flex", gap:"8px", marginBottom:"20px" }}>
         <button style={S.tab(tab === "workers")} onClick={() => setTab("workers")}>👷 Pracownicy ({workers.length})</button>
         <button style={S.tab(tab === "admins")} onClick={() => setTab("admins")}>🔑 Menedżerowie ({admins.length})</button>
+        <button style={S.tab(tab === "viewers")} onClick={() => setTab("viewers")}>👁️ Obserwatorzy ({users.filter(u => u.role === "viewer").length})</button>
       </div>
 
       {tab === "workers" && (
@@ -1419,8 +1420,8 @@ function UsersTab({ token, onUsersChange }) {
                   </div>
                 </div>
                 <div style={{ display:"flex", gap:"8px" }}>
-                  <button style={S.btnWarning} onClick={() => resetPassword(u.code || u.login)}>Reset hasła</button>
-                  <button style={S.btnDanger} onClick={() => deleteUser(u.code || u.login)}>Usuń</button>
+                  {isSupervisorUser && <button style={S.btnWarning} onClick={() => resetPassword(u.code || u.login)}>Reset hasła</button>}
+                  {isSupervisorUser && <button style={S.btnDanger} onClick={() => deleteUser(u.code || u.login)}>Usuń</button>}
                 </div>
               </div>
         ))}
@@ -1473,8 +1474,70 @@ function UsersTab({ token, onUsersChange }) {
                   </div>
                 </div>
                 <div style={{ display:"flex", gap:"8px" }}>
-                  <button style={S.btnWarning} onClick={() => resetPassword(u.code || u.login)}>Reset hasła</button>
-                  <button style={S.btnDanger} onClick={() => deleteUser(u.code || u.login)}>Usuń</button>
+                  {isSupervisorUser && <button style={S.btnWarning} onClick={() => resetPassword(u.code || u.login)}>Reset hasła</button>}
+                  {isSupervisorUser && <button style={S.btnDanger} onClick={() => deleteUser(u.code || u.login)}>Usuń</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {tab === "viewers" && (
+        <>
+          <div style={S.card}>
+            <div style={S.h2}>Dodaj Obserwatora</div>
+            <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>
+              Obserwator widzi mapy hal, projekty i magazyny — bez możliwości dodawania raportów.
+            </div>
+            <div style={S.row3} className="dl-row3">
+              <div>
+                <label style={S.label}>Login</label>
+                <input style={{ ...S.input, textTransform:"uppercase" }} placeholder="OBS001"
+                  value={newAdminLogin} onChange={e => { setNewAdminLogin(e.target.value.toUpperCase()); setErrAdmin(""); }} />
+              </div>
+              <div>
+                <label style={S.label}>Imię i nazwisko</label>
+                <input style={S.input} placeholder="np. Jan Kowalski"
+                  value={newAdminName} onChange={e => { setNewAdminName(e.target.value); setErrAdmin(""); }} />
+              </div>
+              <div>
+                <label style={S.label}>Hasło tymczasowe</label>
+                <input style={S.input} type="password" placeholder="Min. 4 znaki"
+                  value={newAdminPass} onChange={e => { setNewAdminPass(e.target.value); setErrAdmin(""); }} />
+              </div>
+            </div>
+            {errAdmin && <div style={S.errorText}>⚠ {errAdmin}</div>}
+            <button style={S.btnSm} onClick={async () => {
+              const code = newAdminLogin.trim().toUpperCase();
+              if (!code) return setErrAdmin("Wpisz login.");
+              if (!/^OBS\d+$/.test(code)) return setErrAdmin("Login musi być w formacie OBS001, OBS002 itp.");
+              if (!newAdminName.trim()) return setErrAdmin("Wpisz imię i nazwisko.");
+              if (newAdminPass.length < 4) return setErrAdmin("Hasło musi mieć co najmniej 4 znaki.");
+              try {
+                await api.addUser(token, code, newAdminName.trim(), newAdminPass, "viewer");
+                setNewAdminLogin(""); setNewAdminName(""); setNewAdminPass(""); setErrAdmin("");
+                onUsersChange();
+                flash("✓ Konto Obserwatora " + newAdminName.trim() + " (" + code + ") utworzone.");
+              } catch(err) { setErrAdmin(err.message); }
+            }}>+ Dodaj Obserwatora</button>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.h2}>Lista Obserwatorów</div>
+            {users.filter(u => u.role === "viewer").length === 0 ? (
+              <div style={{ color:COLORS.textDim, textAlign:"center", padding:"20px" }}>Brak kont Obserwator.</div>
+            ) : users.filter(u => u.role === "viewer").map(u => (
+              <div key={u.login || u.code} style={{ ...S.entryCard, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ fontWeight:"600", fontSize:"15px" }}>👁️ {u.name}</div>
+                  <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"3px" }}>
+                    <span style={{ color:COLORS.accentLight }}>{u.code || u.login}</span>
+                  </div>
+                </div>
+                <div style={{ display:"flex", gap:"8px" }}>
+                  {isSupervisorUser && <button style={S.btnWarning} onClick={() => resetPassword(u.code || u.login)}>Reset hasła</button>}
+                  {isSupervisorUser && <button style={S.btnDanger} onClick={() => deleteUser(u.code || u.login)}>Usuń</button>}
                 </div>
               </div>
             ))}
@@ -3354,764 +3417,20 @@ function HallMap({ reports = [], isAdmin = false }) {
   const withStage = (editMode ? activeLayout : (visibleCells || [])).filter(c => getCellInfo(c)).length;
 
   return (
-    <div style={{ display:"flex", gap:"0", minHeight:"80vh", width:"100%" }}>
-      {/* Hall selector — vertical tabs on left */}
-      <div className="hall-sidebar" style={{ display:"flex", flexDirection:"column", gap:"6px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"clamp(80px, 15vw, 140px)", width:"clamp(80px, 15vw, 140px)" }}>
-        <div style={{ fontSize:"11px", color:COLORS.textDim, fontWeight:"700", textTransform:"uppercase", letterSpacing:"0.06em", padding:"8px 10px 4px" }}>Hale</div>
-        {Object.entries(HALLS).map(([key, h]) => (
-          <button key={key}
-            style={{ padding:"clamp(8px, 1.5vw, 14px) clamp(10px, 2vw, 18px)", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"clamp(11px, 1.5vw, 14px)", fontWeight: selectedHall===key ? "700" : "400", background: selectedHall===key ? COLORS.accent : "transparent", color: selectedHall===key ? "#fff" : COLORS.textMuted, textAlign:"left", transition:"all 0.15s" }}
-            onClick={() => { setSelectedHall(key); setSelected(null); setFilterProject("all"); setFilterStage("all"); }}>
-            {h.name}
-          </button>
-        ))}
+    <div style={{ display:"flex", gap:"8px", marginBottom:"20px", overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:"4px" }} className="dl-tabs">
+        {isSupervisor && <button style={S.tab(tab === "kierownik")} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
+        <button style={S.tab(tab === "add_report")} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
+        <button style={S.tab(tab === "entries")} onClick={() => setTab("entries")}>📝 Wpisy</button>
+        <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
+        <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
+        <button style={S.tab(tab === "warehouse")} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
+        <button style={S.tab(tab === "stats")} onClick={() => setTab("stats")}>📈 Statystyki</button>
+        <button style={S.tab(tab === "users")} onClick={() => setTab("users")}>👥 Pracownicy</button>
+        <button style={S.tab(tab === "excel")} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
+        <button style={S.tab(tab === "email")} onClick={() => setTab("email")}>📧 Raporty email</button>
+        <button style={S.tab(tab === "backup")} onClick={() => setTab("backup")}>🛡️ Backup</button>
       </div>
-      {/* Right panel */}
-      <div style={{ flex:1, minWidth:0, padding:"12px", overflowX:"auto", overflowY:"auto" }}>
-
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px", flexWrap:"wrap", gap:"10px" }}>
-        {editingNote && (
-        <CellNoteEditor
-          col={editingNote.col}
-          row={editingNote.row}
-          currentNote={cellNotes[getNoteKey(editingNote.col, editingNote.row)] || ""}
-          onSave={saveNote}
-          onClose={() => setEditingNote(null)}
-        />
-      )}
-
-      {editingCell && (
-        <CellEditor
-          cell={editingCell.cell}
-          col={editingCell.col}
-          row={editingCell.row}
-          onSave={handleCellSave}
-          onDelete={handleCellDelete}
-          onClose={() => setEditingCell(null)}
-        />
-      )}
-
-      <div style={{ display:"flex", alignItems:"center", gap:"16px", flexWrap:"wrap" }}>
-          <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
-            {totalCells} łazienek · {withStage} z etapem ({Math.round(withStage/totalCells*100)||0}%)
-          </div>
-          <button
-            style={{ background: editMode ? COLORS.orange : "transparent", color: editMode ? "#fff" : COLORS.textMuted, border:`1px solid ${editMode ? COLORS.orange : COLORS.border}`, borderRadius:"8px", padding:"6px 12px", fontSize:"12px", cursor:"pointer", fontWeight: editMode ? "600" : "400" }}
-            onClick={() => { setEditMode(!editMode); setSelected(null); }}>
-            {editMode ? "✏️ Tryb edycji — WŁĄCZONY" : "✏️ Edytuj mapę"}
-          </button>
-          <MapPdfButton
-            hallId={selectedHall}
-            hallName={hall.name}
-            layout={activeLayout}
-            productStages={productStages}
-            emailRecipients={[]}
-            token={window._rbrToken || ""}
-          />
-        </div>
-        <div style={{ display:"flex", gap:"8px", flexWrap:"wrap" }}>
-          <select style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 12px", color:COLORS.text, fontSize:"13px", outline:"none" }}
-            value={filterProject} onChange={e => { setFilterProject(e.target.value); setSelected(null); }}>
-            <option value="all">Wszystkie projekty</option>
-            {projects.map(p => <option key={p} value={p}>Projekt {p}</option>)}
-          </select>
-          <select style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 12px", color:COLORS.text, fontSize:"13px", outline:"none" }}
-            value={filterStage} onChange={e => { setFilterStage(e.target.value); setSelected(null); }}>
-            <option value="all">Wszystkie etapy</option>
-            {Object.entries(STAGE_COLORS).map(([k,v]) => <option key={k} value={k}>{k} — {v.label}</option>)}
-          </select>
-          {(filterProject !== "all" || filterStage !== "all") && (
-            <button style={{ background:"transparent", color:COLORS.textMuted, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"13px", cursor:"pointer" }}
-              onClick={() => { setFilterProject("all"); setFilterStage("all"); }}>Wyczyść</button>
-          )}
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"12px", padding:"18px 20px", marginBottom:"16px" }}>
-        <div style={{ fontSize:"12px", fontWeight:"700", color:COLORS.textMuted, marginBottom:"10px", textTransform:"uppercase", letterSpacing:"0.06em" }}>Legenda etapów produkcji</div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(165px, 1fr))", gap:"8px" }}>
-          {["4","6.1","7.1","11.2","13.1","10","15.1","13.2","17","18","19"].map(k => (
-            <div key={k} style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-              <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:STAGE_COLORS[k]?.mapColor || "#888", border:"1px solid #00000022", flexShrink:0 }} />
-              <div>
-                <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.text, lineHeight:1.2 }}>{k} — {STAGE_COLORS[k]?.label}</div>
-              </div>
-            </div>
-          ))}
-          <div style={{ display:"flex", alignItems:"center", gap:"12px" }}>
-            <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:COLORS.surface, border:`2px solid ${COLORS.border}`, flexShrink:0 }} />
-            <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.textDim }}>Brak etapu</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Zoom controls */}
-      <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"8px" }}>
-        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.max(0.3, +(z-0.15).toFixed(2)))}>−</button>
-        <span style={{ color:COLORS.textMuted, fontSize:"13px", minWidth:"42px", textAlign:"center" }}>{Math.round(zoom*100)}%</span>
-        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.min(2.5, +(z+0.15).toFixed(2)))}>+</button>
-        <button style={{ background:"transparent", border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 10px", fontSize:"12px", cursor:"pointer", color:COLORS.textMuted }} onClick={() => setZoom(1)}>Reset</button>
-      </div>
-
-      {/* Grid — A,B,C w pionie (wiersze), 1,2,3 w poziomie (kolumny) */}
-      <div style={{ overflowX:"auto", overflowY:"auto", WebkitOverflowScrolling:"touch" }}
-        ref={mapRef}
-        onTouchStart={e => {
-          if (e.touches.length === 2) {
-            const dx = e.touches[0].clientX - e.touches[1].clientX;
-            const dy = e.touches[0].clientY - e.touches[1].clientY;
-            lastDist.current = Math.sqrt(dx*dx + dy*dy);
-          }
-        }}
-        onTouchMove={e => {
-          if (e.touches.length === 2 && lastDist.current) {
-            e.preventDefault();
-            const dx = e.touches[0].clientX - e.touches[1].clientX;
-            const dy = e.touches[0].clientY - e.touches[1].clientY;
-            const dist = Math.sqrt(dx*dx + dy*dy);
-            const delta = dist / lastDist.current;
-            setZoom(z => Math.min(2.5, Math.max(0.3, +(z * delta).toFixed(2))));
-            lastDist.current = dist;
-          }
-        }}
-        onTouchEnd={() => { lastDist.current = null; }}
-        onWheel={e => {
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            setZoom(z => Math.min(2.5, Math.max(0.3, +(z - e.deltaY * 0.005).toFixed(2))));
-          }
-        }}
-      >
-        <div style={{ transform:`scale(${zoom})`, transformOrigin:"top left", transition:"transform 0.1s ease" }}>
-        <table style={{ borderCollapse:"collapse" }}>
-          <thead>
-            <tr>
-              <th style={{ padding:"4px 8px", color:COLORS.textMuted, fontSize:"11px", width:"28px" }}></th>
-              {ROWS.map(row => (
-                <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"clamp(10px, 1.5vw, 18px)", fontWeight:"700", textAlign:"center", minWidth:"clamp(52px, 6vw, 110px)" }}>{row}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {[...COLS].reverse().map(col => (
-              <tr key={col}>
-                <td style={{ padding:"2px 6px", color:COLORS.accent, fontSize:"clamp(11px, 1.5vw, 18px)", textAlign:"center", fontWeight:"700" }}>{col}</td>
-                {ROWS.map(row => {
-                  const cell = getCell(col, row);
-                  const isVisible = editMode || getCellVisible(cell);
-                  const visibleCell = isVisible ? cell : null;
-                  const info = getCellInfo(visibleCell);
-                  const cellKey = `${col}-${row}`;
-                  const isFiltered = filterProject !== "all" || filterStage !== "all";
-                  const isHighlighted = !isFiltered || filteredKeys.has(cellKey);
-                  const prodStage = info ? getProductionStage(info.stages) : null;
-                  const sc = prodStage ? STAGE_COLORS[prodStage] : null;
-                  const isSelected = selected?.col === col && selected?.row === row;
-                  // In non-edit mode: show cell outline if position exists in layout but not in produkcja
-                  const isPositionDefined = !!cell;
-                  const isHiddenByWarehouse = isPositionDefined && !isVisible && !editMode;
-
-                  return (
-                    <td key={row} style={{ padding:"2px" }}>
-                      <div
-                        onClick={() => {
-                          if (editMode) {
-                            setEditingCell({ col, row, cell: cell || null });
-                          } else {
-                            if (visibleCell) setSelected(isSelected ? null : { col, row, cell: visibleCell, info });
-                          }
-                        }}
-                        style={{
-                          width:"clamp(52px, 6vw, 110px)", height:"clamp(60px, 7vw, 110px)",
-                          background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
-                          border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
-                          borderRadius:"6px",
-                          cursor: editMode ? "pointer" : visibleCell ? "pointer" : "default",
-                          display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-                          padding:"2px", opacity: !visibleCell ? (editMode ? 0.4 : 0) : !isHighlighted ? 0.25 : 1,
-                          transition:"all 0.1s",
-                          outline: isSelected ? `2px solid ${COLORS.accent}` : "none",
-                          position:"relative",
-                        }}
-                      >
-                        {visibleCell ? (() => {
-                          const noteKey = getNoteKey(col, row);
-                          const note = cellNotes[noteKey];
-                          return (
-                            <>
-                              {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"13px", color:COLORS.orange }}>✏️</div>}
-                              {isAdmin && !editMode && note && (
-                                <div
-                                  style={{ position:"absolute", top:"3px", right:"3px", fontSize:"20px", cursor:"pointer", lineHeight:1, filter:"drop-shadow(0 1px 2px rgba(0,0,0,0.5))" }}
-                                  onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>
-                                  📌
-                                </div>
-                              )}
-                              {isAdmin && editMode && (
-                                <div
-                                  style={{ position:"absolute", top:"3px", right:"3px", fontSize:"18px", cursor:"pointer", lineHeight:1, opacity:0.5 }}
-                                  onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>
-                                  📌
-                                </div>
-                              )}
-                              <div style={{ fontSize:"clamp(10px, 1.6vw, 20px)", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
-                                {String(visibleCell.project).slice(-4)}
-                              </div>
-                              <div style={{ fontSize:"clamp(13px, 1.9vw, 25px)", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>
-                                {visibleCell.product}
-                              </div>
-                              {sc && (
-                                <div style={{ fontSize:"clamp(10px, 1.1vw, 14px)", color:"#000000aa", lineHeight:1.1, fontWeight:"700", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                                  {STAGE_COLORS[prodStage]?.label?.split("—")[1]?.trim() || STAGE_COLORS[prodStage]?.label || prodStage}
-                                </div>
-                              )}
-                              {note && !editMode && (
-                                <div style={{ fontSize:"clamp(11px, 1.25vw, 16px)", color: sc ? "#000000dd" : COLORS.orange, lineHeight:1.2, fontWeight:"700", maxWidth:"100%", textAlign:"center", wordBreak:"break-word", marginTop:"2px", borderTop: sc ? "1px solid #00000022" : "none", paddingTop:"2px" }}>
-                                  {note}
-                                </div>
-                              )}
-                            </>
-                          );
-                        })() : editMode ? (
-                          <div style={{ fontSize:"16px", color:COLORS.textDim, opacity:0.5 }}>{cell ? "🔒" : "+"}</div>
-                        ) : null}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>{/* end zoom scale wrapper */}
-      </div>{/* end touch/wheel wrapper */}
-
-      {/* Map updater */}
-      <div style={{ marginTop:"16px" }}>
-        <button
-          style={{ background:"transparent", color:COLORS.textMuted, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"12px", cursor:"pointer" }}
-          onClick={() => setShowUpdater(!showUpdater)}>
-          {showUpdater ? "✕ Zamknij" : "📸 Aktualizuj mapę ze zdjęcia"}
-        </button>
-        {showUpdater && <div style={{ marginTop:"12px" }}><MapUpdater hallName={hall.name} onUpdate={handleLayoutUpdate} /></div>}
-      </div>
-
-      {/* Detail panel — full history */}
-      {selected && (
-        <div style={{ marginTop:"14px", background:COLORS.surface, border:`1px solid ${COLORS.accent}44`, borderRadius:"16px", padding:"20px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"16px" }}>
-            <div>
-              <div style={{ fontSize:"18px", fontWeight:"800" }}>
-                Łazienka {selected.cell.product}
-              </div>
-              <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"2px" }}>
-                Projekt {selected.cell.project} · Pozycja {selected.col}{selected.row} · {hall.name}
-              </div>
-            </div>
-            <button onClick={() => setSelected(null)} style={{ background:"transparent", border:"none", color:COLORS.textMuted, cursor:"pointer", fontSize:"20px" }}>✕</button>
-          </div>
-
-          {(() => {
-            // Build full history for this product
-            const historyLines = [];
-            reports.forEach(r => {
-              (r.lines||[]).forEach(l => {
-                if (String(l.project) === String(selected.cell.project) && String(l.product) === String(selected.cell.product)) {
-                  historyLines.push({
-                    ...l,
-                    date: r.date || r.report_date,
-                    worker: r.workerName || r.worker_name || r.workerLogin || r.worker_code,
-                  });
-                }
-              });
-            });
-            historyLines.sort((a,b) => (a.date||"").localeCompare(b.date||""));
-
-            if (historyLines.length === 0) return (
-              <div style={{ textAlign:"center", padding:"24px", color:COLORS.textDim }}>
-                <div style={{ fontSize:"28px", marginBottom:"8px" }}>📋</div>
-                Brak raportów dla tej łazienki.
-              </div>
-            );
-
-            return (
-              <div>
-                {/* Summary tags */}
-                <div style={{ display:"flex", gap:"6px", flexWrap:"wrap", marginBottom:"16px" }}>
-                  {[...new Set(historyLines.map(l => l.stage))].map(s => {
-                    const sc = STAGE_COLORS[s];
-                    const stageObj = STAGES.find(st => st.id === s);
-                    return (
-                      <span key={s} style={{ background:(sc?.mapColor||"#888")+"33", color: sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"6px", padding:"3px 10px", fontSize:"12px", fontWeight:"600" }}>
-                        {s} {stageObj?.label || ""}
-                      </span>
-                    );
-                  })}
-                </div>
-
-                {/* Timeline */}
-                <div style={{ position:"relative" }}>
-                  {historyLines.map((line, i) => {
-                    const stageObj = STAGES.find(s => s.id === line.stage);
-                    const sc = STAGE_COLORS[line.stage];
-                    const isLast = i === historyLines.length - 1;
-                    return (
-                      <div key={i} style={{ display:"flex", gap:"12px", marginBottom:"10px" }}>
-                        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", flexShrink:0 }}>
-                          <div style={{ width:"14px", height:"14px", borderRadius:"50%", background: sc?.mapColor || COLORS.border, marginTop:"3px", border:"2px solid #00000022" }} />
-                          {!isLast && <div style={{ width:"2px", flex:1, background:COLORS.border, minHeight:"16px" }} />}
-                        </div>
-                        <div style={{ flex:1, paddingBottom:"4px" }}>
-                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:"4px" }}>
-                            <span style={{ fontWeight:"600", fontSize:"14px", color:COLORS.text }}>
-                              {stageObj?.label || line.stage}
-                            </span>
-                            <span style={{ background:(sc?.mapColor||COLORS.border)+"33", color:sc?.mapColor||COLORS.textMuted, borderRadius:"5px", padding:"1px 8px", fontSize:"11px", fontWeight:"600" }}>
-                              {line.stage}
-                            </span>
-                          </div>
-                          <div style={{ display:"flex", gap:"12px", marginTop:"3px", flexWrap:"wrap" }}>
-                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>📅 {line.date}</span>
-                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>👤 {line.worker}</span>
-                            {line.hall && (
-                              <span style={{ color:COLORS.accentLight, fontSize:"12px" }}>🏭 {line.hall === "namiot1" ? "Namiot 1" : line.hall === "namiot2" ? "Namiot 2" : line.hall === "betonowanie" ? "Hala Betonowanie" : "Hala ISO"}</span>
-                            )}
-                          </div>
-                          {line.note && <div style={{ color:COLORS.textDim, fontSize:"12px", marginTop:"2px" }}>💬 {line.note}</div>}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div style={{ marginTop:"12px", paddingTop:"12px", borderTop:`1px solid ${COLORS.border}`, color:COLORS.textMuted, fontSize:"12px" }}>
-                  📊 {historyLines.length} wpisów · pierwszy: {historyLines[0].date} · ostatni: {historyLines[historyLines.length-1].date}
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-      </div>
-    </div>
-  );
-}
-
-// ─── DATABASE BACKUP UI ───────────────────────────────────────────────────────
-function BackupTab({ token }) {
-  const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [restoreMsg, setRestoreMsg] = useState(null);
-
-  const downloadBackup = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/backup', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!res.ok) throw new Error('Błąd pobierania backupu');
-      const data = await res.json();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `raportrbr_backup_${new Date().toISOString().slice(0,10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      setStatus({ type:'success', text:`✓ Backup pobrany: ${data.counts.reports} raportów, ${data.counts.report_lines} wpisów` });
-    } catch(err) { setStatus({ type:'error', text:'Błąd: ' + err.message }); }
-    finally { setLoading(false); }
-  };
-
-  const restoreBackup = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const backup = JSON.parse(ev.target.result);
-        if (!backup.data) throw new Error('Nieprawidłowy format pliku');
-        setLoading(true);
-        const res = await fetch('/api/restore', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ data: backup.data })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        setRestoreMsg({ type:'success', text:'✓ ' + data.message });
-      } catch(err) { setRestoreMsg({ type:'error', text:'Błąd: ' + err.message }); }
-      finally { setLoading(false); }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  };
-
-  return (
-    <div>
-      <div style={{ ...S.infoBox(COLORS.accent), marginBottom:"20px" }}>
-        🛡️ Backup chroni Twoje dane przed utratą. Zalecamy pobierać backup raz w tygodniu i przechowywać go lokalnie.
-      </div>
-
-      {/* Export */}
-      <div style={S.card}>
-        <div style={S.h2}>⬇️ Pobierz backup bazy danych</div>
-        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>
-          Pobiera wszystkie raporty, wpisy i użytkowników jako plik JSON. Możesz go użyć do przywrócenia danych w razie awarii.
-        </div>
-        <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
-          <button style={{ ...S.btn, opacity: loading ? 0.6 : 1 }} onClick={downloadBackup} disabled={loading}>
-            {loading ? "⏳ Pobieranie..." : "⬇️ Pobierz backup JSON"}
-          </button>
-          {status && <span style={{ fontSize:"13px", color: status.type==="success" ? COLORS.green : COLORS.red, fontWeight:"600" }}>{status.text}</span>}
-        </div>
-      </div>
-
-      {/* Import/Restore */}
-      <div style={S.card}>
-        <div style={S.h2}>⬆️ Przywróć z backupu</div>
-        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"8px" }}>
-          Wgraj plik JSON z backupu. System doda brakujące wpisy — nie nadpisze istniejących danych.
-        </div>
-        <div style={{ ...S.infoBox(COLORS.orange), marginBottom:"16px" }}>
-          ⚠️ Przywracanie dodaje tylko brakujące rekordy. Nie usuwa ani nie nadpisuje istniejących danych.
-        </div>
-        <input type="file" accept=".json" id="restore-file" style={{ display:"none" }} onChange={restoreBackup} />
-        <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
-          <label htmlFor="restore-file" style={{ ...S.btnOutline, display:"inline-block", cursor:"pointer" }}>
-            📂 Wybierz plik backup
-          </label>
-          {restoreMsg && <span style={{ fontSize:"13px", color: restoreMsg.type==="success" ? COLORS.green : COLORS.red, fontWeight:"600" }}>{restoreMsg.text}</span>}
-        </div>
-      </div>
-
-      {/* Health check */}
-      <div style={S.card}>
-        <div style={S.h2}>🩺 Status bazy danych</div>
-        <DbHealthCheck token={token} />
-      </div>
-    </div>
-  );
-}
-
-function DbHealthCheck({ token }) {
-  const [health, setHealth] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const check = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/health');
-      const data = await res.json();
-      setHealth(data);
-    } catch(err) {
-      setHealth({ status:'error', db: { connected: false }, error: err.message });
-    } finally { setLoading(false); }
-  };
-
-  return (
-    <div>
-      <button style={{ ...S.btnSm, marginBottom:"14px", opacity: loading ? 0.6:1 }} onClick={check} disabled={loading}>
-        {loading ? "⏳ Sprawdzam..." : "🔄 Sprawdź status"}
-      </button>
-      {health && (
-        health.status === 'error' ? (
-          <div style={{ ...S.infoBox(COLORS.red), fontSize:"13px" }}>
-            ❌ Brak połączenia z bazą danych.
-            {health.db?.error && <div style={{ marginTop:"4px", fontSize:"12px", opacity:0.8 }}>{health.db.error}</div>}
-            {health.error && <div style={{ marginTop:"4px", fontSize:"12px", opacity:0.8 }}>{health.error}</div>}
-          </div>
-        ) : (
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(160px,1fr))", gap:"10px" }}>
-            <div style={S.statBox}>
-              <div style={{ fontSize:"20px", marginBottom:"4px" }}>✅</div>
-              <div style={S.statLabel}>Połączenie</div>
-              <div style={{ fontSize:"13px", color:COLORS.green, fontWeight:"600" }}>Aktywne</div>
-            </div>
-            <div style={S.statBox}>
-              <div style={S.statNum}>{health.db?.reports ?? "—"}</div>
-              <div style={S.statLabel}>Raportów</div>
-            </div>
-            <div style={S.statBox}>
-              <div style={S.statNum}>{health.db?.lines ?? "—"}</div>
-              <div style={S.statLabel}>Wpisów</div>
-            </div>
-            <div style={S.statBox}>
-              <div style={{ fontSize:"11px", color:COLORS.textMuted, marginTop:"4px" }}>{health.version || "—"}</div>
-              <div style={S.statLabel}>Wersja</div>
-              <div style={{ fontSize:"11px", color:COLORS.textDim }}>{health.time ? new Date(health.time).toLocaleTimeString("pl-PL") : ""}</div>
-            </div>
-          </div>
-        )
-      )}
-    </div>
-  );
-}
-
-
-// ─── BULK WORKER ADD ─────────────────────────────────────────────────────────
-function BulkWorkerAdd({ contractors, users, token, onDone }) {
-  const [selected, setSelected] = useState(new Set());
-  const [password, setPassword] = useState("zmien123");
-  const [search, setSearch] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [progress, setProgress] = useState(null);
-
-  const available = contractors.filter(c =>
-    !users.find(u => (u.code || u.login || "").toUpperCase() === c.code.toUpperCase()) &&
-    (search === "" || c.code.toLowerCase().includes(search.toLowerCase()) || c.name.toLowerCase().includes(search.toLowerCase()))
-  );
-
-  const toggleAll = () => {
-    if (selected.size === available.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(available.map(c => c.code)));
-    }
-  };
-
-  const toggle = (code) => {
-    setSelected(prev => {
-      const next = new Set(prev);
-      if (next.has(code)) next.delete(code); else next.add(code);
-      return next;
-    });
-  };
-
-  const addAll = async () => {
-    if (selected.size === 0) return;
-    if (password.length < 4) return;
-    setAdding(true);
-    let done = 0, errors = 0;
-    const toAdd = available.filter(c => selected.has(c.code));
-    setProgress({ done: 0, total: toAdd.length, errors: 0 });
-
-    for (const c of toAdd) {
-      try {
-        await api.addUser(token, c.code, c.name, password, "worker");
-        done++;
-      } catch { errors++; }
-      setProgress({ done, total: toAdd.length, errors });
-    }
-    setAdding(false);
-    if (done > 0) onDone();
-  };
-
-  return (
-    <div>
-      <div style={S.row2} className="dl-row2">
-        <div>
-          <label style={S.label}>Szukaj pracownika</label>
-          <input style={S.input} placeholder="Kod lub imię..." value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
-        <div>
-          <label style={S.label}>Hasło tymczasowe dla wszystkich</label>
-          <input style={S.input} value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 4 znaki" />
-        </div>
-      </div>
-
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", margin:"12px 0 8px" }}>
-        <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
-          {available.length} dostępnych · <span style={{ color:COLORS.accent, fontWeight:"600" }}>{selected.size} zaznaczonych</span>
-        </div>
-        <div style={{ display:"flex", gap:"8px" }}>
-          <button style={{ ...S.btnSm, background:COLORS.surface, color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }} onClick={toggleAll}>
-            {selected.size === available.length ? "Odznacz wszystkie" : "Zaznacz wszystkie"}
-          </button>
-        </div>
-      </div>
-
-      <div style={{ maxHeight:"280px", overflowY:"auto", border:`1px solid ${COLORS.border}`, borderRadius:"10px", marginBottom:"16px" }}>
-        {available.length === 0 ? (
-          <div style={{ padding:"24px", textAlign:"center", color:COLORS.textDim }}>
-            {search ? "Brak wyników" : "Wszyscy pracownicy z listy mają już konta"}
-          </div>
-        ) : available.map(c => {
-          const isSelected = selected.has(c.code);
-          return (
-            <div key={c.code}
-              style={{ display:"flex", alignItems:"center", gap:"12px", padding:"10px 14px", background: isSelected ? COLORS.accent+"12" : "transparent", borderBottom:`1px solid ${COLORS.border}`, cursor:"pointer" }}
-              onClick={() => toggle(c.code)}>
-              <div style={{ width:"18px", height:"18px", borderRadius:"4px", background: isSelected ? COLORS.accent : "transparent", border:`2px solid ${isSelected ? COLORS.accent : COLORS.border}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                {isSelected && <span style={{ color:"#fff", fontSize:"11px", fontWeight:"800" }}>✓</span>}
-              </div>
-              <span style={{ color:COLORS.textMuted, fontSize:"12px", minWidth:"60px" }}>{c.code}</span>
-              <span style={{ fontSize:"14px", color:COLORS.text }}>{c.name}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {progress && (
-        <div style={{ ...S.infoBox(progress.errors > 0 ? COLORS.orange : COLORS.green), marginBottom:"12px" }}>
-          {adding ? `⏳ Dodaję... ${progress.done}/${progress.total}` : `✓ Dodano ${progress.done} pracowników${progress.errors > 0 ? ` (${progress.errors} błędów)` : ""}`}
-          <div style={{ background:COLORS.border, borderRadius:"99px", height:"6px", marginTop:"6px", overflow:"hidden" }}>
-            <div style={{ width:`${Math.round(progress.done/progress.total*100)}%`, height:"100%", background: progress.errors > 0 ? COLORS.orange : COLORS.green, borderRadius:"99px", transition:"width 0.2s" }} />
-          </div>
-        </div>
-      )}
-
-      <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
-        <button
-          style={{ ...S.btn, opacity: selected.size === 0 || adding || password.length < 4 ? 0.4 : 1 }}
-          onClick={addAll}
-          disabled={selected.size === 0 || adding || password.length < 4}>
-          {adding ? "⏳ Dodaję..." : `+ Dodaj ${selected.size} pracowników`}
-        </button>
-        <div style={{ color:COLORS.textDim, fontSize:"12px" }}>
-          Hasło tymczasowe: <strong>{password}</strong>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-// ─── MANAGER ADD REPORT ───────────────────────────────────────────────────────
-function ManagerAddReport({ users, reports, token, onSave }) {
-  const workers = users.filter(u => (u.role || "worker") === "worker");
-  const [selectedWorker, setSelectedWorker] = useState("");
-  const [date, setDate] = useState(today());
-  const [lines, setLines] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const [saveMsg, setSaveMsg] = useState(null);
-  const [enabledStages] = useState(new Set(STAGES.map(s => s.id)));
-
-  const handleSave = async () => {
-    if (!selectedWorker) return setSaveMsg({ type:"error", text:"Wybierz pracownika." });
-    if (lines.length === 0) return setSaveMsg({ type:"error", text:"Dodaj co najmniej jedną pozycję." });
-    setSaving(true);
-    setSaveMsg(null);
-    try {
-      const result = await onSave(selectedWorker, date, lines);
-      setLines([]);
-      if (result?.skipped?.length > 0) {
-        setSaveMsg({ type:"warning", text: result.message });
-        setTimeout(() => setSaveMsg(null), 8000);
-      } else {
-        setSaveMsg({ type:"success", text:`✓ Raport zapisany dla ${workers.find(w => (w.code||w.login) === selectedWorker)?.name || selectedWorker}` });
-        setTimeout(() => setSaveMsg(null), 3000);
-      }
-    } catch(err) {
-      setSaveMsg({ type:"error", text: err.message });
-    } finally { setSaving(false); }
-  };
-
-  return (
-    <div style={S.card}>
-      <div style={S.h2}>➕ Dodaj raport w imieniu pracownika</div>
-
-      <div style={{ ...S.row2, marginBottom:"20px" }} className="dl-row2">
-        <div>
-          <label style={S.label}>Pracownik</label>
-          <select style={S.select} value={selectedWorker} onChange={e => { setSelectedWorker(e.target.value); setLines([]); }}>
-            <option value="">— wybierz pracownika —</option>
-            {workers.sort((a,b) => (a.name||"").localeCompare(b.name||"")).map(w => (
-              <option key={w.code||w.login} value={w.code||w.login}>
-                {w.name} ({w.code||w.login})
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label style={S.label}>Data</label>
-          <input type="date" style={S.input} value={date}
-            onChange={e => setDate(e.target.value)} max={today()} />
-        </div>
-      </div>
-
-      {selectedWorker && (
-        <>
-          {lines.map((line, i) => (
-            <LineItem key={i} line={line} onRemove={() => setLines(lines.filter((_, j) => j !== i))} />
-          ))}
-          <LineForm
-            onAdd={line => setLines(prev => [...prev, { ...line, contractor: selectedWorker }])}
-            onAddBatch={newLines => setLines(prev => [...prev, ...newLines.map(l => ({ ...l, contractor: selectedWorker }))])}
-            reports={reports}
-            currentLines={lines}
-            enabledStages={enabledStages}
-          />
-          <div style={S.divider} />
-          <div style={{ display:"flex", gap:"12px", alignItems:"center" }}>
-            <button
-              style={{ ...S.btn, opacity: lines.length === 0 || saving ? 0.4 : 1 }}
-              onClick={handleSave}
-              disabled={lines.length === 0 || saving}>
-              {saving ? "Zapisywanie..." : `Zapisz raport (${lines.length} ${lines.length === 1 ? "pozycja" : "pozycji"})`}
-            </button>
-          </div>
-          {saveMsg && (
-            <div style={{ ...S.infoBox(saveMsg.type === "success" ? COLORS.green : saveMsg.type === "warning" ? COLORS.orange : COLORS.red), marginTop:"12px" }}>
-              {saveMsg.text}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-
-// ─── MANAGER VIEW ─────────────────────────────────────────────────────────────
-function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange, onReportsChange, isSupervisor }) {
-  const [tab, setTab] = useState(isSupervisor ? "kierownik" : "entries");
-  const [filterWorker, setFilterWorker] = useState("all");
-  const [filterProject, setFilterProject] = useState("all");
-  const [filterStage, setFilterStage] = useState("all");
-  const [filterDate, setFilterDate] = useState("");
-
-  const allLines = reports.flatMap(r => r.lines.map(l => ({ ...l, workerLogin: r.workerLogin, workerName: r.workerName, date: r.date })));
-
-  const filtered = reports
-    .filter(r => filterWorker === "all" || r.workerLogin === filterWorker)
-    .filter(r => filterProject === "all" || r.lines.some(l => l.project === filterProject))
-    .filter(r => filterStage === "all" || r.lines.some(l => l.stage === filterStage))
-    .filter(r => !filterDate || r.date.startsWith(filterDate))
-    .sort((a, b) => b.date.localeCompare(a.date));
-
-  const workerStats = users.map(w => ({
-    ...w,
-    total: reports.filter(r => r.workerLogin === w.login).length,
-    thisWeek: reports.filter(r => r.workerLogin === w.login && r.date >= getWeekStart()).length,
-    lines: allLines.filter(l => l.workerLogin === w.login).length,
-  }));
-  const stageStats = STAGES.map(s => ({ ...s, count: allLines.filter(l => l.stage === s.id).length }))
-    .filter(s => s.count > 0).sort((a, b) => b.count - a.count);
-  const projectStats = Object.keys(PROJECTS).map(p => ({ id: p, count: allLines.filter(l => l.project === p).length }));
-
-  const hasFilter = filterWorker !== "all" || filterProject !== "all" || filterStage !== "all" || filterDate;
-
-  return (
-    <div style={S.main}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "28px" }}>
-        <div>
-          <div style={{ fontSize: "24px", fontWeight: "800", letterSpacing: "-0.5px" }}>Panel menedżera 📊</div>
-          <div style={{ color: COLORS.textMuted, marginTop: "4px", fontSize: "14px" }}>
-            {reports.length} raportów · {users.length} pracowników · {allLines.length} pozycji
-          </div>
-        </div>
-        <button style={S.btnOutline} onClick={onLogout}>Wyloguj</button>
-      </div>
-
-      <div style={{ display:"flex", gap:"0", minHeight:"80vh", width:"100%" }}>
-        {/* Vertical sidebar */}
-        <div style={{ display:"flex", flexDirection:"column", gap:"4px", padding:"12px 8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"180px", width:"180px" }}>
-          {isSupervisor && <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="kierownik" ? "700" : "400", background: tab==="kierownik" ? COLORS.accent : "transparent", color: tab==="kierownik" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="add_report" ? "700" : "400", background: tab==="add_report" ? COLORS.accent : "transparent", color: tab==="add_report" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="entries" ? "700" : "400", background: tab==="entries" ? COLORS.accent : "transparent", color: tab==="entries" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("entries")}>📝 Wpisy</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="map" ? "700" : "400", background: tab==="map" ? COLORS.accent : "transparent", color: tab==="map" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="progress" ? "700" : "400", background: tab==="progress" ? COLORS.accent : "transparent", color: tab==="progress" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("progress")}>📊 Projekty</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="warehouse" ? "700" : "400", background: tab==="warehouse" ? COLORS.accent : "transparent", color: tab==="warehouse" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="stats" ? "700" : "400", background: tab==="stats" ? COLORS.accent : "transparent", color: tab==="stats" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("stats")}>📈 Statystyki</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="users" ? "700" : "400", background: tab==="users" ? COLORS.accent : "transparent", color: tab==="users" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("users")}>👥 Pracownicy</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="excel" ? "700" : "400", background: tab==="excel" ? COLORS.accent : "transparent", color: tab==="excel" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="email" ? "700" : "400", background: tab==="email" ? COLORS.accent : "transparent", color: tab==="email" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("email")}>📧 Raporty email</button>
-          <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="backup" ? "700" : "400", background: tab==="backup" ? COLORS.accent : "transparent", color: tab==="backup" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("backup")}>🛡️ Backup</button>
-        </div>
-        {/* Main content */}
-        <div style={{ flex:1, minWidth:0, padding:"20px", overflowY:"auto" }}>
+      <div>
 
       {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} />}
       {tab === "photos" && <PhotoGallery reports={reports} users={users} />}
@@ -4244,7 +3563,6 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
           </div>
         </>
       )}
-        </div>
       </div>
     </div>
   );
@@ -4607,6 +3925,133 @@ function SupervisorView({ user, token, reports, onLogout }) {
 }
 
 
+
+// ─── OBSERVER MANAGE TAB ──────────────────────────────────────────────────────
+function ObserverManageTab({ token }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newLogin, setNewLogin] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newPass, setNewPass] = useState("");
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const load = async () => {
+    try {
+      const data = await api.getUsers(token);
+      setUsers(data.filter(u => u.role === "viewer"));
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 3000); };
+
+  const addObserver = async () => {
+    const code = newLogin.trim().toUpperCase();
+    if (!/^OBS\d+$/.test(code)) return setErr("Login musi być w formacie OBS001, OBS002 itp.");
+    if (!newName.trim()) return setErr("Wpisz imię i nazwisko.");
+    if (newPass.length < 4) return setErr("Hasło musi mieć co najmniej 4 znaki.");
+    try {
+      await api.addUser(token, code, newName.trim(), newPass, "viewer");
+      setNewLogin(""); setNewName(""); setNewPass(""); setErr("");
+      flash("✓ Obserwator " + newName.trim() + " dodany.");
+      load();
+    } catch(e) { setErr(e.message); }
+  };
+
+  return (
+    <div>
+      {msg && <div style={{ ...S.infoBox(COLORS.green), marginBottom:"16px" }}>{msg}</div>}
+      <div style={S.card}>
+        <div style={S.h2}>➕ Dodaj Obserwatora</div>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px", marginBottom:"16px" }}>
+          Format: <strong>OBS001</strong>, OBS002, OBS003...
+        </div>
+        <div style={S.row3} className="dl-row3">
+          <div>
+            <label style={S.label}>Login (OBS...)</label>
+            <input style={{ ...S.input, textTransform:"uppercase" }} placeholder="OBS001"
+              value={newLogin} onChange={e => { setNewLogin(e.target.value.toUpperCase()); setErr(""); }} />
+          </div>
+          <div>
+            <label style={S.label}>Imię i nazwisko</label>
+            <input style={S.input} placeholder="np. Jan Kowalski"
+              value={newName} onChange={e => { setNewName(e.target.value); setErr(""); }} />
+          </div>
+          <div>
+            <label style={S.label}>Hasło tymczasowe</label>
+            <input style={S.input} type="password" placeholder="Min. 4 znaki"
+              value={newPass} onChange={e => { setNewPass(e.target.value); setErr(""); }} />
+          </div>
+        </div>
+        {err && <div style={S.errorText}>⚠ {err}</div>}
+        <button style={S.btnSm} onClick={addObserver}>+ Dodaj Obserwatora</button>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.h2}>Lista Obserwatorów</div>
+        {loading ? <div style={{ color:COLORS.textMuted }}>Ładowanie...</div> :
+         users.length === 0 ? <div style={{ color:COLORS.textDim, textAlign:"center", padding:"20px" }}>Brak obserwatorów.</div> :
+         users.map(u => (
+          <div key={u.code||u.login} style={{ ...S.entryCard, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <div>
+              <div style={{ fontWeight:"600" }}>👁️ {u.name}</div>
+              <div style={{ color:COLORS.accentLight, fontSize:"13px" }}>{u.code||u.login}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── VIEWER VIEW (Menager — mapa/projekty/magazyny) ───────────────────────────
+function ViewerView({ user, token, reports, onLogout }) {
+  const [tab, setTab] = useState("map");
+  const [showChangePass, setShowChangePass] = useState(false);
+
+  if (showChangePass) return (
+    <ChangePasswordScreen user={user} token={token} forced={false}
+      onDone={() => setShowChangePass(false)}
+      onLogout={() => setShowChangePass(false)} />
+  );
+
+  return (
+    <div style={S.main}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"24px" }}>
+        <div>
+          <div style={{ fontSize:"22px", fontWeight:"800" }}>Witaj, {user.name}!</div>
+          <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"2px" }}>Panel Obserwatora</div>
+        </div>
+        <div style={{ display:"flex", gap:"8px" }}>
+          <button style={S.btnOutline} onClick={() => setShowChangePass(true)}>🔐</button>
+          <button style={S.btnOutline} onClick={onLogout}>Wyloguj</button>
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:"8px", marginBottom:"20px", overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:"4px" }}>
+        <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
+        <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
+        <button style={S.tab(tab === "warehouse")} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
+        <button style={S.tab(tab === "observers")} onClick={() => setTab("observers")}>👁️ Obserwatorzy</button>
+      </div>
+
+      {tab === "map" && (
+        <div style={S.card}>
+          <div style={S.h2}>🗺️ Mapy hal</div>
+          <HallMap reports={reports} isAdmin={false} />
+        </div>
+      )}
+      {tab === "progress" && <ProjectProgressTab reports={reports} />}
+      {tab === "warehouse" && <WarehouseTab reports={reports} />}
+      {tab === "observers" && <ObserverManageTab token={token} />}
+    </div>
+  );
+}
+
+
 function App() {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(() => { try { return localStorage.getItem('rrbr_token'); } catch { return null; } });
@@ -4621,7 +4066,6 @@ function App() {
         if (payload.exp * 1000 > Date.now()) {
           const restoredUser = { login: payload.code, code: payload.code, name: payload.name, role: payload.role };
           setUser(restoredUser);
-          // Load reports immediately with token
           window._rbrToken = token;
           loadReports(token);
           if (restoredUser.role === 'manager' || restoredUser.role === 'supervisor') {
@@ -4714,6 +4158,8 @@ function App() {
           onRefreshReports={() => loadReports(token)}
           onLogout={handleLogout}
           onUsersChange={() => {}} />
+      ) : user.role === "viewer" ? (
+        <ViewerView user={user} token={token} reports={reports} onLogout={handleLogout} />
       ) : (
         <ManagerView users={users} reports={reports} token={token}
           onDelete={async (id) => { await api.deleteReport(token, id); await loadReports(token); }}

@@ -58,7 +58,7 @@ function auth(req, res, next) {
   catch { res.status(401).json({ error: 'Nieprawidłowy token' }); }
 }
 function managerOnly(req, res, next) {
-  if (req.user.role !== 'manager' && req.user.role !== 'supervisor') return res.status(403).json({ error: 'Brak uprawnień' });
+  if (req.user.role !== 'manager' && req.user.role !== 'supervisor' && req.user.role !== 'viewer') return res.status(403).json({ error: 'Brak uprawnień' });
   next();
 }
 
@@ -116,12 +116,26 @@ app.post('/api/users', auth, managerOnly, async (req, res) => {
 });
 
 app.put('/api/users/:code/reset-password', auth, managerOnly, async (req, res) => {
+  // Check if target user is a manager - only supervisor/admin can reset managers
+  const target = await pool.query('SELECT role FROM users WHERE code=$1', [req.params.code]);
+  if (target.rows.length > 0 && target.rows[0].role === 'manager') {
+    if (req.user.role !== 'supervisor' && req.user.code !== 'ADMIN') {
+      return res.status(403).json({ error: 'Tylko kierownik lub admin może resetować hasła menedżerów.' });
+    }
+  }
   const hash = await bcrypt.hash('zmien123', 10);
   await pool.query('UPDATE users SET password_hash=$1, must_change_password=TRUE WHERE code=$2', [hash, req.params.code]);
   res.json({ success: true });
 });
 
 app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
+  // Only supervisor/admin can delete managers
+  const target = await pool.query('SELECT role FROM users WHERE code=$1', [req.params.code]);
+  if (target.rows.length > 0 && target.rows[0].role === 'manager') {
+    if (req.user.role !== 'supervisor' && req.user.code !== 'ADMIN') {
+      return res.status(403).json({ error: 'Tylko kierownik lub admin może usuwać menedżerów.' });
+    }
+  }
   await pool.query('DELETE FROM users WHERE code=$1', [req.params.code]);
   res.json({ success: true });
 });
