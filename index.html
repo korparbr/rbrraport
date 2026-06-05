@@ -889,9 +889,14 @@ function useWorkerStages(userLogin) {
 
 
 // ─── WORKER HISTORY SECTION ──────────────────────────────────────────────────
-function WorkerHistorySection({ reports, userLogin }) {
+function WorkerHistorySection({ reports, userLogin, token, onRefresh }) {
   const [filterProject, setFilterProject] = useState("all");
   const [filterStage, setFilterStage] = useState("all");
+  const [filterMonth, setFilterMonth] = useState("all");
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [deleteMsg, setDeleteMsg] = useState(null);
 
   const myReports = reports.filter(r => r.workerLogin === userLogin || r.worker_code === userLogin);
 
@@ -901,31 +906,128 @@ function WorkerHistorySection({ reports, userLogin }) {
 
   const projects = [...new Set(allLines.map(l => l.project))].sort();
 
+  // Available months
+  const months = [...new Set(allLines.map(l => (l.date||"").slice(0,7)))].sort().reverse();
+
   const filtered = allLines.filter(l => {
     if (filterProject !== "all" && l.project !== filterProject) return false;
     if (filterStage !== "all" && l.stage !== filterStage) return false;
+    if (filterMonth !== "all" && !(l.date||"").startsWith(filterMonth)) return false;
     return true;
   });
+
+  const generatePdf = async () => {
+    if (filtered.length === 0) return;
+    setGeneratingPdf(true);
+    try {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageW = 210;
+      const margin = 14;
+
+      // Header
+      doc.setFillColor(108, 99, 255);
+      doc.rect(0, 0, pageW, 18, "F");
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(14);
+      doc.setFont("helvetica", "bold");
+      const workerName = myReports[0]?.workerName || myReports[0]?.worker_name || userLogin;
+      doc.text(`Historia: ${workerName}`, margin, 12);
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "normal");
+      doc.text(`${filtered.length} wpisów · ${new Date().toLocaleDateString("pl-PL")}`, pageW - margin, 12, { align: "right" });
+
+      // Table headers
+      let y = 26;
+      doc.setFillColor(40, 40, 60);
+      doc.rect(0, y - 5, pageW, 8, "F");
+      doc.setTextColor(200, 200, 220);
+      doc.setFontSize(8);
+      doc.setFont("helvetica", "bold");
+      doc.text("Data", margin, y);
+      doc.text("Projekt", margin + 22, y);
+      doc.text("Łazienka", margin + 40, y);
+      doc.text("Etap", margin + 60, y);
+      doc.text("Uwagi", margin + 120, y);
+      y += 6;
+
+      doc.setFont("helvetica", "normal");
+      filtered.forEach((line, i) => {
+        if (y > 270) {
+          doc.addPage();
+          y = 20;
+        }
+        const stageObj = STAGES.find(s => s.id === line.stage);
+        doc.setFillColor(i % 2 === 0 ? 25 : 30, i % 2 === 0 ? 25 : 30, i % 2 === 0 ? 38 : 44);
+        doc.rect(0, y - 4, pageW, 7, "F");
+        doc.setTextColor(200, 200, 220);
+        doc.setFontSize(8);
+        doc.text(line.date || "", margin, y);
+        doc.text(String(line.project), margin + 22, y);
+        doc.text(String(line.product), margin + 40, y);
+        doc.text((stageObj?.label || line.stage).slice(0, 35), margin + 60, y);
+        if (line.note) doc.text(line.note.slice(0, 25), margin + 120, y);
+        y += 7;
+      });
+
+      const monthLabel = filterMonth !== "all" ? `_${filterMonth}` : "";
+      doc.save(`historia_${userLogin}${monthLabel}.pdf`);
+    } catch(err) { alert("Błąd PDF: " + err.message); }
+    finally { setGeneratingPdf(false); }
+  };
+
+  const handleDeleteLine = async (lineId) => {
+    setDeletingId(lineId);
+    try {
+      await fetch(`/api/report-lines/${lineId}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      setConfirmDelete(null);
+      setDeleteMsg("✓ Wpis usunięty");
+      setTimeout(() => setDeleteMsg(null), 3000);
+      if (onRefresh) onRefresh();
+    } catch(err) {
+      setDeleteMsg("Błąd usuwania: " + err.message);
+    } finally { setDeletingId(null); }
+  };
 
   return (
     <div style={S.card}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px", flexWrap:"wrap", gap:"10px" }}>
-        <div style={S.h2} style={{ ...S.h2, marginBottom:0 }}>
+        <div style={{ fontSize:"18px", fontWeight:"700" }}>
           Moja historia
           <span style={{ color:COLORS.textMuted, fontSize:"13px", fontWeight:"400", marginLeft:"8px" }}>
-            ({filtered.length} łazienek)
+            ({filtered.length} wpisów)
           </span>
         </div>
-        <div style={{ display:"flex", gap:"8px", flexWrap:"wrap" }}>
-          <select style={S.selectFilter} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
-            <option value="all">Wszystkie projekty</option>
-            {projects.map(p => <option key={p} value={p}>Projekt {p}</option>)}
-          </select>
-          <select style={S.selectFilter} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
-            <option value="all">Wszystkie etapy</option>
-            {STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-          </select>
-        </div>
+        <button
+          style={{ ...S.btnSm, opacity: filtered.length === 0 || generatingPdf ? 0.5 : 1 }}
+          onClick={generatePdf} disabled={filtered.length === 0 || generatingPdf}>
+          {generatingPdf ? "⏳..." : "📄 PDF"}
+        </button>
+      </div>
+
+      {deleteMsg && <div style={{ ...S.infoBox(COLORS.green), marginBottom:"12px" }}>{deleteMsg}</div>}
+
+      {/* Filters */}
+      <div style={{ display:"flex", gap:"8px", flexWrap:"wrap", marginBottom:"16px" }}>
+        <select style={S.selectFilter} value={filterMonth} onChange={e => setFilterMonth(e.target.value)}>
+          <option value="all">Wszystkie miesiące</option>
+          {months.map(m => {
+            const [y, mo] = m.split("-");
+            const name = new Date(m + "-01").toLocaleDateString("pl-PL", { year:"numeric", month:"long" });
+            return <option key={m} value={m}>{name}</option>;
+          })}
+        </select>
+        <select style={S.selectFilter} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
+          <option value="all">Wszystkie projekty</option>
+          {projects.map(p => <option key={p} value={p}>Projekt {p}</option>)}
+        </select>
+        <select style={S.selectFilter} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
+          <option value="all">Wszystkie etapy</option>
+          {STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
       </div>
 
       {filtered.length === 0 ? (
@@ -935,24 +1037,42 @@ function WorkerHistorySection({ reports, userLogin }) {
         </div>
       ) : (
         <div>
-          {filtered.slice(0, 100).map((line, i) => {
+          {filtered.slice(0, 200).map((line, i) => {
             const stageObj = STAGES.find(s => s.id === line.stage);
             const sc = STAGE_COLORS ? STAGE_COLORS[line.stage] : null;
+            const isDeleting = deletingId === line.id;
             return (
-              <div key={i} style={{ display:"flex", gap:"10px", alignItems:"center", padding:"8px 0", borderBottom:`1px solid ${COLORS.border}` }}>
-                <span style={{ color:COLORS.textDim, fontSize:"12px", minWidth:"80px" }}>{line.date}</span>
+              <div key={i} style={{ display:"flex", gap:"8px", alignItems:"center", padding:"7px 0", borderBottom:`1px solid ${COLORS.border}`, flexWrap:"wrap", opacity: isDeleting ? 0.4 : 1 }}>
+                <span style={{ color:COLORS.textDim, fontSize:"12px", minWidth:"88px" }}>{line.date}</span>
                 <span style={S.tag(COLORS.accent)}>{line.project}</span>
                 <span style={S.tag(COLORS.orange)}>Łaz. {line.product}</span>
-                <span style={{ background:(sc?.mapColor||COLORS.green)+"22", color:sc?.mapColor||COLORS.green, border:`1px solid ${(sc?.mapColor||COLORS.green)}44`, borderRadius:"6px", padding:"2px 8px", fontSize:"12px", fontWeight:"600" }}>
-                  {stageObj?.label || line.stage}
+                <span style={{ background:(sc?.mapColor||COLORS.green)+"22", color:sc?.mapColor||COLORS.green, border:`1px solid ${(sc?.mapColor||COLORS.green)}44`, borderRadius:"6px", padding:"2px 8px", fontSize:"11px", fontWeight:"600" }}>
+                  {line.stage} {stageObj ? "— " + stageObj.label.split("—")[1]?.trim() : ""}
                 </span>
                 {line.note && <span style={{ color:COLORS.textDim, fontSize:"12px" }}>· {line.note}</span>}
+                <span style={{ marginLeft:"auto" }}>
+                  {line.id ? (
+                    confirmDelete === line.id ? (
+                      <span style={{ display:"flex", gap:"4px" }}>
+                        <button style={{ ...S.btnDanger, fontSize:"11px", padding:"2px 8px" }}
+                          onClick={() => handleDeleteLine(line.id)}>
+                          {isDeleting ? "..." : "Usuń"}
+                        </button>
+                        <button style={{ ...S.btnGhost, fontSize:"11px" }}
+                          onClick={() => setConfirmDelete(null)}>✕</button>
+                      </span>
+                    ) : (
+                      <button style={{ ...S.btnGhost, fontSize:"11px", color:COLORS.textDim, opacity:0.5 }}
+                        onClick={() => setConfirmDelete(line.id)}>🗑️</button>
+                    )
+                  ) : null}
+                </span>
               </div>
             );
           })}
-          {filtered.length > 100 && (
+          {filtered.length > 200 && (
             <div style={{ textAlign:"center", color:COLORS.textDim, fontSize:"12px", padding:"10px" }}>
-              Pokazano 100 z {filtered.length} wpisów. Użyj filtrów aby zawęzić.
+              Pokazano 200 z {filtered.length} wpisów.
             </div>
           )}
         </div>
@@ -962,12 +1082,14 @@ function WorkerHistorySection({ reports, userLogin }) {
 }
 
 // ─── WORKER VIEW ──────────────────────────────────────────────────────────────
-function WorkerView({ user, token, reports, onSave, onLogout, onUsersChange }) {
+function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, onUsersChange }) {
   const date = today();
   const [lines, setLines] = useState([]);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [showChangePass, setShowChangePass] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [workerTab, setWorkerTab] = useState("report");
   const [enabledStages, refreshStages] = useWorkerStages(user.login);
 
   const myReports = reports.filter(r => r.workerLogin === user.login).sort((a, b) => b.date.localeCompare(a.date));
@@ -979,15 +1101,26 @@ function WorkerView({ user, token, reports, onSave, onLogout, onUsersChange }) {
   );
 
   const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState(null);
+
   const handleSave = async () => {
     if (lines.length === 0) return;
     setSaving(true);
+    setSaveMsg(null);
     try {
-      await onSave(date, lines);
+      const result = await onSave(date, lines);
       setLines([]);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
-    } catch(err) { alert(err.message); }
+      if (result && result.skipped && result.skipped.length > 0) {
+        setSaveMsg({
+          type: "warning",
+          text: result.message
+        });
+        setTimeout(() => setSaveMsg(null), 8000);
+      } else {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2500);
+      }
+    } catch(err) { setSaveMsg({ type:"error", text: err.message }); }
     finally { setSaving(false); }
   };
 
@@ -1012,37 +1145,61 @@ function WorkerView({ user, token, reports, onSave, onLogout, onUsersChange }) {
       <WorkerStats reports={reports} userLogin={user.login} />
       <MissingReportReminder reports={reports} userLogin={user.login} />
 
-      <div style={S.card}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"18px" }}>
-          <div style={{ ...S.h2, marginBottom:0 }}>Nowy raport dzienny</div>
-          <button style={{ ...S.btnGhost, fontSize:"12px", color:COLORS.textMuted }} onClick={() => setShowSettings(true)}>
-            ⚙️ {enabledStages.size} etapów
-          </button>
-        </div>
-        <div style={{ marginBottom: "20px", display:"flex", alignItems:"center", gap:"10px" }}>
-          <span style={{ fontSize:"18px" }}>📅</span>
-          <span style={{ fontWeight:"600", fontSize:"15px", color:COLORS.text }}>{formatDate(date)}</span>
-        </div>
-        <label style={{ ...S.label, marginBottom: "12px" }}>Wykonane prace</label>
-        {lines.map((line, i) => (
-          <LineItem key={i} line={line} onRemove={() => setLines(lines.filter((_, j) => j !== i))} />
-        ))}
-        <LineForm onAdd={line => setLines(prev => [...prev, { ...line, contractor: user.login }])} onAddBatch={newLines => setLines(prev => [...prev, ...newLines.map(l => ({ ...l, contractor: user.login }))])} reports={reports} currentLines={lines} enabledStages={enabledStages} />
-        <div style={S.divider} />
-        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button style={{ ...S.btn, opacity: lines.length === 0 ? 0.4 : 1 }} onClick={handleSave} disabled={lines.length === 0 || saving}>
-            {saving ? "Zapisywanie..." : `Zapisz raport (${lines.length} ${lines.length === 1 ? "pozycja" : "pozycji"})`}
-          </button>
-          {saved && <span style={{ color: COLORS.green, fontSize: "14px", fontWeight: "600" }}>✓ Zapisano!</span>}
-        </div>
+
+      {/* Tab navigation */}
+      <div style={{ display:"flex", gap:"8px", marginBottom:"16px", overflowX:"auto", paddingBottom:"4px" }}>
+        <button style={S.tab(workerTab === "report")} onClick={() => setWorkerTab("report")}>📝 Raport</button>
+        <button style={S.tab(workerTab === "history")} onClick={() => setWorkerTab("history")}>📋 Moja historia</button>
+        <button style={S.tab(workerTab === "map")} onClick={() => setWorkerTab("map")}>🗺️ Mapy hal</button>
       </div>
 
-      <div style={S.card}>
-        <div style={S.h2}>🗺️ Mapy hal</div>
-        <HallMap reports={reports} />
-      </div>
+      {workerTab === "report" && (
+        <div style={S.card}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"18px" }}>
+            <div style={{ ...S.h2, marginBottom:0 }}>Nowy raport dzienny</div>
+            <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+              <span style={{ color:COLORS.textDim, fontSize:"12px" }}>📅 {date}</span>
+              <button style={{ ...S.btnGhost, fontSize:"12px", color:COLORS.textMuted }} onClick={() => setShowSettings(true)}>
+                ⚙️ {enabledStages.size} etapów
+              </button>
+            </div>
+          </div>
+          {lines.map((line, i) => (
+            <LineItem key={i} line={line} onRemove={() => setLines(lines.filter((_, j) => j !== i))} />
+          ))}
+          <LineForm
+            onAdd={line => setLines(prev => [...prev, { ...line, contractor: user.login }])}
+            onAddBatch={newLines => setLines(prev => [...prev, ...newLines.map(l => ({ ...l, contractor: user.login }))])}
+            reports={reports} currentLines={lines} enabledStages={enabledStages} />
+          <div style={S.divider} />
+          <div style={{ display:"flex", flexDirection:"column", gap:"10px" }}>
+            <div style={{ display:"flex", gap:"12px", alignItems:"center" }}>
+              <button
+                style={{ ...S.btn, opacity: lines.length === 0 || saving ? 0.4 : 1 }}
+                onClick={handleSave} disabled={lines.length === 0 || saving}>
+                {saving ? "Zapisywanie..." : `Zapisz raport (${lines.length} ${lines.length === 1 ? "pozycja" : "pozycji"})`}
+              </button>
+              {saved && <span style={{ color: COLORS.green, fontSize: "14px", fontWeight: "600" }}>✓ Zapisano!</span>}
+            </div>
+            {saveMsg && (
+              <div style={{ background: saveMsg.type==="warning" ? COLORS.orange+"18" : COLORS.red+"18", border:`1px solid ${saveMsg.type==="warning" ? COLORS.orange : COLORS.red}44`, borderRadius:"8px", padding:"10px 14px", fontSize:"13px", color: saveMsg.type==="warning" ? COLORS.orange : COLORS.red }}>
+                {saveMsg.type==="warning" ? "⚠️ " : "❌ "}{saveMsg.text}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
-      <WorkerHistorySection reports={reports} userLogin={user.login} />
+      {workerTab === "history" && (
+        <WorkerHistorySection reports={reports} userLogin={user.login} token={token} onRefresh={onRefreshReports} />
+      )}
+
+      {workerTab === "map" && (
+        <div style={S.card}>
+          <div style={S.h2}>🗺️ Mapy hal</div>
+          <HallMap reports={reports} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1085,6 +1242,7 @@ function UsersTab({ token, onUsersChange }) {
   const [newManualName, setNewManualName] = useState("");
   const [newPass, setNewPass] = useState("");
   const [newAdminLogin, setNewAdminLogin] = useState("");
+  const [newAdminName, setNewAdminName] = useState("");
   const [newAdminPass, setNewAdminPass] = useState("");
   const [err, setErr] = useState("");
   const [errAdmin, setErrAdmin] = useState("");
@@ -1112,13 +1270,14 @@ function UsersTab({ token, onUsersChange }) {
 
   const addAdmin = async () => {
     const code = newAdminLogin.trim().toUpperCase();
-    if (!code) return setErrAdmin("Wpisz login admina.");
+    if (!code) return setErrAdmin("Wpisz login.");
+    if (!newAdminName.trim()) return setErrAdmin("Wpisz imię i nazwisko.");
     if (newAdminPass.length < 4) return setErrAdmin("Hasło musi mieć co najmniej 4 znaki.");
     try {
-      await api.addUser(token, code, code, newAdminPass, "manager");
-      setNewAdminLogin(""); setNewAdminPass(""); setErrAdmin("");
-      refreshUsers(); onUsersChange();
-      flash("✓ Konto menedżera " + code + " utworzone.");
+      await api.addUser(token, code, newAdminName.trim(), newAdminPass, "manager");
+      setNewAdminLogin(""); setNewAdminName(""); setNewAdminPass(""); setErrAdmin("");
+      onUsersChange();
+      flash("✓ Konto menedżera " + newAdminName.trim() + " (" + code + ") utworzone.");
     } catch(err) { setErrAdmin(err.message); }
   };
 
@@ -1243,11 +1402,16 @@ function UsersTab({ token, onUsersChange }) {
         <>
           <div style={S.card}>
             <div style={S.h2}>Dodaj menedżera</div>
-            <div style={S.row2} className="dl-row2">
+            <div style={S.row3} className="dl-row3">
               <div>
                 <label style={S.label}>Login menedżera</label>
                 <input style={S.input} placeholder="np. KIEROWNIK1" value={newAdminLogin}
                   onChange={e => { setNewAdminLogin(e.target.value.toUpperCase()); setErrAdmin(""); }} />
+              </div>
+              <div>
+                <label style={S.label}>Imię i nazwisko</label>
+                <input style={S.input} placeholder="np. Jan Kowalski" value={newAdminName}
+                  onChange={e => { setNewAdminName(e.target.value); setErrAdmin(""); }} />
               </div>
               <div>
                 <label style={S.label}>Hasło</label>
@@ -3638,6 +3802,92 @@ function BulkWorkerAdd({ contractors, users, token, onDone }) {
 }
 
 
+// ─── MANAGER ADD REPORT ───────────────────────────────────────────────────────
+function ManagerAddReport({ users, reports, token, onSave }) {
+  const workers = users.filter(u => (u.role || "worker") === "worker");
+  const [selectedWorker, setSelectedWorker] = useState("");
+  const [date, setDate] = useState(today());
+  const [lines, setLines] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState(null);
+  const [enabledStages] = useState(new Set(STAGES.map(s => s.id)));
+
+  const handleSave = async () => {
+    if (!selectedWorker) return setSaveMsg({ type:"error", text:"Wybierz pracownika." });
+    if (lines.length === 0) return setSaveMsg({ type:"error", text:"Dodaj co najmniej jedną pozycję." });
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const result = await onSave(selectedWorker, date, lines);
+      setLines([]);
+      if (result?.skipped?.length > 0) {
+        setSaveMsg({ type:"warning", text: result.message });
+        setTimeout(() => setSaveMsg(null), 8000);
+      } else {
+        setSaveMsg({ type:"success", text:`✓ Raport zapisany dla ${workers.find(w => (w.code||w.login) === selectedWorker)?.name || selectedWorker}` });
+        setTimeout(() => setSaveMsg(null), 3000);
+      }
+    } catch(err) {
+      setSaveMsg({ type:"error", text: err.message });
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={S.h2}>➕ Dodaj raport w imieniu pracownika</div>
+
+      <div style={{ ...S.row2, marginBottom:"20px" }} className="dl-row2">
+        <div>
+          <label style={S.label}>Pracownik</label>
+          <select style={S.select} value={selectedWorker} onChange={e => { setSelectedWorker(e.target.value); setLines([]); }}>
+            <option value="">— wybierz pracownika —</option>
+            {workers.sort((a,b) => (a.name||"").localeCompare(b.name||"")).map(w => (
+              <option key={w.code||w.login} value={w.code||w.login}>
+                {w.name} ({w.code||w.login})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label style={S.label}>Data</label>
+          <input type="date" style={S.input} value={date}
+            onChange={e => setDate(e.target.value)} max={today()} />
+        </div>
+      </div>
+
+      {selectedWorker && (
+        <>
+          {lines.map((line, i) => (
+            <LineItem key={i} line={line} onRemove={() => setLines(lines.filter((_, j) => j !== i))} />
+          ))}
+          <LineForm
+            onAdd={line => setLines(prev => [...prev, { ...line, contractor: selectedWorker }])}
+            onAddBatch={newLines => setLines(prev => [...prev, ...newLines.map(l => ({ ...l, contractor: selectedWorker }))])}
+            reports={reports}
+            currentLines={lines}
+            enabledStages={enabledStages}
+          />
+          <div style={S.divider} />
+          <div style={{ display:"flex", gap:"12px", alignItems:"center" }}>
+            <button
+              style={{ ...S.btn, opacity: lines.length === 0 || saving ? 0.4 : 1 }}
+              onClick={handleSave}
+              disabled={lines.length === 0 || saving}>
+              {saving ? "Zapisywanie..." : `Zapisz raport (${lines.length} ${lines.length === 1 ? "pozycja" : "pozycji"})`}
+            </button>
+          </div>
+          {saveMsg && (
+            <div style={{ ...S.infoBox(saveMsg.type === "success" ? COLORS.green : saveMsg.type === "warning" ? COLORS.orange : COLORS.red), marginTop:"12px" }}>
+              {saveMsg.text}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
 // ─── MANAGER VIEW ─────────────────────────────────────────────────────────────
 function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange, isSupervisor }) {
   const [tab, setTab] = useState(isSupervisor ? "kierownik" : "entries");
@@ -3681,6 +3931,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
 
       <div style={{ display: "flex", gap: "8px", marginBottom: "20px", overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: "4px" }} className="dl-tabs">
         {isSupervisor && <button style={S.tab(tab === "kierownik")} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
+        <button style={S.tab(tab === "add_report")} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
         <button style={S.tab(tab === "entries")} onClick={() => setTab("entries")}>📝 Wpisy</button>
         <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
         <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
@@ -3717,6 +3968,17 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
         </div>
       )}
       {tab === "map" && <HallMap reports={reports} />}
+      {tab === "add_report" && <ManagerAddReport users={users} reports={reports} token={token} onSave={async (workerCode, date, lines) => {
+        const res = await fetch("/api/reports/as-worker", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+          body: JSON.stringify({ workerCode, date, lines })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        onReportsChange && onReportsChange();
+        return data;
+      }} />}
       {tab === "progress" && <ProjectProgressTab reports={reports} />}
       {tab === "warehouse" && <WarehouseTab reports={reports} />}
       {tab === "excel" && <ExcelExportTab reports={reports} users={users} />}
@@ -4245,7 +4507,8 @@ function App() {
         <LoginScreen onLogin={handleLogin} />
       ) : user.role === "worker" ? (
         <WorkerView user={user} token={token} reports={reports}
-          onSave={async (date, lines) => { await api.addReport(token, date, lines); await loadReports(token); }}
+          onSave={async (date, lines) => { const result = await api.addReport(token, date, lines); await loadReports(token); return result; }}
+          onRefreshReports={() => loadReports(token)}
           onLogout={handleLogout}
           onUsersChange={() => {}} />
       ) : (
@@ -4253,7 +4516,7 @@ function App() {
           onDelete={async (id) => { await api.deleteReport(token, id); await loadReports(token); }}
           onLogout={handleLogout}
           onUsersChange={() => loadUsers(token)}
-          isSupervisor={user.role === "supervisor"} />
+          isSupervisor={user.code === "RBR056" || user.login === "RBR056"} />
       )}
     </div>
   );

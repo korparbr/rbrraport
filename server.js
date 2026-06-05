@@ -152,21 +152,122 @@ app.post('/api/reports', auth, async (req, res) => {
     await client.query('BEGIN');
     const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [req.user.code, date]);
     const reportId = r.rows[0].id;
+
+    const skipped = [];
+    const saved = [];
+
     for (const line of lines) {
-      await client.query('INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
-        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '']);
+      // Check if this project+product+stage already exists in DB
+      const exists = await client.query(
+        `SELECT rl.id FROM report_lines rl
+         JOIN reports r ON rl.report_id = r.id
+         WHERE rl.project = $1 AND rl.product = $2 AND rl.stage = $3`,
+        [line.project, line.product, line.stage]
+      );
+      if (exists.rows.length > 0) {
+        skipped.push({ project: line.project, product: line.product, stage: line.stage });
+        continue;
+      }
+      await client.query(
+        'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
+        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '']
+      );
+      saved.push(line);
     }
+
+    // If nothing was saved, rollback the empty report
+    if (saved.length === 0) {
+      await client.query('ROLLBACK');
+      return res.json({
+        success: false,
+        saved: 0,
+        skipped,
+        message: `Żadna pozycja nie została zapisana — wszystkie etapy były już zaraportowane.`
+      });
+    }
+
     await client.query('COMMIT');
-    res.json({ success: true, reportId });
+    res.json({
+      success: true,
+      reportId,
+      saved: saved.length,
+      skipped,
+      message: skipped.length > 0
+        ? `Zapisano ${saved.length} pozycji. Pominięto ${skipped.length}: ${skipped.map(s => `Łaz. ${s.product} (${s.stage})`).join(', ')}`
+        : null
+    });
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error(err);
     res.status(500).json({ error: 'Błąd serwera' });
   } finally { client.release(); }
 });
 
+app.delete('/api/report-lines/:id', auth, async (req, res) => {
+  try {
+    // Worker can only delete their own lines, manager can delete any
+    const isManager = req.user.role === 'manager' || req.user.role === 'supervisor';
+    if (isManager) {
+      await pool.query('DELETE FROM report_lines WHERE id=$1', [req.params.id]);
+    } else {
+      // Check ownership — line must belong to a report by this worker
+      const r = await pool.query(
+        `SELECT rl.id FROM report_lines rl
+         JOIN reports r ON rl.report_id = r.id
+         WHERE rl.id = $1 AND r.worker_code = $2`,
+        [req.params.id, req.user.code]
+      );
+      if (r.rows.length === 0) return res.status(403).json({ error: 'Brak dostępu do tego wpisu' });
+      await pool.query('DELETE FROM report_lines WHERE id=$1', [req.params.id]);
+    }
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
   await pool.query('DELETE FROM reports WHERE id=$1', [req.params.id]);
   res.json({ success: true });
+});
+
+// Manager adds report on behalf of a worker
+app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
+  const { workerCode, date, lines } = req.body;
+  if (!workerCode || !date || !lines?.length) return res.status(400).json({ error: 'Brak danych' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [workerCode, date]);
+    const reportId = r.rows[0].id;
+    const skipped = [], saved = [];
+    for (const line of lines) {
+      const exists = await client.query(
+        `SELECT rl.id FROM report_lines rl JOIN reports r ON rl.report_id = r.id
+         WHERE rl.project=$1 AND rl.product=$2 AND rl.stage=$3`,
+        [line.project, line.product, line.stage]
+      );
+      if (exists.rows.length > 0) { skipped.push(line); continue; }
+      await client.query(
+        'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
+        [reportId, line.project, line.product, line.stage, line.contractor || workerCode, line.note || '']
+      );
+      saved.push(line);
+    }
+    if (saved.length === 0) {
+      await client.query('ROLLBACK');
+      return res.json({ success: false, saved: 0, skipped, message: 'Wszystkie etapy były już zaraportowane.' });
+    }
+    await client.query('COMMIT');
+    res.json({
+      success: true, reportId, saved: saved.length, skipped,
+      message: skipped.length > 0
+        ? `Zapisano ${saved.length}. Pominięto ${skipped.length}: ${skipped.map(s => `Łaz. ${s.product} (${s.stage})`).join(', ')}`
+        : null
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally { client.release(); }
 });
 
 // ─── EMAIL RECIPIENTS ─────────────────────────────────────────────────────────
