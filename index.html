@@ -95,6 +95,20 @@ const PROJECTS = {
   "5647": { maxProduct: 20 },
 };
 
+const WAREHOUSES = [
+  { id: "rolling",   label: "Rolling",   icon: "🔄", color: "#6c63ff" },
+  { id: "produkcja", label: "Produkcja", icon: "🏭", color: "#f59e0b" },
+  { id: "gotowe",    label: "Gotowe",    icon: "✅", color: "#3ecf8e" },
+  { id: "budowa",    label: "Budowa",    icon: "🏗️", color: "#ef4444" },
+];
+
+const WAREHOUSE_TRIGGERS = {
+  "4":  { action: "move", to: "rolling" },
+  "5":  { action: "move", to: "produkcja" },
+  "19": { action: "move", to: "gotowe" },
+  "21": { action: "move", to: "budowa" },
+};
+
 const STAGES = [
   { id: "2.1",  label: "2.1 — Wyprodukowanie profilów ścian i sufitu" },
   { id: "4",    label: "4 — Skręcanie" },

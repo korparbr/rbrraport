@@ -58,7 +58,7 @@ function auth(req, res, next) {
   catch { res.status(401).json({ error: 'Nieprawidłowy token' }); }
 }
 function managerOnly(req, res, next) {
-  if (req.user.role !== 'manager') return res.status(403).json({ error: 'Brak uprawnień' });
+  if (req.user.role !== 'manager' && req.user.role !== 'supervisor') return res.status(403).json({ error: 'Brak uprawnień' });
   next();
 }
 
