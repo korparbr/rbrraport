@@ -13,7 +13,10 @@
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body { margin: 0; background: #0f0f13; }
     input, select, textarea { font-size: 16px !important; }
+    .hall-map-container { overflow-x: auto; -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
     @media (max-width: 600px) {
+      .hall-sidebar { min-width: 75px !important; width: 75px !important; }
+      .hall-sidebar button { padding: 8px 6px !important; font-size: 11px !important; }
       .dl-row3 { grid-template-columns: 1fr !important; }
       .dl-row2 { grid-template-columns: 1fr !important; }
       .dl-stats4 { grid-template-columns: 1fr 1fr !important; }
@@ -3233,6 +3236,9 @@ function HallMap({ reports = [], isAdmin = false }) {
     } catch { return {}; }
   });
   const [editingNote, setEditingNote] = useState(null); // { col, row, key }
+  const [zoom, setZoom] = useState(1);
+  const mapRef = React.useRef(null);
+  const lastDist = React.useRef(null);
   const [showUpdater, setShowUpdater] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editingCell, setEditingCell] = useState(null); // { col, row, cell }
@@ -3344,11 +3350,11 @@ function HallMap({ reports = [], isAdmin = false }) {
   return (
     <div style={{ display:"flex", gap:"0", minHeight:"80vh", width:"100%" }}>
       {/* Hall selector — vertical tabs on left */}
-      <div style={{ display:"flex", flexDirection:"column", gap:"6px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"140px", width:"140px" }}>
+      <div className="hall-sidebar" style={{ display:"flex", flexDirection:"column", gap:"6px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"clamp(80px, 15vw, 140px)", width:"clamp(80px, 15vw, 140px)" }}>
         <div style={{ fontSize:"11px", color:COLORS.textDim, fontWeight:"700", textTransform:"uppercase", letterSpacing:"0.06em", padding:"8px 10px 4px" }}>Hale</div>
         {Object.entries(HALLS).map(([key, h]) => (
           <button key={key}
-            style={{ padding:"14px 18px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"14px", fontWeight: selectedHall===key ? "700" : "400", background: selectedHall===key ? COLORS.accent : "transparent", color: selectedHall===key ? "#fff" : COLORS.textMuted, textAlign:"left", transition:"all 0.15s" }}
+            style={{ padding:"clamp(8px, 1.5vw, 14px) clamp(10px, 2vw, 18px)", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"clamp(11px, 1.5vw, 14px)", fontWeight: selectedHall===key ? "700" : "400", background: selectedHall===key ? COLORS.accent : "transparent", color: selectedHall===key ? "#fff" : COLORS.textMuted, textAlign:"left", transition:"all 0.15s" }}
             onClick={() => { setSelectedHall(key); setSelected(null); setFilterProject("all"); setFilterStage("all"); }}>
             {h.name}
           </button>
@@ -3434,14 +3440,50 @@ function HallMap({ reports = [], isAdmin = false }) {
         </div>
       </div>
 
+      {/* Zoom controls */}
+      <div style={{ display:"flex", alignItems:"center", gap:"8px", marginBottom:"8px" }}>
+        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.max(0.3, +(z-0.15).toFixed(2)))}>−</button>
+        <span style={{ color:COLORS.textMuted, fontSize:"13px", minWidth:"42px", textAlign:"center" }}>{Math.round(zoom*100)}%</span>
+        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.min(2.5, +(z+0.15).toFixed(2)))}>+</button>
+        <button style={{ background:"transparent", border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 10px", fontSize:"12px", cursor:"pointer", color:COLORS.textMuted }} onClick={() => setZoom(1)}>Reset</button>
+      </div>
+
       {/* Grid — A,B,C w pionie (wiersze), 1,2,3 w poziomie (kolumny) */}
-      <div style={{ overflowX:"auto" }}>
+      <div style={{ overflowX:"auto", overflowY:"auto", WebkitOverflowScrolling:"touch" }}
+        ref={mapRef}
+        onTouchStart={e => {
+          if (e.touches.length === 2) {
+            const dx = e.touches[0].clientX - e.touches[1].clientX;
+            const dy = e.touches[0].clientY - e.touches[1].clientY;
+            lastDist.current = Math.sqrt(dx*dx + dy*dy);
+          }
+        }}
+        onTouchMove={e => {
+          if (e.touches.length === 2 && lastDist.current) {
+            e.preventDefault();
+            const dx = e.touches[0].clientX - e.touches[1].clientX;
+            const dy = e.touches[0].clientY - e.touches[1].clientY;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            const delta = dist / lastDist.current;
+            setZoom(z => Math.min(2.5, Math.max(0.3, +(z * delta).toFixed(2))));
+            lastDist.current = dist;
+          }
+        }}
+        onTouchEnd={() => { lastDist.current = null; }}
+        onWheel={e => {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            setZoom(z => Math.min(2.5, Math.max(0.3, +(z - e.deltaY * 0.005).toFixed(2))));
+          }
+        }}
+      >
+        <div style={{ transform:`scale(${zoom})`, transformOrigin:"top left", transition:"transform 0.1s ease" }}>
         <table style={{ borderCollapse:"collapse" }}>
           <thead>
             <tr>
               <th style={{ padding:"4px 8px", color:COLORS.textMuted, fontSize:"11px", width:"28px" }}></th>
               {ROWS.map(row => (
-                <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"clamp(11px, 1.5vw, 18px)", fontWeight:"700", textAlign:"center", minWidth:"clamp(70px, 8vw, 110px)" }}>{row}</th>
+                <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"clamp(10px, 1.5vw, 18px)", fontWeight:"700", textAlign:"center", minWidth:"clamp(52px, 6vw, 110px)" }}>{row}</th>
               ))}
             </tr>
           </thead>
@@ -3475,7 +3517,7 @@ function HallMap({ reports = [], isAdmin = false }) {
                           }
                         }}
                         style={{
-                          width:"clamp(70px, 8vw, 110px)", height:"clamp(80px, 9vw, 110px)",
+                          width:"clamp(52px, 6vw, 110px)", height:"clamp(60px, 7vw, 110px)",
                           background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
                           border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
@@ -3507,10 +3549,10 @@ function HallMap({ reports = [], isAdmin = false }) {
                                   📌
                                 </div>
                               )}
-                              <div style={{ fontSize:"clamp(10px, 1.4vw, 18px)", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
+                              <div style={{ fontSize:"clamp(8px, 1.3vw, 16px)", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>
                                 {String(visibleCell.project).slice(-4)}
                               </div>
-                              <div style={{ fontSize:"clamp(12px, 1.6vw, 22px)", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>
+                              <div style={{ fontSize:"clamp(10px, 1.5vw, 20px)", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>
                                 {visibleCell.product}
                               </div>
                               {sc && (
@@ -3536,7 +3578,8 @@ function HallMap({ reports = [], isAdmin = false }) {
             ))}
           </tbody>
         </table>
-      </div>
+        </div>{/* end zoom scale wrapper */}
+      </div>{/* end touch/wheel wrapper */}
 
       {/* Map updater */}
       <div style={{ marginTop:"16px" }}>
