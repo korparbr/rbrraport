@@ -3336,9 +3336,9 @@ function HallMap({ reports = [], isAdmin = false }) {
   const withStage = (editMode ? activeLayout : (visibleCells || [])).filter(c => getCellInfo(c)).length;
 
   return (
-    <div style={{ display:"flex", gap:"0", minHeight:"600px", margin:"-16px" }}>
+    <div style={{ display:"flex", gap:"0", minHeight:"80vh" }}>
       {/* Hall selector — vertical tabs on left */}
-      <div style={{ display:"flex", flexDirection:"column", gap:"6px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"170px" }}>
+      <div style={{ display:"flex", flexDirection:"column", gap:"6px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"160px", width:"160px" }}>
         <div style={{ fontSize:"11px", color:COLORS.textDim, fontWeight:"700", textTransform:"uppercase", letterSpacing:"0.06em", padding:"8px 10px 4px" }}>Hale</div>
         {Object.entries(HALLS).map(([key, h]) => (
           <button key={key}
@@ -3349,7 +3349,7 @@ function HallMap({ reports = [], isAdmin = false }) {
         ))}
       </div>
       {/* Right panel */}
-      <div style={{ flex:1, minWidth:0, padding:"16px", overflowX:"auto" }}>
+      <div style={{ flex:1, minWidth:0, padding:"16px", overflowX:"auto", width:0 }}>
 
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"16px", flexWrap:"wrap", gap:"10px" }}>
         {editingNote && (
@@ -4042,7 +4042,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
 
       <div style={{ display:"flex", gap:"0", minHeight:"80vh" }}>
         {/* Vertical sidebar */}
-        <div style={{ display:"flex", flexDirection:"column", gap:"4px", padding:"12px 8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"200px", width:"200px" }}>
+        <div style={{ display:"flex", flexDirection:"column", gap:"4px", padding:"12px 8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"180px", width:"180px" }}>
           {isSupervisor && <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="kierownik" ? "700" : "400", background: tab==="kierownik" ? COLORS.accent : "transparent", color: tab==="kierownik" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
           <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="add_report" ? "700" : "400", background: tab==="add_report" ? COLORS.accent : "transparent", color: tab==="add_report" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
           <button style={{ padding:"12px 16px", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"15px", fontWeight: tab==="entries" ? "700" : "400", background: tab==="entries" ? COLORS.accent : "transparent", color: tab==="entries" ? "#fff" : COLORS.textMuted, textAlign:"left" }} onClick={() => setTab("entries")}>📝 Wpisy</button>
@@ -4083,7 +4083,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
         </div>
       )}
       {tab === "map" && (
-        <div style={{ margin:"-20px", background:COLORS.bg }}>
+        <div style={{ margin:"-20px" }}>
           <HallMap reports={reports} isAdmin={true} />
         </div>
       )}
@@ -4189,7 +4189,7 @@ function ManagerView({ users, reports, token, onDelete, onLogout, onUsersChange,
           </div>
         </>
       )}
-    </div>
+        </div>
       </div>
     </div>
   );
@@ -4485,7 +4485,7 @@ function SupervisorView({ user, token, reports, onLogout }) {
   );
 
   return (
-    <div style={S.main}>
+    <div style={{ ...S.main, maxWidth: tab === "map" ? "100%" : "960px", padding: tab === "map" ? "24px 0 0 0" : S.main.padding }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"28px" }}>
         <div>
           <div style={{ fontSize:"24px", fontWeight:"800", letterSpacing:"-0.5px" }}>
