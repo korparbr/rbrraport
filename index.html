@@ -3412,7 +3412,7 @@ function HallMap({ reports = [] }) {
                           }
                         }}
                         style={{
-                          width:"68px", height:"44px",
+                          width:"72px", height:"52px",
                           background: !visibleCell ? (editMode ? COLORS.surface+"44" : "transparent") : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
                           border: `1px solid ${isSelected ? COLORS.accent : editMode && !cell ? COLORS.border+"88" : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
                           borderRadius:"6px",
@@ -3427,9 +3427,13 @@ function HallMap({ reports = [] }) {
                         {visibleCell ? (
                           <>
                             {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"9px", color:COLORS.orange }}>✏️</div>}
-                            <div style={{ fontSize:"8px", color: sc ? "#000000aa" : COLORS.textDim, fontWeight:"600", lineHeight:1 }}>{visibleCell.project}</div>
-                            <div style={{ fontSize:"13px", fontWeight:"800", color: sc ? "#000000cc" : COLORS.textMuted, lineHeight:1.2 }}>{visibleCell.product}</div>
-                            {sc && <div style={{ fontSize:"8px", color:"#000000aa", lineHeight:1 }}>{prodStage}</div>}
+                            <div style={{ fontSize:"10px", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"700", lineHeight:1.1, letterSpacing:"0.02em" }}>
+                              {String(visibleCell.project).slice(-4)}
+                            </div>
+                            <div style={{ fontSize:"16px", fontWeight:"900", color: sc ? "#000000dd" : COLORS.text, lineHeight:1.1 }}>
+                              {visibleCell.product}
+                            </div>
+                            {sc && <div style={{ fontSize:"9px", color:"#000000aa", lineHeight:1, fontWeight:"600" }}>{prodStage}</div>}
                           </>
                         ) : editMode ? (
                           <div style={{ fontSize:"16px", color:COLORS.textDim, opacity:0.5 }}>{cell ? "🔒" : "+"}</div>
