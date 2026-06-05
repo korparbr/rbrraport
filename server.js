@@ -358,7 +358,8 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
 });
 
 // ─── SERVE FRONTEND ───────────────────────────────────────────────────────────
-const publicPath = path.join(__dirname, '..', 'public');
+// index.html is in the same directory as server.js
+const publicPath = path.join(__dirname);
 app.use(express.static(publicPath));
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
