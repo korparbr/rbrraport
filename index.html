@@ -731,6 +731,7 @@ function ChangePasswordScreen({ user, token, onDone, onLogout, forced }) {
       <div style={{ fontSize: "20px", fontWeight: "700", marginBottom: "8px" }}>Hasło zmienione!</div>
       <div style={{ color: COLORS.textMuted, marginBottom: "24px" }}>Możesz teraz korzystać z aplikacji.</div>
       <button style={S.btn} onClick={onDone || onLogout}>Kontynuuj →</button>
+      </div>
     </div>
   );
 
@@ -760,6 +761,7 @@ function ChangePasswordScreen({ user, token, onDone, onLogout, forced }) {
         {error && <div style={S.errorText}>⚠ {error}</div>}
         <button style={{ ...S.btn, width: "100%", marginTop: "20px" }} onClick={handle}>Zapisz hasło</button>
         {!forced && <button style={{ ...S.btnOutline, width: "100%", marginTop: "10px" }} onClick={onLogout}>Anuluj</button>}
+      </div>
       </div>
     </div>
   );
