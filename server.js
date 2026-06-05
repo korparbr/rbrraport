@@ -450,6 +450,16 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
 // index.html is in the same directory as server.js
 const publicPath = path.join(__dirname);
 app.use(express.static(publicPath));
+
+// PWA files
+app.get('/manifest.json', (req, res) => res.sendFile(path.join(publicPath, 'manifest.json')));
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(publicPath, 'sw.js'));
+});
+app.get('/icon-192.png', (req, res) => res.sendFile(path.join(publicPath, 'icon-192.png')));
+app.get('/icon-512.png', (req, res) => res.sendFile(path.join(publicPath, 'icon-512.png')));
+
 app.get('*', (req, res) => {
   if (!req.path.startsWith('/api')) {
     res.sendFile(path.join(publicPath, 'index.html'));
