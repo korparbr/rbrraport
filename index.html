@@ -2117,7 +2117,6 @@ function WarehouseTab({ reports }) {
           </div>
         );
       })}
-    </div>
   );
 }
 
@@ -2449,7 +2448,6 @@ function ProjectProgressTab({ reports }) {
         </div>
       </div>
     </div>
-  </div>
   );
 }
 
@@ -3670,7 +3668,6 @@ function HallMap({ reports = [], isAdmin = false }) {
           )}
         </div>
       </div>
-    </div>
   );
 }
 // ─── PRODUCTION PLANNER}
@@ -4217,7 +4214,6 @@ function ManagerAddReport({ users, reports, token, onSave }) {
           {saveMsg && <div style={{ ...S.infoBox(saveMsg.type === "success" ? COLORS.green : saveMsg.type === "warning" ? COLORS.orange : COLORS.red), marginTop:"12px" }}>{saveMsg.text}</div>}
         </>
       )}
-    </div>
     </div>
   );
 }
