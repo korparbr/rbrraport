@@ -1232,6 +1232,7 @@ function WorkerView({ user, token, reports, onSave, onRefreshReports, onLogout, 
       )}
 
     </div>
+    </div>
   );
 }
 
@@ -2339,6 +2340,11 @@ function ProductHistoryModal({ project, product, reports, onClose }) {
         )}
       </div>
     </div>
+  </div>
+  </div>
+  </div>
+  </div>
+  </div>
   );
 }
 
@@ -2449,6 +2455,7 @@ function ProjectProgressTab({ reports }) {
         </div>
       </div>
     </div>
+  </div>
   );
 }
 
@@ -2466,6 +2473,45 @@ function countWorkdays(from, to) {
   }
   return count;
 }
+
+// ─── SMALL UI COMPONENTS ─────────────────────────────────────────────────────
+function ProgressBar({ value, max, color }) {
+  const pct = max > 0 ? Math.min(100, Math.round(value / max * 100)) : 0;
+  return (
+    <div style={{ background:COLORS.bg, borderRadius:"6px", height:"8px", overflow:"hidden", flex:1 }}>
+      <div style={{ width:`${pct}%`, background: color || COLORS.accent, height:"100%", borderRadius:"6px", transition:"width 0.3s" }} />
+    </div>
+  );
+}
+
+function AlertGroup({ items, color, label }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div style={{ marginBottom:"16px" }}>
+      <div style={{ fontSize:"13px", fontWeight:"700", color, marginBottom:"8px" }}>{label} ({items.length})</div>
+      <div style={{ display:"flex", flexWrap:"wrap", gap:"6px" }}>
+        {items.map((item, i) => (
+          <div key={i} style={{ background:color+"15", border:`1px solid ${color}44`, borderRadius:"8px", padding:"6px 12px", fontSize:"13px" }}>
+            <span style={{ color:COLORS.textMuted, fontSize:"11px" }}>{item.project}</span>
+            <span style={{ fontWeight:"700", marginLeft:"4px" }}>Łaz. {item.product}</span>
+            <span style={{ color, fontSize:"11px", marginLeft:"6px" }}>{item.days}d</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StageChip({ stage }) {
+  const firstStage = stage ? stage.split("+")[0] : "";
+  const sc = STAGE_COLORS[firstStage];
+  return (
+    <span style={{ background:(sc?.mapColor||"#888")+"33", color:sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"5px", padding:"2px 8px", fontSize:"11px", fontWeight:"700" }}>
+      {stage}
+    </span>
+  );
+}
+
 
 function StuckAlert({ reports }) {
   const now = new Date();
@@ -3419,156 +3465,225 @@ function HallMap({ reports = [], isAdmin = false }) {
 
   return (
     <div>
-    <div style={{ display:"flex", gap:"8px", marginBottom:"20px", overflowX:"auto", WebkitOverflowScrolling:"touch", paddingBottom:"4px" }} className="dl-tabs">
-        {isSupervisor && <button style={S.tab(tab === "kierownik")} onClick={() => setTab("kierownik")}>🎯 Kierownik</button>}
-        <button style={S.tab(tab === "add_report")} onClick={() => setTab("add_report")}>➕ Dodaj raport</button>
-        <button style={S.tab(tab === "entries")} onClick={() => setTab("entries")}>📝 Wpisy</button>
-        <button style={S.tab(tab === "map")} onClick={() => setTab("map")}>🗺️ Mapa hali</button>
-        <button style={S.tab(tab === "progress")} onClick={() => setTab("progress")}>📊 Projekty</button>
-        <button style={S.tab(tab === "warehouse")} onClick={() => setTab("warehouse")}>🏭 Magazyny</button>
-        <button style={S.tab(tab === "stats")} onClick={() => setTab("stats")}>📈 Statystyki</button>
-        <button style={S.tab(tab === "users")} onClick={() => setTab("users")}>👥 Pracownicy</button>
-        <button style={S.tab(tab === "excel")} onClick={() => setTab("excel")}>📊 Eksport Excel</button>
-        <button style={S.tab(tab === "email")} onClick={() => setTab("email")}>📧 Raporty email</button>
-        <button style={S.tab(tab === "backup")} onClick={() => setTab("backup")}>🛡️ Backup</button>
+      {/* Hall map content - zoom controls, legend, grid */}
+      <div style={{ display:"flex", gap:"10px", marginBottom:"10px", alignItems:"center" }}>
+        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.max(0.3, +(z-0.15).toFixed(2)))}>−</button>
+        <span style={{ color:COLORS.textMuted, fontSize:"13px", minWidth:"42px", textAlign:"center" }}>{Math.round(zoom*100)}%</span>
+        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.min(2.5, +(z+0.15).toFixed(2)))}>+</button>
+        <button style={{ background:"transparent", border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 10px", fontSize:"12px", cursor:"pointer", color:COLORS.textMuted }} onClick={() => setZoom(1)}>Reset</button>
+        <MapPdfButton hallId={selectedHall} hallName={hall.name} layout={activeLayout} productStages={productStages} emailRecipients={[]} token={window._rbrToken || ""} />
       </div>
-      <div className="dl-tab-content">
 
-      {tab === "users" && <UsersTab token={token} onUsersChange={onUsersChange} />}
-      {tab === "photos" && <PhotoGallery reports={reports} users={users} />}
-      {tab === "kierownik" && isSupervisor && (
-        <div>
-          <div style={{ ...S.card, background: COLORS.accent+"15", border:`1px solid ${COLORS.accent}33`, marginBottom:"20px" }}>
-            <div style={{ fontSize:"18px", fontWeight:"800", marginBottom:"4px" }}>🎯 Panel Kierownika</div>
+      <div style={{ display:"flex", gap:"0", minHeight:"600px" }}>
+        <div className="hall-sidebar" style={{ display:"flex", flexDirection:"column", gap:"4px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"clamp(80px, 15vw, 140px)", width:"clamp(80px, 15vw, 140px)" }}>
+          <div style={{ fontSize:"11px", color:COLORS.textDim, fontWeight:"700", textTransform:"uppercase", letterSpacing:"0.06em", padding:"4px 6px" }}>Hale</div>
+          {Object.entries(HALLS).map(([key, h]) => (
+            <button key={key}
+              style={{ padding:"clamp(8px, 1.5vw, 14px) clamp(10px, 2vw, 18px)", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"clamp(11px, 1.5vw, 14px)", fontWeight: selectedHall===key ? "700" : "400", background: selectedHall===key ? COLORS.accent : "transparent", color: selectedHall===key ? "#fff" : COLORS.textMuted, textAlign:"left" }}
+              onClick={() => { setSelectedHall(key); setSelected(null); setFilterProject("all"); setFilterStage("all"); }}>
+              {h.name}
+            </button>
+          ))}
+        </div>
+        <div style={{ flex:1, minWidth:0, padding:"12px", overflowX:"auto", overflowY:"auto" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px", flexWrap:"wrap", gap:"8px" }}>
             <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
-              Widok dedykowany dla kierownika produkcji — planowanie, mapy hal i alerty.
+              {totalCells} łazienek · {withStage} z etapem ({Math.round(withStage/totalCells*100)||0}%)
+            </div>
+            <div style={{ display:"flex", gap:"8px", flexWrap:"wrap" }}>
+              <select style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 12px", color:COLORS.text, fontSize:"13px", outline:"none" }}
+                value={filterProject} onChange={e => { setFilterProject(e.target.value); setSelected(null); }}>
+                <option value="all">Wszystkie projekty</option>
+                {projects.map(p => <option key={p} value={p}>Projekt {p}</option>)}
+              </select>
+              <select style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 12px", color:COLORS.text, fontSize:"13px", outline:"none" }}
+                value={filterStage} onChange={e => { setFilterStage(e.target.value); setSelected(null); }}>
+                <option value="all">Wszystkie etapy</option>
+                {Object.entries(STAGE_COLORS).map(([k,v]) => <option key={k} value={k}>{k} — {v.label}</option>)}
+              </select>
+              {(filterProject !== "all" || filterStage !== "all") && (
+                <button style={{ background:"transparent", color:COLORS.textMuted, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"13px", cursor:"pointer" }}
+                  onClick={() => { setFilterProject("all"); setFilterStage("all"); }}>Wyczyść</button>
+              )}
+              <button style={{ background: editMode ? COLORS.orange : "transparent", color: editMode ? "#fff" : COLORS.textMuted, border:`1px solid ${editMode ? COLORS.orange : COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"12px", cursor:"pointer", fontWeight: editMode ? "600" : "400" }}
+                onClick={() => { setEditMode(!editMode); setSelected(null); }}>
+                {editMode ? "✏️ Tryb edycji — WŁĄCZONY" : "✏️ Edytuj mapę"}
+              </button>
             </div>
           </div>
-          <div style={S.card}>
-            <div style={S.h2}>📋 Planer produkcji</div>
-            <ProductionPlanner reports={reports} />
-          </div>
-          <div style={S.card}>
-            <div style={S.h2}>🗺️ Mapy hal</div>
-            <HallMap reports={reports} />
-          </div>
-          <div style={S.card}>
-            <div style={S.h2}>⚠️ Alerty produkcyjne</div>
-            <StuckAlert reports={reports} />
-          </div>
-        </div>
-      )}
-      {tab === "map" && (
-        <div style={{ margin:"-20px" }}>
-          <HallMap reports={reports} isAdmin={true} />
-        </div>
-      )}
-      {tab === "add_report" && <ManagerAddReport users={users} reports={reports} token={token} onSave={async (workerCode, date, lines) => {
-        const res = await fetch("/api/reports/as-worker", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
-          body: JSON.stringify({ workerCode, date, lines })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        if (onReportsChange) onReportsChange();
-        return data;
-      }} />}
-      {tab === "progress" && <ProjectProgressTab reports={reports} />}
-      {tab === "warehouse" && <WarehouseTab reports={reports} />}
-      {tab === "excel" && <ExcelExportTab reports={reports} users={users} />}
-      {tab === "backup" && <BackupTab token={token} />}
-      {tab === "email" && <EmailTab token={token} />}
 
-      {tab === "entries" && (
-        <>
-          <div style={{ display: "flex", gap: "10px", marginBottom: "20px", flexWrap: "wrap", alignItems: "center" }}>
-            <select style={S.selectFilter} value={filterWorker} onChange={e => setFilterWorker(e.target.value)}>
-              <option value="all">Wszyscy pracownicy</option>
-              {users.map(u => <option key={u.login} value={u.login}>{u.name}</option>)}
-            </select>
-            <select style={S.selectFilter} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
-              <option value="all">Wszystkie projekty</option>
-              {Object.keys(PROJECTS).map(p => <option key={p} value={p}>Projekt {p}</option>)}
-            </select>
-            <select style={S.selectFilter} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
-              <option value="all">Wszystkie etapy</option>
-              {STAGES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-            </select>
-            <select style={S.selectFilter} value={filterDate} onChange={e => setFilterDate(e.target.value)}>
-              <option value="">Wszystkie miesiące</option>
-              {getMonthsFromReports(reports).map(m => <option key={m} value={m}>{formatMonth(m)}</option>)}
-            </select>
-            {hasFilter && <button style={S.btnOutline} onClick={() => { setFilterWorker("all"); setFilterProject("all"); setFilterStage("all"); setFilterDate(""); }}>Wyczyść</button>}
-          </div>
-          <div style={{ color: COLORS.textMuted, fontSize: "13px", marginBottom: "14px" }}>{filtered.length} z {reports.length} raportów</div>
-          {filtered.length === 0
-            ? <div style={{ ...S.card, textAlign: "center", padding: "50px", color: COLORS.textDim }}><div style={{ fontSize: "28px", marginBottom: "10px" }}>🔍</div>Brak wyników.</div>
-            : filtered.map(r => <ReportCard key={r.id} report={r} showWorker={true} onDelete={onDelete} />)}
-        </>
-      )}
-
-      {tab === "stats" && (
-        <>
-          <StuckAlert reports={reports} />
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "14px", marginBottom: "24px" }}>
-            <div style={S.statBox}><div style={S.statNum}>{reports.length}</div><div style={S.statLabel}>Raportów</div></div>
-            <div style={S.statBox}><div style={{ ...S.statNum, color: COLORS.green }}>{allLines.length}</div><div style={S.statLabel}>Pozycji łącznie</div></div>
-            <div style={S.statBox}><div style={{ ...S.statNum, color: COLORS.orange }}>{reports.filter(r => r.date === today()).length}</div><div style={S.statLabel}>Dziś</div></div>
-          </div>
-          <div style={S.card}>
-            <div style={S.h2}>Projekty</div>
-            <div style={S.row2} className="dl-row2">
-              {projectStats.map(p => (
-                <div key={p.id} style={{ ...S.statBox, textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontWeight: "700", fontSize: "18px" }}>Projekt {p.id}</div>
-                    <div style={{ color: COLORS.textMuted, fontSize: "12px", marginTop: "2px" }}>Produkty 1–{PROJECTS[p.id].maxProduct}</div>
-                  </div>
-                  <div><div style={S.statNum}>{p.count}</div><div style={S.statLabel}>pozycji</div></div>
+          {/* Legend */}
+          <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"12px", padding:"14px 16px", marginBottom:"12px" }}>
+            <div style={{ fontSize:"12px", fontWeight:"700", color:COLORS.textMuted, marginBottom:"10px", textTransform:"uppercase", letterSpacing:"0.06em" }}>Legenda etapów produkcji</div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(165px, 1fr))", gap:"8px" }}>
+              {["4","6.1","7.1","11.2","13.1","10","15.1","13.2","17","18","19"].map(k => (
+                <div key={k} style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                  <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:STAGE_COLORS[k]?.mapColor || "#888", border:"1px solid #00000022", flexShrink:0 }} />
+                  <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.text }}>{k} — {STAGE_COLORS[k]?.label}</div>
                 </div>
               ))}
+              <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+                <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:COLORS.surface, border:`2px solid ${COLORS.border}`, flexShrink:0 }} />
+                <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.textDim }}>Brak etapu</div>
+              </div>
             </div>
           </div>
-          <div style={S.card}>
-            <div style={S.h2}>Etapy — aktywność</div>
-            {stageStats.length === 0
-              ? <div style={{ color: COLORS.textDim, padding: "20px", textAlign: "center" }}>Brak danych</div>
-              : stageStats.map((s, i) => (
-                <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 0", borderBottom: i < stageStats.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                    <span style={{ color: COLORS.textDim, fontSize: "13px", minWidth: "20px" }}>#{i + 1}</span>
-                    <span style={S.tag(COLORS.green)}>{s.label}</span>
-                  </div>
-                  <span style={{ fontWeight: "600" }}>{s.count} pozycji</span>
-                </div>
-              ))}
+
+          {editingNote && (
+            <CellNoteEditor col={editingNote.col} row={editingNote.row}
+              currentNote={cellNotes[getNoteKey(editingNote.col, editingNote.row)] || ""}
+              onSave={saveNote} onClose={() => setEditingNote(null)} />
+          )}
+          {editingCell && (
+            <CellEditor cell={editingCell.cell} col={editingCell.col} row={editingCell.row}
+              onSave={handleCellSave} onDelete={handleCellDelete} onClose={() => setEditingCell(null)} />
+          )}
+
+          <div className="hall-map-container" style={{ overflowX:"auto", overflowY:"auto", WebkitOverflowScrolling:"touch" }}
+            ref={mapRef}
+            onTouchStart={e => { if (e.touches.length === 2) { const dx = e.touches[0].clientX - e.touches[1].clientX; const dy = e.touches[0].clientY - e.touches[1].clientY; lastDist.current = Math.sqrt(dx*dx + dy*dy); } }}
+            onTouchMove={e => { if (e.touches.length === 2 && lastDist.current) { e.preventDefault(); const dx = e.touches[0].clientX - e.touches[1].clientX; const dy = e.touches[0].clientY - e.touches[1].clientY; const dist = Math.sqrt(dx*dx + dy*dy); const delta = dist / lastDist.current; setZoom(z => Math.min(2.5, Math.max(0.3, +(z * delta).toFixed(2)))); lastDist.current = dist; } }}
+            onTouchEnd={() => { lastDist.current = null; }}
+            onWheel={e => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(z => Math.min(2.5, Math.max(0.3, +(z - e.deltaY * 0.005).toFixed(2)))); } }}>
+            <div style={{ transform:`scale(${zoom})`, transformOrigin:"top left", transition:"transform 0.1s ease" }}>
+            <table style={{ borderCollapse:"collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ padding:"4px 8px", color:COLORS.textMuted, fontSize:"11px", width:"28px" }}></th>
+                  {ROWS.map(row => (
+                    <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"clamp(10px, 1.5vw, 18px)", fontWeight:"700", textAlign:"center", minWidth:"clamp(52px, 6vw, 110px)" }}>{row}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...COLS].reverse().map(col => (
+                  <tr key={col}>
+                    <td style={{ padding:"2px 6px", color:COLORS.accent, fontSize:"clamp(11px, 1.5vw, 18px)", textAlign:"center", fontWeight:"700" }}>{col}</td>
+                    {ROWS.map(row => {
+                      const cell = getCell(col, row);
+                      const isVisible = editMode || getCellVisible(cell);
+                      const visibleCell = isVisible ? cell : null;
+                      const info = getCellInfo(visibleCell);
+                      const cellKey = `${col}-${row}`;
+                      const isFiltered = filterProject !== "all" || filterStage !== "all";
+                      const isHighlighted = !isFiltered || filteredKeys.has(cellKey);
+                      const prodStage = info ? getProductionStage(info.stages) : null;
+                      const sc = prodStage ? STAGE_COLORS[prodStage] : null;
+                      const isSelected = selected?.col === col && selected?.row === row;
+                      return (
+                        <td key={row} style={{ padding:"2px" }}>
+                          <div
+                            onClick={() => { if (editMode) { setEditingCell({ col, row, cell: cell || null }); } else { if (visibleCell) setSelected(isSelected ? null : { col, row, cell: visibleCell, info }); } }}
+                            style={{
+                              width:"clamp(52px, 6vw, 110px)", height:"clamp(60px, 7vw, 110px)",
+                              background: !visibleCell ? "transparent" : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
+                              border: `1px solid ${isSelected ? COLORS.accent : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
+                              borderRadius:"6px", cursor: editMode ? "pointer" : visibleCell ? "pointer" : "default",
+                              display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+                              padding:"2px", opacity: !visibleCell ? (editMode ? 0.4 : 0) : !isHighlighted ? 0.25 : 1,
+                              transition:"all 0.1s", outline: isSelected ? `2px solid ${COLORS.accent}` : "none", position:"relative",
+                            }}>
+                            {visibleCell ? (() => {
+                              const noteKey = getNoteKey(col, row);
+                              const note = cellNotes[noteKey];
+                              return (
+                                <>
+                                  {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"13px", color:COLORS.orange }}>✏️</div>}
+                                  {isAdmin && !editMode && note && (
+                                    <div style={{ position:"absolute", top:"3px", right:"3px", fontSize:"20px", cursor:"pointer", lineHeight:1, filter:"drop-shadow(0 1px 2px rgba(0,0,0,0.5))" }}
+                                      onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>📌</div>
+                                  )}
+                                  {isAdmin && editMode && (
+                                    <div style={{ position:"absolute", top:"3px", right:"3px", fontSize:"18px", cursor:"pointer", lineHeight:1, opacity:0.5 }}
+                                      onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>📌</div>
+                                  )}
+                                  <div style={{ fontSize:"clamp(10px, 1.6vw, 20px)", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>{String(visibleCell.project).slice(-4)}</div>
+                                  <div style={{ fontSize:"clamp(13px, 1.9vw, 25px)", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>{visibleCell.product}</div>
+                                  {sc && <div style={{ fontSize:"clamp(10px, 1.1vw, 14px)", color:"#000000aa", lineHeight:1.1, fontWeight:"700", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{STAGE_COLORS[prodStage]?.label?.split("—")[1]?.trim() || STAGE_COLORS[prodStage]?.label || prodStage}</div>}
+                                  {note && !editMode && <div style={{ fontSize:"clamp(11px, 1.25vw, 16px)", color: sc ? "#000000dd" : COLORS.orange, lineHeight:1.2, fontWeight:"700", maxWidth:"100%", textAlign:"center", wordBreak:"break-word", marginTop:"2px", borderTop: sc ? "1px solid #00000022" : "none", paddingTop:"2px" }}>{note}</div>}
+                                </>
+                              );
+                            })() : editMode ? (
+                              <div style={{ fontSize:"16px", color:COLORS.textDim, opacity:0.5 }}>{cell ? "🔒" : "+"}</div>
+                            ) : null}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            </div>
           </div>
-          <div style={S.card}>
-            <div style={S.h2}>Aktywność pracowników</div>
-            {workerStats.length === 0
-              ? <div style={{ color: COLORS.textDim, padding: "20px", textAlign: "center" }}>Brak danych</div>
-              : workerStats.map(w => (
-                <div key={w.login} style={{ ...S.entryCard, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+
+          {/* Map updater */}
+          <div style={{ marginTop:"16px" }}>
+            <button style={{ background:"transparent", color:COLORS.textMuted, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"12px", cursor:"pointer" }}
+              onClick={() => setShowUpdater(!showUpdater)}>
+              {showUpdater ? "✕ Zamknij" : "📸 Aktualizuj mapę ze zdjęcia"}
+            </button>
+            {showUpdater && <div style={{ marginTop:"12px" }}><MapUpdater hallName={hall.name} onUpdate={handleLayoutUpdate} /></div>}
+          </div>
+
+          {/* Detail panel */}
+          {selected && (
+            <div style={{ marginTop:"14px", background:COLORS.surface, border:`1px solid ${COLORS.accent}44`, borderRadius:"16px", padding:"20px" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"16px" }}>
+                <div>
+                  <div style={{ fontSize:"18px", fontWeight:"800" }}>Łazienka {selected.cell.product}</div>
+                  <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"2px" }}>Projekt {selected.cell.project} · Pozycja {selected.col}{selected.row} · {hall.name}</div>
+                </div>
+                <button onClick={() => setSelected(null)} style={{ background:"transparent", border:"none", color:COLORS.textMuted, cursor:"pointer", fontSize:"20px" }}>✕</button>
+              </div>
+              {(() => {
+                const historyLines = [];
+                reports.forEach(r => { (r.lines||[]).forEach(l => { if (String(l.project) === String(selected.cell.project) && String(l.product) === String(selected.cell.product)) { historyLines.push({ ...l, date: r.date || r.report_date, worker: r.workerName || r.worker_name || r.workerLogin || r.worker_code }); } }); });
+                historyLines.sort((a,b) => (a.date||"").localeCompare(b.date||""));
+                if (historyLines.length === 0) return <div style={{ color:COLORS.textDim, textAlign:"center", padding:"20px" }}>Brak raportów dla tej łazienki.</div>;
+                return (
                   <div>
-                    <div style={{ fontWeight: "600", fontSize: "15px" }}>{w.name}</div>
-                    <div style={{ color: COLORS.textMuted, fontSize: "13px", marginTop: "3px" }}>
-                      Ten tydzień: <span style={{ color: COLORS.green }}>{w.thisWeek} rap.</span> · {w.lines} pozycji łącznie
+                    <div style={{ display:"flex", gap:"6px", flexWrap:"wrap", marginBottom:"14px" }}>
+                      {[...new Set(historyLines.map(l => l.stage))].map(s => { const sc = STAGE_COLORS[s]; return <span key={s} style={{ background:(sc?.mapColor||"#888")+"33", color:sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"6px", padding:"3px 10px", fontSize:"12px", fontWeight:"600" }}>{s} {STAGES.find(st=>st.id===s)?.label||""}</span>; })}
+                    </div>
+                    {historyLines.map((line,i) => { const stageObj = STAGES.find(s=>s.id===line.stage); const sc = STAGE_COLORS[line.stage]; const isLast = i===historyLines.length-1; return (
+                      <div key={i} style={{ display:"flex", gap:"12px", marginBottom:"10px" }}>
+                        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", flexShrink:0 }}>
+                          <div style={{ width:"14px", height:"14px", borderRadius:"50%", background:sc?.mapColor||COLORS.border, marginTop:"3px", border:"2px solid #00000022" }} />
+                          {!isLast && <div style={{ width:"2px", flex:1, background:COLORS.border, minHeight:"16px" }} />}
+                        </div>
+                        <div style={{ flex:1 }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:"4px" }}>
+                            <span style={{ fontWeight:"600", fontSize:"14px" }}>{stageObj?.label||line.stage}</span>
+                            <span style={{ background:(sc?.mapColor||COLORS.border)+"33", color:sc?.mapColor||COLORS.textMuted, borderRadius:"5px", padding:"1px 8px", fontSize:"11px", fontWeight:"600" }}>{line.stage}</span>
+                          </div>
+                          <div style={{ display:"flex", gap:"12px", marginTop:"3px", flexWrap:"wrap" }}>
+                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>📅 {line.date}</span>
+                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>👤 {line.worker}</span>
+                            {line.hall && <span style={{ color:COLORS.accentLight, fontSize:"12px" }}>🏭 {line.hall==="namiot1"?"Namiot 1":line.hall==="namiot2"?"Namiot 2":line.hall==="betonowanie"?"Hala Betonowanie":"Hala ISO"}</span>}
+                          </div>
+                          {line.note && <div style={{ color:COLORS.textDim, fontSize:"12px", marginTop:"2px" }}>💬 {line.note}</div>}
+                        </div>
+                      </div>
+                    ); })}
+                    <div style={{ marginTop:"12px", paddingTop:"12px", borderTop:`1px solid ${COLORS.border}`, color:COLORS.textMuted, fontSize:"12px" }}>
+                      📊 {historyLines.length} wpisów · pierwszy: {historyLines[0].date} · ostatni: {historyLines[historyLines.length-1].date}
                     </div>
                   </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={S.statNum}>{w.total}</div>
-                    <div style={S.statLabel}>raportów</div>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </>
-      )}
+                );
+              })()}
+            </div>
+          )}
+        </div>
       </div>
+    </div>
+    </div>
+    </div>
+    </div>
     </div>
   );
 }
+// ─── PRODUCTION PLANNER}
 // ─── PRODUCTION PLANNER ───────────────────────────────────────────────────────
 // Flow: 4 > 6.1+7.1 > 11.2 > [rest] > 13.1 > 9(x3) > 10 > 15.1 > 13.2 > 17 > 18
 // Days from stage 4:
@@ -4113,6 +4228,7 @@ function ManagerAddReport({ users, reports, token, onSave }) {
         </>
       )}
     </div>
+    </div>
   );
 }
 
@@ -4319,6 +4435,102 @@ function StatsTab({ reports, users }) {
               </div>
             </div>
           ))}
+      </div>
+    </div>
+  );
+}
+
+
+// ─── BULK WORKER ADD ─────────────────────────────────────────────────────────
+function BulkWorkerAdd({ contractors, users, token, onDone }) {
+  const [selected, setSelected] = useState(new Set());
+  const [password, setPassword] = useState("zmien123");
+  const [search, setSearch] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [progress, setProgress] = useState(null);
+
+  const available = contractors.filter(c =>
+    !users.find(u => (u.code || u.login || "").toUpperCase() === c.code.toUpperCase()) &&
+    (search === "" || c.code.toLowerCase().includes(search.toLowerCase()) || c.name.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  const toggleAll = () => {
+    if (selected.size === available.length) setSelected(new Set());
+    else setSelected(new Set(available.map(c => c.code)));
+  };
+
+  const toggle = (code) => {
+    setSelected(prev => { const next = new Set(prev); if (next.has(code)) next.delete(code); else next.add(code); return next; });
+  };
+
+  const addAll = async () => {
+    if (selected.size === 0 || password.length < 4) return;
+    setAdding(true);
+    let done = 0, errors = 0;
+    const toAdd = available.filter(c => selected.has(c.code));
+    setProgress({ done: 0, total: toAdd.length, errors: 0 });
+    for (const c of toAdd) {
+      try { await api.addUser(token, c.code, c.name, password, "worker"); done++; }
+      catch { errors++; }
+      setProgress({ done, total: toAdd.length, errors });
+    }
+    setAdding(false);
+    if (done > 0) onDone();
+  };
+
+  return (
+    <div>
+      <div style={S.row2} className="dl-row2">
+        <div>
+          <label style={S.label}>Szukaj pracownika</label>
+          <input style={S.input} placeholder="Kod lub imię..." value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <div>
+          <label style={S.label}>Hasło tymczasowe dla wszystkich</label>
+          <input style={S.input} value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 4 znaki" />
+        </div>
+      </div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", margin:"12px 0 8px" }}>
+        <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
+          {available.length} dostępnych · <span style={{ color:COLORS.accent, fontWeight:"600" }}>{selected.size} zaznaczonych</span>
+        </div>
+        <button style={{ ...S.btnSm, background:COLORS.surface, color:COLORS.textMuted, border:`1px solid ${COLORS.border}` }} onClick={toggleAll}>
+          {selected.size === available.length ? "Odznacz wszystkie" : "Zaznacz wszystkie"}
+        </button>
+      </div>
+      <div style={{ maxHeight:"280px", overflowY:"auto", border:`1px solid ${COLORS.border}`, borderRadius:"10px", marginBottom:"16px" }}>
+        {available.length === 0 ? (
+          <div style={{ padding:"24px", textAlign:"center", color:COLORS.textDim }}>
+            {search ? "Brak wyników" : "Wszyscy pracownicy z listy mają już konta"}
+          </div>
+        ) : available.map(c => {
+          const isSelected = selected.has(c.code);
+          return (
+            <div key={c.code} style={{ display:"flex", alignItems:"center", gap:"12px", padding:"10px 14px", background: isSelected ? COLORS.accent+"12" : "transparent", borderBottom:`1px solid ${COLORS.border}`, cursor:"pointer" }}
+              onClick={() => toggle(c.code)}>
+              <div style={{ width:"18px", height:"18px", borderRadius:"4px", background: isSelected ? COLORS.accent : "transparent", border:`2px solid ${isSelected ? COLORS.accent : COLORS.border}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                {isSelected && <span style={{ color:"#fff", fontSize:"11px", fontWeight:"800" }}>✓</span>}
+              </div>
+              <span style={{ color:COLORS.textMuted, fontSize:"12px", minWidth:"60px" }}>{c.code}</span>
+              <span style={{ fontSize:"14px", color:COLORS.text }}>{c.name}</span>
+            </div>
+          );
+        })}
+      </div>
+      {progress && (
+        <div style={{ ...S.infoBox(progress.errors > 0 ? COLORS.orange : COLORS.green), marginBottom:"12px" }}>
+          {adding ? `⏳ Dodaję... ${progress.done}/${progress.total}` : `✓ Dodano ${progress.done} pracowników${progress.errors > 0 ? ` (${progress.errors} błędów)` : ""}`}
+          <div style={{ background:COLORS.border, borderRadius:"99px", height:"6px", marginTop:"6px", overflow:"hidden" }}>
+            <div style={{ width:`${Math.round(progress.done/progress.total*100)}%`, height:"100%", background: progress.errors > 0 ? COLORS.orange : COLORS.green, borderRadius:"99px", transition:"width 0.2s" }} />
+          </div>
+        </div>
+      )}
+      <div style={{ display:"flex", gap:"10px", alignItems:"center" }}>
+        <button style={{ ...S.btn, opacity: selected.size === 0 || adding || password.length < 4 ? 0.4 : 1 }}
+          onClick={addAll} disabled={selected.size === 0 || adding || password.length < 4}>
+          {adding ? "⏳ Dodaję..." : `+ Dodaj ${selected.size} pracowników`}
+        </button>
+      </div>
       </div>
     </div>
   );
