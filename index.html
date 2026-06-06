@@ -2872,24 +2872,7 @@ function MapUpdater({ onUpdate, hallName }) {
               },
               {
                 type: "text",
-                text: `Odczytaj układ łazienek z tego szkicu hali produkcyjnej.
-
-Szkic ma siatkę z kolumnami (litery A-G) i wierszami (1-23).
-W każdej komórce może być wpisany numer projektu (4 cyfry, np. 5278, 5588) i numer łazienki.
-
-Zwróć TYLKO JSON w tym formacie, bez żadnego tekstu przed ani po:
-[
-  {"col":"A","row":1,"project":"5278","product":123},
-  {"col":"B","row":2,"project":"5588","product":45}
-]
-
-Zasady:
-- Puste komórki pomiń
-- Jeśli numer jest nieczytelny, pomiń tę komórkę
-- Projekt to 4-cyfrowy numer (5xxx)
-- Produkt to liczba całkowita
-- Kolumny to litery od lewej do prawej
-- Wiersze to numery od góry do dołu`
+                text: `Odczytaj układ łazienek z tego szkicu hali produkcyjnej.\n\nSzkic ma siatkę z kolumnami (litery A-G) i wierszami (1-23).\nW każdej komórce może być wpisany numer projektu (4 cyfry, np. 5278, 5588) i numer łazienki.\n\nZwróć TYLKO JSON w tym formacie, bez żadnego tekstu przed ani po:\n[\n  {"col":"A","row":1,"project":"5278","product":123},\n  {"col":"B","row":2,"project":"5588","product":45}\n]\n\nZasady:\n- Puste komórki pomiń\n- Jeśli numer jest nieczytelny, pomiń tę komórkę\n- Projekt to 4-cyfrowy numer (5xxx)\n- Produkt to liczba całkowita\n- Kolumny to litery od lewej do prawej\n- Wiersze to numery od góry do dołu`
               }
             ]
           }]
@@ -3282,37 +3265,70 @@ function CellEditor({ cell, col, row, onSave, onDelete, onClose }) {
 }
 
 
+function SelectedDetail({ selected, reports }) {
+  if (!selected) return null;
+  const hl = [];
+  (reports || []).forEach(r => {
+    (r.lines||[]).forEach(l => {
+      if (String(l.project)===String(selected.cell.project) && String(l.product)===String(selected.cell.product)) {
+        hl.push({ ...l, date: r.date||r.report_date, worker: r.workerName||r.worker_name||r.workerLogin||r.worker_code });
+      }
+    });
+  });
+  hl.sort((a,b) => (a.date||"").localeCompare(b.date||""));
+  if (hl.length === 0) return <div style={{ color:COLORS.textDim, textAlign:"center", padding:"20px" }}>Brak raportów dla tej łazienki.</div>;
+  return (
+    <div>
+      <div style={{ display:"flex", gap:"6px", flexWrap:"wrap", marginBottom:"14px" }}>
+        {[...new Set(hl.map(l => l.stage))].map(s => {
+          const sc = STAGE_COLORS[s];
+          return <span key={s} style={{ background:(sc?.mapColor||"#888")+"33", color:sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"6px", padding:"3px 10px", fontSize:"12px", fontWeight:"600" }}>{s}</span>;
+        })}
+      </div>
+      {hl.map((line, idx) => {
+        const sc = STAGE_COLORS[line.stage];
+        return (
+          <div key={idx} style={{ display:"flex", gap:"12px", marginBottom:"10px" }}>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", flexShrink:0 }}>
+              <div style={{ width:"14px", height:"14px", borderRadius:"50%", background:sc?.mapColor||COLORS.border, marginTop:"3px" }} />
+              {idx < hl.length-1 && <div style={{ width:"2px", flex:1, background:COLORS.border, minHeight:"16px" }} />}
+            </div>
+            <div style={{ flex:1 }}>
+              <div style={{ fontWeight:"600", fontSize:"14px" }}>{STAGES.find(s=>s.id===line.stage)?.label||line.stage}</div>
+              <div style={{ color:COLORS.textMuted, fontSize:"12px", marginTop:"2px" }}>📅 {line.date} · 👤 {line.worker}</div>
+              {line.note && <div style={{ color:COLORS.textDim, fontSize:"12px", marginTop:"2px" }}>💬 {line.note}</div>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
 function HallMap({ reports = [], isAdmin = false }) {
   const [selectedHall, setSelectedHall] = useState("namiot2");
   const [selected, setSelected] = useState(null);
   const [filterProject, setFilterProject] = useState("all");
   const [filterStage, setFilterStage] = useState("all");
-
   const [customLayouts, setCustomLayouts] = useState(() => {
-    try {
-      const saved = localStorage.getItem("dl_hall_layouts");
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
+    try { const s = localStorage.getItem("dl_hall_layouts"); return s ? JSON.parse(s) : {}; } catch { return {}; }
   });
   const [cellNotes, setCellNotes] = useState(() => {
-    try {
-      const saved = localStorage.getItem("dl_cell_notes");
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
+    try { const s = localStorage.getItem("dl_cell_notes"); return s ? JSON.parse(s) : {}; } catch { return {}; }
   });
-  const [editingNote, setEditingNote] = useState(null); // { col, row, key }
+  const [editingNote, setEditingNote] = useState(null);
   const [zoom, setZoom] = useState(1);
   const mapRef = React.useRef(null);
   const lastDist = React.useRef(null);
   const [showUpdater, setShowUpdater] = useState(false);
   const [editMode, setEditMode] = useState(false);
-  const [editingCell, setEditingCell] = useState(null); // { col, row, cell }
+  const [editingCell, setEditingCell] = useState(null);
 
   const hall = HALLS[selectedHall];
   const COLS = hall.cols;
   const ROWS = Array.from({ length: hall.rows }, (_, i) => i + 1);
 
-  // Use custom layout if available, otherwise use default
   const activeLayout = customLayouts[selectedHall]
     ? [...hall.layout.filter(c => !customLayouts[selectedHall].find(n => n.col===c.col && n.row===c.row)), ...customLayouts[selectedHall]]
     : hall.layout;
@@ -3326,305 +3342,201 @@ function HallMap({ reports = [], isAdmin = false }) {
 
   const handleCellSave = ({ col, row, project, product }) => {
     const base = customLayouts[selectedHall] || activeLayout;
-    // Remove existing cell at this position and any duplicate project/product
     const filtered = base.filter(c => !(c.col === col && c.row === row) && !(c.project === project && c.product === product));
-    const newLayout = [...filtered, { col, row, project, product }];
-    handleLayoutUpdate(newLayout);
+    handleLayoutUpdate([...filtered, { col, row, project, product }]);
     setEditingCell(null);
   };
 
-  const handleCellDelete = (col, row) => {
-    const base = customLayouts[selectedHall] || activeLayout;
-    const newLayout = base.filter(c => !(c.col === col && c.row === row));
-    handleLayoutUpdate(newLayout);
-    setEditingCell(null);
-  };
-
-  const getNoteKey = (col, row) => `${selectedHall}__${col}${row}`;
-
-  const saveNote = (col, row, text) => {
-    const key = getNoteKey(col, row);
+  const handleNoteSave = (key, text) => {
     const updated = { ...cellNotes, [key]: text };
-    if (!text) delete updated[key];
     setCellNotes(updated);
-    try { localStorage.setItem("dl_cell_notes", JSON.stringify(updated)); } catch {}
     setEditingNote(null);
+    try { localStorage.setItem("dl_cell_notes", JSON.stringify(updated)); } catch {}
   };
 
-  // Compute last stage + warehouse for each product
+  // Pinch zoom
+  React.useEffect(() => {
+    const el = mapRef.current;
+    if (!el) return;
+    const onTouch = (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (lastDist.current !== null) {
+          const delta = dist - lastDist.current;
+          setZoom(z => Math.min(3, Math.max(0.3, +(z + delta*0.008).toFixed(2))));
+        }
+        lastDist.current = dist;
+      }
+    };
+    const onEnd = () => { lastDist.current = null; };
+    el.addEventListener("touchmove", onTouch, { passive: false });
+    el.addEventListener("touchend", onEnd);
+    return () => { el.removeEventListener("touchmove", onTouch); el.removeEventListener("touchend", onEnd); };
+  }, []);
+
+  // Compute product stages for coloring
   const productStages = {};
-  const warehouseState = computeWarehouseState(reports);
-  const allLines = [];
-  reports.forEach(r => {
+  (reports || []).forEach(r => {
     (r.lines || []).forEach(l => {
-      allLines.push({ ...l, date: r.date || r.report_date, worker: r.workerName || r.worker_name });
+      const key = `${l.project}_${l.product}`;
+      if (!productStages[key] || (l.stage > productStages[key].stage)) {
+        productStages[key] = { stage: l.stage, date: r.date || r.report_date };
+      }
     });
   });
-  allLines.sort((a, b) => (a.date||"").localeCompare(b.date||""));
-  allLines.forEach(l => {
-    const key = `${l.project}__${l.product}`;
-    if (!productStages[key]) productStages[key] = { stages: [], lastStage: null, lastDate: null, worker: null };
-    if (!productStages[key].stages.includes(l.stage)) productStages[key].stages.push(l.stage);
-    productStages[key].lastStage = l.stage;
-    productStages[key].lastDate = l.date;
-    productStages[key].worker = l.worker;
-  });
 
-  // Only show cells that are in "produkcja" warehouse
-  const inProdukcja = new Set(
-    Object.entries(warehouseState)
-      .filter(([k, v]) => v.warehouse === "produkcja")
-      .map(([k]) => k)
-  );
-
-  // Override getCellInfo to return null if not in produkcja
-  const getCellVisible = (cell) => {
-    if (!cell?.project || !cell?.product) return false;
-    const key = `${cell.project}__${cell.product}`;
-    return inProdukcja.has(key);
-  };
-
-  const getCell = (col, row) => activeLayout.find(c => c.col === col && c.row === row);
-  const getCellInfo = (cell) => {
-    if (!cell?.project || !cell?.product) return null;
-    return productStages[`${cell.project}__${cell.product}`] || null;
-  };
-
-  const projects = [...new Set(activeLayout.map(c => c.project).filter(Boolean))].sort();
-
-  const filteredKeys = new Set(
-    activeLayout
-      .filter(c => {
-        if (!editMode && !getCellVisible(c)) return false;
-        if (filterProject !== "all" && c.project !== filterProject) return false;
-        if (filterStage !== "all") {
-          const info = getCellInfo(c);
-          if (!info || info.lastStage !== filterStage) return false;
-        }
-        return true;
-      })
-      .map(c => `${c.col}-${c.row}`)
-  );
-
-  // Stats based on visible cells only
-  const visibleCells = activeLayout.filter(c => editMode || getCellVisible(c));
-
-  const totalCells = editMode ? activeLayout.length : (visibleCells || activeLayout.filter(c => getCellVisible(c))).length;
-  const withStage = (editMode ? activeLayout : (visibleCells || [])).filter(c => getCellInfo(c)).length;
+  const allProjects = [...new Set(activeLayout.map(c => c.project))].sort();
 
   return (
     <div>
-      {/* Hall map content - zoom controls, legend, grid */}
-      <div style={{ display:"flex", gap:"10px", marginBottom:"10px", alignItems:"center" }}>
+      <div style={{ display:"flex", gap:"10px", marginBottom:"10px", alignItems:"center", flexWrap:"wrap" }}>
         <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.max(0.3, +(z-0.15).toFixed(2)))}>−</button>
         <span style={{ color:COLORS.textMuted, fontSize:"13px", minWidth:"42px", textAlign:"center" }}>{Math.round(zoom*100)}%</span>
-        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.min(2.5, +(z+0.15).toFixed(2)))}>+</button>
-        <button style={{ background:"transparent", border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 10px", fontSize:"12px", cursor:"pointer", color:COLORS.textMuted }} onClick={() => setZoom(1)}>Reset</button>
+        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 14px", fontSize:"20px", cursor:"pointer", color:COLORS.text }} onClick={() => setZoom(z => Math.min(3, +(z+0.15).toFixed(2)))}>+</button>
+        <button style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"4px 10px", fontSize:"12px", cursor:"pointer", color:COLORS.textMuted }} onClick={() => setZoom(1)}>Reset</button>
         <MapPdfButton hallId={selectedHall} hallName={hall.name} layout={activeLayout} productStages={productStages} emailRecipients={[]} token={window._rbrToken || ""} />
+        {isAdmin && (
+          <button style={{ marginLeft:"auto", background:editMode?COLORS.accent:COLORS.surface, color:editMode?"#fff":COLORS.textMuted, border:`1px solid ${editMode?COLORS.accent:COLORS.border}`, borderRadius:"8px", padding:"5px 14px", fontSize:"12px", cursor:"pointer" }}
+            onClick={() => { setEditMode(m => !m); setEditingCell(null); }}>
+            {editMode ? "✕ Zakończ edycję" : "✏️ Edytuj mapę"}
+          </button>
+        )}
       </div>
 
       <div style={{ display:"flex", gap:"0", minHeight:"600px" }}>
-        <div className="hall-sidebar" style={{ display:"flex", flexDirection:"column", gap:"4px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"clamp(80px, 15vw, 140px)", width:"clamp(80px, 15vw, 140px)" }}>
-          <div style={{ fontSize:"11px", color:COLORS.textDim, fontWeight:"700", textTransform:"uppercase", letterSpacing:"0.06em", padding:"4px 6px" }}>Hale</div>
-          {Object.entries(HALLS).map(([key, h]) => (
-            <button key={key}
-              style={{ padding:"clamp(8px, 1.5vw, 14px) clamp(10px, 2vw, 18px)", borderRadius:"10px", border:"none", cursor:"pointer", fontSize:"clamp(11px, 1.5vw, 14px)", fontWeight: selectedHall===key ? "700" : "400", background: selectedHall===key ? COLORS.accent : "transparent", color: selectedHall===key ? "#fff" : COLORS.textMuted, textAlign:"left" }}
-              onClick={() => { setSelectedHall(key); setSelected(null); setFilterProject("all"); setFilterStage("all"); }}>
+        <div className="hall-sidebar" style={{ display:"flex", flexDirection:"column", gap:"4px", padding:"8px", background:COLORS.bg, borderRight:`1px solid ${COLORS.border}`, flexShrink:0, minWidth:"clamp(80px,15vw,140px)", width:"clamp(80px,15vw,140px)" }}>
+          {Object.entries(HALLS).map(([id, h]) => (
+            <button key={id}
+              onClick={() => { setSelectedHall(id); setSelected(null); setEditingCell(null); }}
+              style={{ background:selectedHall===id?COLORS.accent:COLORS.surface, color:selectedHall===id?"#fff":COLORS.textMuted, border:`1px solid ${selectedHall===id?COLORS.accent:COLORS.border}`, borderRadius:"8px", padding:"8px 6px", fontSize:"clamp(9px,1.2vw,12px)", fontWeight:selectedHall===id?"700":"400", cursor:"pointer", textAlign:"center", lineHeight:"1.3" }}>
               {h.name}
             </button>
           ))}
-        </div>
-        <div style={{ flex:1, minWidth:0, padding:"12px", overflowX:"auto", overflowY:"auto" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px", flexWrap:"wrap", gap:"8px" }}>
-            <div style={{ color:COLORS.textMuted, fontSize:"13px" }}>
-              {totalCells} łazienek · {withStage} z etapem ({Math.round(withStage/totalCells*100)||0}%)
-            </div>
-            <div style={{ display:"flex", gap:"8px", flexWrap:"wrap" }}>
-              <select style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 12px", color:COLORS.text, fontSize:"13px", outline:"none" }}
-                value={filterProject} onChange={e => { setFilterProject(e.target.value); setSelected(null); }}>
-                <option value="all">Wszystkie projekty</option>
-                {projects.map(p => <option key={p} value={p}>Projekt {p}</option>)}
-              </select>
-              <select style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 12px", color:COLORS.text, fontSize:"13px", outline:"none" }}
-                value={filterStage} onChange={e => { setFilterStage(e.target.value); setSelected(null); }}>
-                <option value="all">Wszystkie etapy</option>
-                {Object.entries(STAGE_COLORS).map(([k,v]) => <option key={k} value={k}>{k} — {v.label}</option>)}
-              </select>
-              {(filterProject !== "all" || filterStage !== "all") && (
-                <button style={{ background:"transparent", color:COLORS.textMuted, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"13px", cursor:"pointer" }}
-                  onClick={() => { setFilterProject("all"); setFilterStage("all"); }}>Wyczyść</button>
-              )}
-              <button style={{ background: editMode ? COLORS.orange : "transparent", color: editMode ? "#fff" : COLORS.textMuted, border:`1px solid ${editMode ? COLORS.orange : COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"12px", cursor:"pointer", fontWeight: editMode ? "600" : "400" }}
-                onClick={() => { setEditMode(!editMode); setSelected(null); }}>
-                {editMode ? "✏️ Tryb edycji — WŁĄCZONY" : "✏️ Edytuj mapę"}
-              </button>
-            </div>
-          </div>
-
-          {/* Legend */}
-          <div style={{ background:COLORS.surface, border:`1px solid ${COLORS.border}`, borderRadius:"12px", padding:"14px 16px", marginBottom:"12px" }}>
-            <div style={{ fontSize:"12px", fontWeight:"700", color:COLORS.textMuted, marginBottom:"10px", textTransform:"uppercase", letterSpacing:"0.06em" }}>Legenda etapów produkcji</div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(165px, 1fr))", gap:"8px" }}>
-              {["4","6.1","7.1","11.2","13.1","10","15.1","13.2","17","18","19"].map(k => (
-                <div key={k} style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-                  <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:STAGE_COLORS[k]?.mapColor || "#888", border:"1px solid #00000022", flexShrink:0 }} />
-                  <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.text }}>{k} — {STAGE_COLORS[k]?.label}</div>
-                </div>
-              ))}
-              <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
-                <div style={{ width:"30px", height:"30px", borderRadius:"6px", background:COLORS.surface, border:`2px solid ${COLORS.border}`, flexShrink:0 }} />
-                <div style={{ fontSize:"13px", fontWeight:"700", color:COLORS.textDim }}>Brak etapu</div>
+          <div style={{ borderTop:`1px solid ${COLORS.border}`, marginTop:"8px", paddingTop:"8px" }}>
+            <div style={{ color:COLORS.textDim, fontSize:"10px", marginBottom:"6px", fontWeight:"600", textTransform:"uppercase", letterSpacing:"0.05em" }}>Etap</div>
+            {STAGE_COLORS && Object.entries(STAGE_COLORS).slice(0, 12).map(([s, sc]) => (
+              <div key={s} style={{ display:"flex", alignItems:"center", gap:"4px", marginBottom:"3px" }}>
+                <div style={{ width:"10px", height:"10px", borderRadius:"2px", background:sc.mapColor, flexShrink:0 }} />
+                <span style={{ fontSize:"9px", color:COLORS.textMuted }}>{s}</span>
               </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ flex:1, overflow:"auto" }}>
+          <div style={{ display:"flex", gap:"8px", padding:"8px", flexWrap:"wrap" }}>
+            <select style={S.selectFilter} value={filterProject} onChange={e => setFilterProject(e.target.value)}>
+              <option value="all">Wszystkie projekty</option>
+              {allProjects.map(p => <option key={p} value={String(p)}>Projekt {p}</option>)}
+            </select>
+            <select style={S.selectFilter} value={filterStage} onChange={e => setFilterStage(e.target.value)}>
+              <option value="all">Wszystkie etapy</option>
+              {STAGES.map(s => <option key={s.id} value={s.id}>{s.id} {s.label}</option>)}
+            </select>
+          </div>
+
+          <div ref={mapRef} style={{ overflowX:"auto", paddingBottom:"8px" }}>
+            <div style={{ display:"inline-grid", gridTemplateColumns:`repeat(${COLS.length}, clamp(110px,12vw,130px))`, gap:"3px", padding:"8px", transform:`scale(${zoom})`, transformOrigin:"top left", minWidth:"max-content" }}>
+              {ROWS.flatMap(row =>
+                COLS.map(col => {
+                  const cell = activeLayout.find(c => c.col === col && c.row === row);
+                  const stKey = cell ? `${cell.project}_${cell.product}` : null;
+                  const ps = stKey ? productStages[stKey] : null;
+                  const sc = ps ? STAGE_COLORS[ps.stage] : null;
+                  const noteKey = `${selectedHall}_${col}${row}`;
+                  const hasNote = cellNotes[noteKey];
+                  const matchProject = filterProject === "all" || (cell && String(cell.project) === filterProject);
+                  const matchStage = filterStage === "all" || (ps && ps.stage === filterStage);
+                  const highlight = cell && matchProject && matchStage;
+                  const isEditing = editingCell && editingCell.col === col && editingCell.row === row;
+
+                  if (isEditing) {
+                    return (
+                      <CellEditor key={`${col}${row}`} col={col} row={row} cell={cell} onSave={handleCellSave} onCancel={() => setEditingCell(null)} />
+                    );
+                  }
+
+                  return (
+                    <div key={`${col}${row}`}
+                      onClick={() => {
+                        if (editMode && cell) { setEditingCell({ col, row, cell }); return; }
+                        if (cell) setSelected(s => s && s.col===col && s.row===row ? null : { col, row, cell });
+                      }}
+                      style={{
+                        height:"clamp(90px,10vw,110px)",
+                        background: !cell ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
+                        border: selected && selected.col===col && selected.row===row
+                          ? `2px solid ${COLORS.accent}`
+                          : sc ? `1px solid ${sc.mapColor}66` : `1px solid ${COLORS.border}`,
+                        borderRadius:"8px",
+                        padding:"4px 6px",
+                        cursor: cell ? "pointer" : editMode ? "crosshair" : "default",
+                        opacity: cell && !highlight ? 0.35 : 1,
+                        display:"flex", flexDirection:"column", justifyContent:"space-between",
+                        position:"relative", transition:"opacity 0.15s",
+                      }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                        <span style={{ fontSize:"clamp(8px,0.9vw,10px)", color:COLORS.textDim, fontWeight:"600" }}>{col}{row}</span>
+                        {hasNote && <span style={{ fontSize:"9px" }}>📌</span>}
+                      </div>
+                      {cell ? (
+                        <div style={{ textAlign:"center" }}>
+                          <div style={{ fontSize:"clamp(11px,1.2vw,14px)", fontWeight:"700", color:COLORS.text }}>P{cell.project}</div>
+                          <div style={{ fontSize:"clamp(13px,1.5vw,16px)", fontWeight:"800", color:sc?sc.mapColor:COLORS.accent }}>Ł{cell.product}</div>
+                          {ps && <div style={{ fontSize:"clamp(8px,0.85vw,10px)", color:sc?sc.mapColor:COLORS.textMuted, marginTop:"2px", fontWeight:"600" }}>{ps.stage}</div>}
+                        </div>
+                      ) : (
+                        <div style={{ textAlign:"center", color:COLORS.textDim, fontSize:"clamp(8px,0.9vw,10px)" }}>—</div>
+                      )}
+                      {editMode && cell && (
+                        <div style={{ position:"absolute", top:"2px", right:"2px" }}>
+                          <button onClick={e => { e.stopPropagation(); setEditingNote({ col, row, key: noteKey }); }}
+                            style={{ background:"transparent", border:"none", cursor:"pointer", fontSize:"10px", padding:"1px", color:COLORS.textDim }}>✏️</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
 
-          {editingNote && (
-            <CellNoteEditor col={editingNote.col} row={editingNote.row}
-              currentNote={cellNotes[getNoteKey(editingNote.col, editingNote.row)] || ""}
-              onSave={saveNote} onClose={() => setEditingNote(null)} />
-          )}
-          {editingCell && (
-            <CellEditor cell={editingCell.cell} col={editingCell.col} row={editingCell.row}
-              onSave={handleCellSave} onDelete={handleCellDelete} onClose={() => setEditingCell(null)} />
+          {editMode && editingNote && (
+            <CellNoteEditor noteKey={editingNote.key} initial={cellNotes[editingNote.key]||""} onSave={handleNoteSave} onCancel={() => setEditingNote(null)} />
           )}
 
-          <div className="hall-map-container" style={{ overflowX:"auto", overflowY:"auto", WebkitOverflowScrolling:"touch" }}
-            ref={mapRef}
-            onTouchStart={e => { if (e.touches.length === 2) { const dx = e.touches[0].clientX - e.touches[1].clientX; const dy = e.touches[0].clientY - e.touches[1].clientY; lastDist.current = Math.sqrt(dx*dx + dy*dy); } }}
-            onTouchMove={e => { if (e.touches.length === 2 && lastDist.current) { e.preventDefault(); const dx = e.touches[0].clientX - e.touches[1].clientX; const dy = e.touches[0].clientY - e.touches[1].clientY; const dist = Math.sqrt(dx*dx + dy*dy); const delta = dist / lastDist.current; setZoom(z => Math.min(2.5, Math.max(0.3, +(z * delta).toFixed(2)))); lastDist.current = dist; } }}
-            onTouchEnd={() => { lastDist.current = null; }}
-            onWheel={e => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); setZoom(z => Math.min(2.5, Math.max(0.3, +(z - e.deltaY * 0.005).toFixed(2)))); } }}>
-            <div style={{ transform:`scale(${zoom})`, transformOrigin:"top left", transition:"transform 0.1s ease" }}>
-            <table style={{ borderCollapse:"collapse" }}>
-              <thead>
-                <tr>
-                  <th style={{ padding:"4px 8px", color:COLORS.textMuted, fontSize:"11px", width:"28px" }}></th>
-                  {ROWS.map(row => (
-                    <th key={row} style={{ padding:"4px 6px", color:COLORS.accent, fontSize:"clamp(10px, 1.5vw, 18px)", fontWeight:"700", textAlign:"center", minWidth:"clamp(52px, 6vw, 110px)" }}>{row}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[...COLS].reverse().map(col => (
-                  <tr key={col}>
-                    <td style={{ padding:"2px 6px", color:COLORS.accent, fontSize:"clamp(11px, 1.5vw, 18px)", textAlign:"center", fontWeight:"700" }}>{col}</td>
-                    {ROWS.map(row => {
-                      const cell = getCell(col, row);
-                      const isVisible = editMode || getCellVisible(cell);
-                      const visibleCell = isVisible ? cell : null;
-                      const info = getCellInfo(visibleCell);
-                      const cellKey = `${col}-${row}`;
-                      const isFiltered = filterProject !== "all" || filterStage !== "all";
-                      const isHighlighted = !isFiltered || filteredKeys.has(cellKey);
-                      const prodStage = info ? getProductionStage(info.stages) : null;
-                      const sc = prodStage ? STAGE_COLORS[prodStage] : null;
-                      const isSelected = selected?.col === col && selected?.row === row;
-                      return (
-                        <td key={row} style={{ padding:"2px" }}>
-                          <div
-                            onClick={() => { if (editMode) { setEditingCell({ col, row, cell: cell || null }); } else { if (visibleCell) setSelected(isSelected ? null : { col, row, cell: visibleCell, info }); } }}
-                            style={{
-                              width:"clamp(52px, 6vw, 110px)", height:"clamp(60px, 7vw, 110px)",
-                              background: !visibleCell ? "transparent" : !isHighlighted ? COLORS.bg : sc ? sc.mapColor+"33" : COLORS.surface,
-                              border: `1px solid ${isSelected ? COLORS.accent : visibleCell ? (sc ? sc.mapColor+"88" : COLORS.border) : "transparent"}`,
-                              borderRadius:"6px", cursor: editMode ? "pointer" : visibleCell ? "pointer" : "default",
-                              display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
-                              padding:"2px", opacity: !visibleCell ? (editMode ? 0.4 : 0) : !isHighlighted ? 0.25 : 1,
-                              transition:"all 0.1s", outline: isSelected ? `2px solid ${COLORS.accent}` : "none", position:"relative",
-                            }}>
-                            {visibleCell ? (() => {
-                              const noteKey = getNoteKey(col, row);
-                              const note = cellNotes[noteKey];
-                              return (
-                                <>
-                                  {editMode && <div style={{ position:"absolute", top:"2px", right:"3px", fontSize:"13px", color:COLORS.orange }}>✏️</div>}
-                                  {isAdmin && !editMode && note && (
-                                    <div style={{ position:"absolute", top:"3px", right:"3px", fontSize:"20px", cursor:"pointer", lineHeight:1, filter:"drop-shadow(0 1px 2px rgba(0,0,0,0.5))" }}
-                                      onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>📌</div>
-                                  )}
-                                  {isAdmin && editMode && (
-                                    <div style={{ position:"absolute", top:"3px", right:"3px", fontSize:"18px", cursor:"pointer", lineHeight:1, opacity:0.5 }}
-                                      onClick={e => { e.stopPropagation(); setEditingNote({ col, row }); }}>📌</div>
-                                  )}
-                                  <div style={{ fontSize:"clamp(10px, 1.6vw, 20px)", color: sc ? "#000000bb" : COLORS.textMuted, fontWeight:"800", lineHeight:1.1 }}>{String(visibleCell.project).slice(-4)}</div>
-                                  <div style={{ fontSize:"clamp(13px, 1.9vw, 25px)", fontWeight:"900", color: sc ? "#000000ee" : COLORS.text, lineHeight:1.1 }}>{visibleCell.product}</div>
-                                  {sc && <div style={{ fontSize:"clamp(10px, 1.1vw, 14px)", color:"#000000aa", lineHeight:1.1, fontWeight:"700", textAlign:"center", maxWidth:"100%", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{STAGE_COLORS[prodStage]?.label?.split("—")[1]?.trim() || STAGE_COLORS[prodStage]?.label || prodStage}</div>}
-                                  {note && !editMode && <div style={{ fontSize:"clamp(11px, 1.25vw, 16px)", color: sc ? "#000000dd" : COLORS.orange, lineHeight:1.2, fontWeight:"700", maxWidth:"100%", textAlign:"center", wordBreak:"break-word", marginTop:"2px", borderTop: sc ? "1px solid #00000022" : "none", paddingTop:"2px" }}>{note}</div>}
-                                </>
-                              );
-                            })() : editMode ? (
-                              <div style={{ fontSize:"16px", color:COLORS.textDim, opacity:0.5 }}>{cell ? "🔒" : "+"}</div>
-                            ) : null}
-                          </div>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          {isAdmin && (
+            <div style={{ marginTop:"16px", padding:"0 8px" }}>
+              <button style={{ background:"transparent", color:COLORS.textMuted, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"12px", cursor:"pointer" }}
+                onClick={() => setShowUpdater(!showUpdater)}>
+                {showUpdater ? "✕ Zamknij" : "📸 Aktualizuj mapę ze zdjęcia"}
+              </button>
+              {showUpdater && (
+                <div style={{ marginTop:"12px" }}>
+                  <MapUpdater hallName={hall.name} onUpdate={handleLayoutUpdate} />
+                </div>
+              )}
             </div>
-          </div>
+          )}
 
-          {/* Map updater */}
-          <div style={{ marginTop:"16px" }}>
-            <button style={{ background:"transparent", color:COLORS.textMuted, border:`1px solid ${COLORS.border}`, borderRadius:"8px", padding:"7px 14px", fontSize:"12px", cursor:"pointer" }}
-              onClick={() => setShowUpdater(!showUpdater)}>
-              {showUpdater ? "✕ Zamknij" : "📸 Aktualizuj mapę ze zdjęcia"}
-            </button>
-            {showUpdater && <div style={{ marginTop:"12px" }}><MapUpdater hallName={hall.name} onUpdate={handleLayoutUpdate} /></div>}
-          </div>
-
-          {/* Detail panel */}
           {selected && (
-            <div style={{ marginTop:"14px", background:COLORS.surface, border:`1px solid ${COLORS.accent}44`, borderRadius:"16px", padding:"20px" }}>
+            <div style={{ margin:"14px 8px 0", background:COLORS.surface, border:`1px solid ${COLORS.accent}44`, borderRadius:"16px", padding:"20px" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"16px" }}>
                 <div>
                   <div style={{ fontSize:"18px", fontWeight:"800" }}>Łazienka {selected.cell.product}</div>
-                  <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"2px" }}>Projekt {selected.cell.project} · Pozycja {selected.col}{selected.row} · {hall.name}</div>
+                  <div style={{ color:COLORS.textMuted, fontSize:"13px", marginTop:"2px" }}>Projekt {selected.cell.project} · {selected.col}{selected.row} · {hall.name}</div>
                 </div>
                 <button onClick={() => setSelected(null)} style={{ background:"transparent", border:"none", color:COLORS.textMuted, cursor:"pointer", fontSize:"20px" }}>✕</button>
               </div>
-              {(() => {
-                const historyLines = [];
-                reports.forEach(r => { (r.lines||[]).forEach(l => { if (String(l.project) === String(selected.cell.project) && String(l.product) === String(selected.cell.product)) { historyLines.push({ ...l, date: r.date || r.report_date, worker: r.workerName || r.worker_name || r.workerLogin || r.worker_code }); } }); });
-                historyLines.sort((a,b) => (a.date||"").localeCompare(b.date||""));
-                if (historyLines.length === 0) return <div style={{ color:COLORS.textDim, textAlign:"center", padding:"20px" }}>Brak raportów dla tej łazienki.</div>;
-                return (
-                  <div>
-                    <div style={{ display:"flex", gap:"6px", flexWrap:"wrap", marginBottom:"14px" }}>
-                      {[...new Set(historyLines.map(l => l.stage))].map(s => { const sc = STAGE_COLORS[s]; return <span key={s} style={{ background:(sc?.mapColor||"#888")+"33", color:sc?.mapColor||"#888", border:`1px solid ${(sc?.mapColor||"#888")}55`, borderRadius:"6px", padding:"3px 10px", fontSize:"12px", fontWeight:"600" }}>{s} {STAGES.find(st=>st.id===s)?.label||""}</span>; })}
-                    </div>
-                    {historyLines.map((line,i) => { const stageObj = STAGES.find(s=>s.id===line.stage); const sc = STAGE_COLORS[line.stage]; const isLast = i===historyLines.length-1; return (
-                      <div key={i} style={{ display:"flex", gap:"12px", marginBottom:"10px" }}>
-                        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", flexShrink:0 }}>
-                          <div style={{ width:"14px", height:"14px", borderRadius:"50%", background:sc?.mapColor||COLORS.border, marginTop:"3px", border:"2px solid #00000022" }} />
-                          {!isLast && <div style={{ width:"2px", flex:1, background:COLORS.border, minHeight:"16px" }} />}
-                        </div>
-                        <div style={{ flex:1 }}>
-                          <div style={{ display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:"4px" }}>
-                            <span style={{ fontWeight:"600", fontSize:"14px" }}>{stageObj?.label||line.stage}</span>
-                            <span style={{ background:(sc?.mapColor||COLORS.border)+"33", color:sc?.mapColor||COLORS.textMuted, borderRadius:"5px", padding:"1px 8px", fontSize:"11px", fontWeight:"600" }}>{line.stage}</span>
-                          </div>
-                          <div style={{ display:"flex", gap:"12px", marginTop:"3px", flexWrap:"wrap" }}>
-                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>📅 {line.date}</span>
-                            <span style={{ color:COLORS.textMuted, fontSize:"12px" }}>👤 {line.worker}</span>
-                            {line.hall && <span style={{ color:COLORS.accentLight, fontSize:"12px" }}>🏭 {line.hall==="namiot1"?"Namiot 1":line.hall==="namiot2"?"Namiot 2":line.hall==="betonowanie"?"Hala Betonowanie":"Hala ISO"}</span>}
-                          </div>
-                          {line.note && <div style={{ color:COLORS.textDim, fontSize:"12px", marginTop:"2px" }}>💬 {line.note}</div>}
-                        </div>
-                      </div>
-                    ); })}
-                    <div style={{ marginTop:"12px", paddingTop:"12px", borderTop:`1px solid ${COLORS.border}`, color:COLORS.textMuted, fontSize:"12px" }}>
-                      📊 {historyLines.length} wpisów · pierwszy: {historyLines[0].date} · ostatni: {historyLines[historyLines.length-1].date}
-                    </div>
-                  </div>
-                );
-              })()}
+              <SelectedDetail selected={selected} reports={reports} />
             </div>
           )}
         </div>
       </div>
+    </div>
   );
 }
 // ─── PRODUCTION PLANNER}
