@@ -59,7 +59,7 @@ const MAP_HALLS = {
 function canManageMaps(req, res, next) {
   const role = req.user.role;
   const code = String(req.user.code || '').toUpperCase();
-  if (role !== 'manager' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') {
+  if (role !== 'manager' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056' && code !== 'POM80' && code !== 'POM82') {
     return res.status(403).json({ error: 'Brak uprawnień do modyfikacji map' });
   }
   next();
@@ -94,17 +94,35 @@ function normalizeMapLayouts(rawLayouts) {
   return result;
 }
 
+function normalizeMapPhotos(rawPhotos) {
+  const result = {};
+  for (const hallId of Object.keys(MAP_HALLS)) {
+    const entry = rawPhotos?.[hallId];
+    const src = typeof entry === 'string' ? entry : entry?.src;
+    const rotation = Number(typeof entry === 'object' && entry ? entry.rotation || 0 : 0);
+    if (typeof src === 'string' && src.startsWith('data:image/')) {
+      result[hallId] = {
+        src,
+        rotation: ((rotation % 360) + 360) % 360
+      };
+    }
+  }
+  return result;
+}
+
 async function ensureMapLayoutsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS map_layouts (
       id TEXT PRIMARY KEY,
       layouts JSONB NOT NULL DEFAULT '{}'::jsonb,
+      photos JSONB NOT NULL DEFAULT '{}'::jsonb,
       updated_by TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS photos JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query(
-    "INSERT INTO map_layouts (id, layouts) VALUES ('main', '{}'::jsonb) ON CONFLICT (id) DO NOTHING"
+    "INSERT INTO map_layouts (id, layouts, photos) VALUES ('main', '{}'::jsonb, '{}'::jsonb) ON CONFLICT (id) DO NOTHING"
   );
 }
 
@@ -346,8 +364,11 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
 app.get('/api/maps-layouts', auth, async (req, res) => {
   try {
     await ensureMapLayoutsTable();
-    const r = await pool.query("SELECT layouts FROM map_layouts WHERE id='main'");
-    res.json({ layouts: normalizeMapLayouts(r.rows[0]?.layouts || {}) });
+    const r = await pool.query("SELECT layouts, photos FROM map_layouts WHERE id='main'");
+    res.json({
+      layouts: normalizeMapLayouts(r.rows[0]?.layouts || {}),
+      photos: normalizeMapPhotos(r.rows[0]?.photos || {})
+    });
   } catch (err) {
     console.error('Maps layouts GET error:', err);
     res.status(500).json({ error: err.message || 'Błąd odczytu map' });
@@ -368,6 +389,23 @@ app.put('/api/maps-layouts', auth, canManageMaps, async (req, res) => {
   } catch (err) {
     console.error('Maps layouts PUT error:', err);
     res.status(500).json({ error: err.message || 'Błąd zapisu map' });
+  }
+});
+
+app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
+  try {
+    await ensureMapLayoutsTable();
+    const photos = normalizeMapPhotos(req.body?.photos || {});
+    await pool.query(
+      `INSERT INTO map_layouts (id, layouts, photos, updated_by, updated_at)
+       VALUES ('main', '{}'::jsonb, $1::jsonb, $2, NOW())
+       ON CONFLICT (id) DO UPDATE SET photos=EXCLUDED.photos, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [JSON.stringify(photos), req.user.code]
+    );
+    res.json({ success: true, photos });
+  } catch (err) {
+    console.error('Maps photos PUT error:', err);
+    res.status(500).json({ error: err.message || 'Błąd zapisu zdjęcia mapy' });
   }
 });
 

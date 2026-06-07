@@ -63,6 +63,7 @@
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
       saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token),
+      saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
       importMapPhoto: (token, hall, file) => {
         const form = new FormData();
         form.append("hall", hall);
@@ -902,6 +903,8 @@
       const [msg, setMsg] = useState(null);
       const [tab, setTab] = useState("add");
       const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
+      const workerCode = String(user.code || user.login || "").toUpperCase();
+      const canEditWorkerMaps = workerCode === "POM80" || workerCode === "POM82";
 
       const save = async () => {
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
@@ -962,7 +965,7 @@
           ` : tab === "history" ? html`
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${false} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
@@ -1036,6 +1039,14 @@
         if (!canEditMaps) return;
         setPhotos(next);
         localStorage.setItem(PHOTO_KEY, JSON.stringify(next));
+        if (token && canEditMaps) {
+          api.saveMapPhotos(token, next)
+            .then(() => setServerAvailable(true))
+            .catch(() => {
+              setServerAvailable(false);
+              setMsg({ type: "warning", text: "Zdjecie zapisane lokalnie, ale serwer nie przyjal zapisu zdjecia." });
+            });
+        }
       };
       const photoEntry = photos[hall];
       const photoSrc = typeof photoEntry === "string" ? photoEntry : (photoEntry && photoEntry.src);
@@ -1048,6 +1059,11 @@
             if (next && typeof next === "object" && !Array.isArray(next)) {
               setLayouts(next);
               localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+              setServerAvailable(true);
+            }
+            if (data && data.photos && typeof data.photos === "object" && !Array.isArray(data.photos)) {
+              setPhotos(data.photos);
+              localStorage.setItem(PHOTO_KEY, JSON.stringify(data.photos));
               setServerAvailable(true);
             }
           })
