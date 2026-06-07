@@ -1037,6 +1037,9 @@
         setPhotos(next);
         localStorage.setItem(PHOTO_KEY, JSON.stringify(next));
       };
+      const photoEntry = photos[hall];
+      const photoSrc = typeof photoEntry === "string" ? photoEntry : (photoEntry && photoEntry.src);
+      const photoRotation = Number(typeof photoEntry === "object" && photoEntry ? photoEntry.rotation || 0 : 0);
       useEffect(() => {
         if (!token) return;
         api.getMapLayouts(token)
@@ -1276,12 +1279,17 @@
         if (!file) return;
         const reader = new FileReader();
         reader.onload = () => {
-          savePhotos({ ...photos, [hall]: reader.result });
+          savePhotos({ ...photos, [hall]: { src: reader.result, rotation: 0 } });
           setMsg({ type: "success", text: "Zdjecie dodane jako podglad hali. Uzyj go jako sciagi i klikaj kafelki na szachownicy." });
           e.target.value = "";
         };
         reader.onerror = () => setMsg({ type: "error", text: "Nie udalo sie wczytac zdjecia." });
         reader.readAsDataURL(file);
+      };
+      const rotatePhoto = direction => {
+        if (!canEditMaps || !photoSrc) return;
+        const nextRotation = ((photoRotation + direction * 90) % 360 + 360) % 360;
+        savePhotos({ ...photos, [hall]: { src: photoSrc, rotation: nextRotation } });
       };
       const normalizeAiRows = data => {
         const rows = data && (data.items || data.cells || data.detected || data.layout || data.results || data);
@@ -1357,19 +1365,10 @@
                   Wgraj zdjecie podgladu
                   <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
                 </label>
-                <label style=${{ ...S.btn, opacity: aiLoading ? 0.6 : 1 }}>
-                  ${aiLoading ? "Analiza AI..." : "Import AI ze zdjecia"}
-                  <input type="file" accept="image/*" disabled=${aiLoading} style=${{ display: "none" }} onChange=${importPhotoAi} />
-                </label>
                 <button style=${edit ? S.btn : S.ghost} onClick=${() => setEdit(!edit)}>Modyfikuj</button>
               ` : null}
             </div>
           </div>
-          ${canEditMaps ? html`
-            <div style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px", color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
-              Import AI dziala po podlaczeniu endpointu na serwerze. Do czasu podlaczenia mozesz wgrac zdjecie jako podglad i przepisywac lazienki klikajac kafelki.
-            </div>
-          ` : null}
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
             ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: "1", project: "", product: "" }); }}>${h.label}</button>`)}
           </div>
@@ -1396,39 +1395,38 @@
           </section>
         ` : null}
 
-        ${canEditMaps && aiDetected.length ? html`
-          <section style=${S.card}>
-            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
-              <div>
-                <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Podglad importu AI</h3>
-                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>AI wykrylo ${aiDetected.length} pozycji dla: ${selectedHall.label}. Zatwierdzenie nadpisze pola o tych samych wspolrzednych.</div>
-              </div>
-              <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                <button style=${S.btn} onClick=${applyAiDetected}>Zatwierdz uklad</button>
-                <button style=${S.ghost} onClick=${() => setAiDetected([])}>Anuluj</button>
-              </div>
-            </div>
-            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "8px" }}>
-              ${aiDetected.map((item, i) => html`
-                <div key=${i + "-" + item.row + "-" + item.col} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
-                  <div style=${{ fontWeight: 900 }}>Pole ${item.row}-${item.col}</div>
-                  <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>Projekt ${item.project}</div>
-                  <div style=${{ color: COLORS.orange, fontWeight: 900 }}>Laz. ${item.product}</div>
-                </div>
-              `)}
-            </div>
-          </section>
-        ` : null}
-
         <section style=${S.card}>
-          ${photos[hall] ? html`
+          ${photoSrc ? html`
             <div style=${{ marginBottom: "14px" }}>
               <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
                 <h3 style=${{ ...S.title, fontSize: "16px", margin: 0 }}>Zdjecie podgladu hali</h3>
-                ${canEditMaps ? html`<button style=${S.danger} onClick=${removePhoto}>Usun zdjecie</button>` : null}
+                ${canEditMaps ? html`
+                  <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <button style=${S.ghost} onClick=${() => rotatePhoto(-1)}>Obroc w lewo</button>
+                    <button style=${S.ghost} onClick=${() => rotatePhoto(1)}>Obroc w prawo</button>
+                    <button style=${S.danger} onClick=${removePhoto}>Usun zdjecie</button>
+                  </div>
+                ` : null}
               </div>
-              <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", overflow: "hidden", background: COLORS.bg }}>
-                <img src=${photos[hall]} alt=${"Podglad " + selectedHall.label} style=${{ display: "block", width: "100%", maxHeight: "520px", objectFit: "contain", background: "#fff" }} />
+              <div style=${{
+                border: "1px solid " + COLORS.border,
+                borderRadius: "10px",
+                overflow: "auto",
+                background: COLORS.bg,
+                display: "grid",
+                placeItems: "center",
+                minHeight: photoRotation % 180 === 0 ? "240px" : "560px",
+                padding: "12px"
+              }}>
+                <img src=${photoSrc} alt=${"Podglad " + selectedHall.label} style=${{
+                  display: "block",
+                  maxWidth: photoRotation % 180 === 0 ? "100%" : "520px",
+                  maxHeight: photoRotation % 180 === 0 ? "520px" : "100%",
+                  objectFit: "contain",
+                  background: "#fff",
+                  transform: "rotate(" + photoRotation + "deg)",
+                  transformOrigin: "center center"
+                }} />
               </div>
             </div>
           ` : canEditMaps ? html`
@@ -1471,7 +1469,7 @@
                         onClick=${() => handleCellClick(row, col, cell)}
                         title=${cell ? st.label + " / projekt " + cell.project + " / lazienka " + cell.product : "Puste pole"}
                         style=${{
-                          minHeight: selectedHall.rows.length <= 2 ? "68px" : "74px",
+                          minHeight: selectedHall.rows.length <= 2 ? "136px" : "148px",
                           border: (isDragging || isSelected ? "2px solid " + COLORS.accent : "1px solid " + st.border),
                           borderRadius: "8px",
                           background: "#fff",

@@ -50,6 +50,64 @@ testConnection();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+const MAP_HALLS = {
+  betonowanie: { rows: ['F', 'E'], cols: 23 },
+  namiot1: { rows: ['F', 'E', 'D', 'C', 'B', 'A'], cols: 22 },
+  namiot2: { rows: ['F', 'E', 'D', 'C', 'B', 'A'], cols: 22 },
+};
+
+function canManageMaps(req, res, next) {
+  const role = req.user.role;
+  const code = String(req.user.code || '').toUpperCase();
+  if (role !== 'manager' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') {
+    return res.status(403).json({ error: 'Brak uprawnień do modyfikacji map' });
+  }
+  next();
+}
+
+function normalizeMapCell(hallId, raw) {
+  const hall = MAP_HALLS[hallId];
+  if (!hall || !raw) return null;
+  const row = String(raw.row || '').trim().toUpperCase();
+  const col = Number(raw.col);
+  const project = String(raw.project || '').replace(/\D/g, '');
+  const product = Number(String(raw.product || '').replace(/\D/g, ''));
+  if (!hall.rows.includes(row)) return null;
+  if (!Number.isInteger(col) || col < 1 || col > hall.cols) return null;
+  if (!project || !Number.isInteger(product) || product < 1) return null;
+  return { row, col, project, product };
+}
+
+function normalizeMapLayouts(rawLayouts) {
+  const result = {};
+  for (const hallId of Object.keys(MAP_HALLS)) {
+    const cells = Array.isArray(rawLayouts?.[hallId]) ? rawLayouts[hallId] : [];
+    const byCell = new Map();
+    for (const raw of cells) {
+      const cell = normalizeMapCell(hallId, raw);
+      if (cell) byCell.set(`${cell.row}-${cell.col}`, cell);
+    }
+    result[hallId] = [...byCell.values()].sort((a, b) => {
+      return MAP_HALLS[hallId].rows.indexOf(a.row) - MAP_HALLS[hallId].rows.indexOf(b.row) || a.col - b.col;
+    });
+  }
+  return result;
+}
+
+async function ensureMapLayoutsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS map_layouts (
+      id TEXT PRIMARY KEY,
+      layouts JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(
+    "INSERT INTO map_layouts (id, layouts) VALUES ('main', '{}'::jsonb) ON CONFLICT (id) DO NOTHING"
+  );
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -285,6 +343,34 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
 });
 
 // ─── EMAIL RECIPIENTS ─────────────────────────────────────────────────────────
+app.get('/api/maps-layouts', auth, async (req, res) => {
+  try {
+    await ensureMapLayoutsTable();
+    const r = await pool.query("SELECT layouts FROM map_layouts WHERE id='main'");
+    res.json({ layouts: normalizeMapLayouts(r.rows[0]?.layouts || {}) });
+  } catch (err) {
+    console.error('Maps layouts GET error:', err);
+    res.status(500).json({ error: err.message || 'Błąd odczytu map' });
+  }
+});
+
+app.put('/api/maps-layouts', auth, canManageMaps, async (req, res) => {
+  try {
+    await ensureMapLayoutsTable();
+    const layouts = normalizeMapLayouts(req.body?.layouts || {});
+    await pool.query(
+      `INSERT INTO map_layouts (id, layouts, updated_by, updated_at)
+       VALUES ('main', $1::jsonb, $2, NOW())
+       ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [JSON.stringify(layouts), req.user.code]
+    );
+    res.json({ success: true, layouts });
+  } catch (err) {
+    console.error('Maps layouts PUT error:', err);
+    res.status(500).json({ error: err.message || 'Błąd zapisu map' });
+  }
+});
+
 app.get('/api/email-recipients', auth, managerOnly, async (req, res) => {
   try {
     const r = await pool.query('SELECT email FROM email_recipients ORDER BY email');
