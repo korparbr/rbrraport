@@ -44,6 +44,7 @@
       login: (code, password) => apiRequest("POST", "/api/login", { code, password }),
       getReports: token => apiRequest("GET", "/api/reports", null, token),
       addReport: (token, date, lines) => apiRequest("POST", "/api/reports", { date, lines }, token),
+      addReportAsWorker: (token, workerCode, date, lines) => apiRequest("POST", "/api/reports/as-worker", { workerCode, date, lines }, token),
       deleteReport: (token, id) => apiRequest("DELETE", "/api/reports/" + id, null, token),
       getUsers: token => apiRequest("GET", "/api/users", null, token),
       addUser: (token, code, name, password, role) => apiRequest("POST", "/api/users", { code, name, password, role }, token),
@@ -115,13 +116,22 @@
 
     const stageLabel = id => (STAGES.find(s => s[0] === id) || [id, id])[1];
     const today = () => new Date().toISOString().slice(0, 10);
+    const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
+    const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
+    const productNo = value => Number(value);
+    const getReportLines = r => r.lines || r.report_lines || r.reportLines || r.items || r.entries || [];
     const normalizeReport = r => ({
       ...r,
       id: r.id,
-      date: r.date || r.report_date || "",
-      workerLogin: r.workerLogin || r.worker_code || r.code || "",
-      workerName: r.workerName || r.worker_name || r.name || "",
-      lines: (r.lines || []).map(l => ({ ...l, product: Number(l.product) }))
+      date: r.date || r.report_date || r.reportDate || "",
+      workerLogin: r.workerLogin || r.worker_code || r.workerCode || r.code || "",
+      workerName: r.workerName || r.worker_name || r.workerName || r.name || "",
+      lines: getReportLines(r).map(l => ({
+        ...l,
+        project: String(l.project ?? l.project_id ?? l.projectId ?? l.order_no ?? l.orderNo ?? "").trim(),
+        stage: String(l.stage ?? l.stage_id ?? l.stageId ?? "").trim(),
+        product: productNo(l.product ?? l.product_no ?? l.productNo ?? l.product_number ?? l.productNumber ?? l.bathroom ?? l.bathroom_no ?? l.bathroomNo)
+      }))
     });
 
     const S = {
@@ -210,16 +220,17 @@
       const [msg, setMsg] = useState(null);
 
       const max = project ? PROJECTS[project] || 0 : 0;
+      const visibleReportLinesCount = useMemo(() => (reports || []).reduce((sum, report) => sum + (report.lines || []).length, 0), [reports]);
       const products = useMemo(() => Array.from({ length: max }, (_, i) => i + 1), [max]);
       const usedInCurrentReport = useMemo(() => new Set(
-        lines.filter(l => l.project === project && l.stage === stage).map(l => l.product)
+        lines.filter(l => sameProject(l.project, project) && sameStage(l.stage, stage)).map(l => productNo(l.product))
       ), [lines, project, stage]);
       const usedInSavedReports = useMemo(() => {
         const used = new Map();
         (reports || []).forEach(report => {
           (report.lines || []).forEach(line => {
-            if (line.project === project && line.stage === stage) {
-              used.set(Number(line.product), {
+            if (sameProject(line.project, project) && sameStage(line.stage, stage)) {
+              used.set(productNo(line.product), {
                 date: report.date || report.report_date || "",
                 worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
               });
@@ -229,6 +240,9 @@
         return used;
       }, [reports, project, stage]);
       const isUsedProduct = product => usedInCurrentReport.has(product) || usedInSavedReports.has(product);
+      useEffect(() => {
+        setSelectedProducts(prev => prev.filter(product => !isUsedProduct(product)));
+      }, [usedInCurrentReport, usedInSavedReports]);
 
       const resetSelection = () => {
         setSelectedProducts([]);
@@ -328,6 +342,8 @@
               <div style=${{ display: "flex", gap: "12px", flexWrap: "wrap", color: COLORS.dim, fontSize: "12px", marginTop: "8px" }}>
                 <span><strong style=${{ color: COLORS.orange }}>Pomaranczowe</strong> - etap juz zapisany przez kogos</span>
                 <span><strong style=${{ color: COLORS.dim }}>Wyszarzone</strong> - dodane w tym raporcie</span>
+                <span>Znalezione blokady z zapisanych raportow: <strong>${usedInSavedReports.size}</strong></span>
+                <span>Formularz widzi: <strong>${(reports || []).length}</strong> raportow / <strong>${visibleReportLinesCount}</strong> pozycji</span>
               </div>
             </div>
           ` : null}
@@ -408,8 +424,8 @@
         .map(r => ({
           ...r,
           lines: (r.lines || []).filter(l =>
-            (project === "all" || l.project === project) &&
-            (stage === "all" || l.stage === stage)
+            (project === "all" || sameProject(l.project, project)) &&
+            (stage === "all" || sameStage(l.stage, stage))
           )
         }))
         .filter(r => r.lines.length > 0)
@@ -564,7 +580,78 @@
       `;
     }
 
-    function ManagerReports({ reports, users, onDelete }) {
+    function ManagerAddReport({ token, reports, users, reloadReports }) {
+      const [open, setOpen] = useState(false);
+      const [workerCode, setWorkerCode] = useState("");
+      const [date, setDate] = useState(today());
+      const [lines, setLines] = useState([]);
+      const [saving, setSaving] = useState(false);
+      const [msg, setMsg] = useState(null);
+      const workers = useMemo(() => (users || [])
+        .filter(u => (u.role || "worker") === "worker")
+        .sort((a, b) => (a.name || "").localeCompare(b.name || "", "pl")), [users]);
+      const openDatePicker = e => {
+        try { if (e.currentTarget.showPicker) e.currentTarget.showPicker(); } catch (_) {}
+      };
+      const save = async () => {
+        if (!workerCode) return setMsg({ type: "error", text: "Wybierz pracownika." });
+        if (!date) return setMsg({ type: "error", text: "Wybierz date raportu." });
+        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        setSaving(true); setMsg(null);
+        try {
+          await api.addReportAsWorker(token, workerCode, date, lines);
+          setLines([]);
+          await reloadReports();
+          const worker = workers.find(w => (w.code || w.login) === workerCode);
+          setMsg({ type: "success", text: "Raport zapisany za pracownika: " + (worker ? worker.name : workerCode) + "." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+            <div>
+              <h2 style=${{ ...S.title, marginBottom: "4px" }}>Dodaj raport za pracownika</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Manager lub supervisor moze dopisac raport w imieniu pracownika.</div>
+            </div>
+            <button style=${open ? S.btn : S.ghost} onClick=${() => setOpen(!open)}>${open ? "Ukryj" : "Dodaj raport"}</button>
+          </div>
+          ${open ? html`
+            <div className="grid-2" style=${{ ...S.row2, marginTop: "14px" }}>
+              <div>
+                <label style=${S.label}>Pracownik</label>
+                <select style=${S.input} value=${workerCode} onChange=${e => { setWorkerCode(e.target.value); setLines([]); }}>
+                  <option value="">- wybierz pracownika -</option>
+                  ${workers.map(w => {
+                    const code = w.code || w.login;
+                    return html`<option key=${code} value=${code}>${w.name} (${code})</option>`;
+                  })}
+                </select>
+              </div>
+              <div>
+                <label style=${S.label}>Data raportu</label>
+                <input style=${S.input} type="date" value=${date} max=${today()} onInput=${e => setDate(e.target.value)} onClick=${openDatePicker} onFocus=${openDatePicker} />
+              </div>
+            </div>
+            ${workerCode ? html`
+              <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} />
+              <section style=${{ ...S.card, marginBottom: 0 }}>
+                <h3 style=${{ ...S.title, fontSize: "17px" }}>Raport do zapisania (${lines.length})</h3>
+                <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} />
+                <button style=${{ ...S.btn, marginTop: "12px", opacity: saving || !lines.length ? 0.6 : 1 }} disabled=${saving || !lines.length} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz raport za pracownika"}</button>
+              </section>
+            ` : null}
+            <${Message} msg=${msg} />
+          ` : null}
+        </section>
+      `;
+    }
+
+    function ManagerReports({ reports, users, onDelete, token, reloadReports }) {
       const [dateFrom, setDateFrom] = useState("");
       const [dateTo, setDateTo] = useState("");
       const [worker, setWorker] = useState("all");
@@ -594,8 +681,8 @@
         .map(report => ({
           ...report,
           lines: (report.lines || []).filter(line =>
-            (project === "all" || line.project === project) &&
-            (stage === "all" || line.stage === stage)
+            (project === "all" || sameProject(line.project, project)) &&
+            (stage === "all" || sameStage(line.stage, stage))
           )
         }))
         .filter(report => (report.lines || []).length > 0)
@@ -648,6 +735,7 @@
       };
 
       return html`
+        <${ManagerAddReport} token=${token} reports=${reports} users=${users} reloadReports=${reloadReports} />
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
             <h2 style=${{ ...S.title, margin: 0 }}>Raporty</h2>
@@ -918,10 +1006,10 @@
         if (!selectedProject) return states;
         reports.forEach(report => {
           (report.lines || []).forEach(line => {
-            if (line.project !== selectedProject) return;
+            if (!sameProject(line.project, selectedProject)) return;
             const target = stageToWarehouse[line.stage];
             if (!target) return;
-            const product = Number(line.product);
+            const product = productNo(line.product);
             const previous = states[product];
             const priority = { rolling: 1, produkcja: 2, magazyn: 3, wyslane: 4 }[target] || 0;
             const previousPriority = previous ? ({ rolling: 1, produkcja: 2, magazyn: 3, wyslane: 4 }[previous.id] || 0) : 0;
@@ -1085,10 +1173,10 @@
         const states = {};
         reports.forEach(report => {
           (report.lines || []).forEach(line => {
-            if (line.project !== item.project) return;
+            if (!sameProject(line.project, item.project)) return;
             const target = stageToWarehouse[line.stage];
             if (!target) return;
-            const product = Number(line.product);
+            const product = productNo(line.product);
             const previous = states[product];
             const currentPriority = priority[target] || 0;
             const previousPriority = previous ? (priority[previous] || 0) : 0;
@@ -1221,7 +1309,7 @@
             ${["reports", ...(canSeeProduction ? ["production"] : []), "projects", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "projects" ? "Projekty" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
-          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} />` : tab === "account" ? html`
+          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} reloadReports=${reloadReports} />` : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} />
           ` : tab === "database" ? html`
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
