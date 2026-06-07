@@ -1053,11 +1053,130 @@
       `;
     }
 
+    function ProductionTab({ reports }) {
+      const STORAGE_KEY = "flowrbr_projects_1_01";
+      const CLOSED_KEY = "flowrbr_closed_projects_1_01";
+      const [filterProject, setFilterProject] = useState("all");
+      const customProjects = useMemo(() => {
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { return {}; }
+      }, []);
+      const closedProjects = useMemo(() => {
+        try { return JSON.parse(localStorage.getItem(CLOSED_KEY) || "[]"); } catch (_) { return []; }
+      }, []);
+      const warehouses = [
+        { id: "projekt", label: "Projekt", stage: "brak raportu", color: "#e5eaf3", text: COLORS.text },
+        { id: "rolling", label: "Rolling", stage: "4. Skrecanie", color: "#dbeafe", text: "#1d4ed8" },
+        { id: "produkcja", label: "Produkcja", stage: "5. Nawozenie", color: "#dcfce7", text: "#166534" },
+        { id: "magazyn", label: "Magazyn", stage: "19. Pakowanie", color: "#fef3c7", text: "#92400e" },
+        { id: "wyslane", label: "Wyslane", stage: "21. Zaladunek", color: "#fee2e2", text: "#991b1b" }
+      ];
+      const stageToWarehouse = { "4": "rolling", "5": "produkcja", "19": "magazyn", "21": "wyslane" };
+      const priority = { rolling: 1, produkcja: 2, magazyn: 3, wyslane: 4 };
+      const allProjects = useMemo(() => {
+        const merged = { ...PROJECTS, ...customProjects };
+        return Object.keys(merged)
+          .filter(project => !closedProjects.includes(project))
+          .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
+          .map(project => ({ project, count: Number(merged[project]) || 0 }));
+      }, [customProjects, closedProjects]);
+      const visibleProjects = useMemo(() => allProjects.filter(item => filterProject === "all" || item.project === filterProject), [allProjects, filterProject]);
+
+      const projectRows = useMemo(() => visibleProjects.map(item => {
+        const states = {};
+        reports.forEach(report => {
+          (report.lines || []).forEach(line => {
+            if (line.project !== item.project) return;
+            const target = stageToWarehouse[line.stage];
+            if (!target) return;
+            const product = Number(line.product);
+            const previous = states[product];
+            const currentPriority = priority[target] || 0;
+            const previousPriority = previous ? (priority[previous] || 0) : 0;
+            if (!previous || currentPriority >= previousPriority) states[product] = target;
+          });
+        });
+        const counts = Object.fromEntries(warehouses.map(w => [w.id, 0]));
+        for (let product = 1; product <= item.count; product++) {
+          const warehouse = states[product] || "projekt";
+          counts[warehouse] = (counts[warehouse] || 0) + 1;
+        }
+        return { ...item, counts };
+      }), [visibleProjects, reports]);
+
+      const totals = useMemo(() => {
+        const sum = Object.fromEntries(warehouses.map(w => [w.id, 0]));
+        projectRows.forEach(row => {
+          warehouses.forEach(w => { sum[w.id] += row.counts[w.id] || 0; });
+        });
+        return sum;
+      }, [projectRows]);
+      const totalBathrooms = warehouses.reduce((sum, w) => sum + (totals[w.id] || 0), 0);
+
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
+            <div>
+              <h2 style=${{ ...S.title, margin: 0 }}>Produkcja</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>
+                Podsumowanie magazynow dla ${filterProject === "all" ? "wszystkich projektow" : "projektu " + filterProject}.
+              </div>
+            </div>
+            <div style=${{ minWidth: "220px" }}>
+              <label style=${S.label}>Filtr projektu</label>
+              <select style=${S.input} value=${filterProject} onChange=${e => setFilterProject(e.target.value)}>
+                <option value="all">Wszystkie projekty</option>
+                ${allProjects.map(item => html`<option key=${item.project} value=${item.project}>${item.project}</option>`)}
+              </select>
+            </div>
+          </div>
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: "10px" }}>
+            ${warehouses.map(w => html`
+              <div key=${w.id} style=${{ background: w.color, color: w.text, border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "14px" }}>
+                <div style=${{ fontSize: "12px", fontWeight: 800 }}>${w.label}</div>
+                <div style=${{ fontSize: "32px", fontWeight: 900, marginTop: "4px" }}>${totals[w.id] || 0}</div>
+                <div style=${{ fontSize: "12px", opacity: 0.8 }}>lazienek / ${w.stage}</div>
+              </div>
+            `)}
+          </div>
+          <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "12px" }}>
+            Razem: ${totalBathrooms} lazienek w ${projectRows.length} projektach.
+          </div>
+        </section>
+
+        <section style=${S.card}>
+          <h3 style=${{ ...S.title, fontSize: "18px" }}>Rozbicie po projektach</h3>
+          ${projectRows.length ? html`
+            <div style=${{ overflowX: "auto" }}>
+              <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "760px" }}>
+                <thead>
+                  <tr>
+                    <th style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border }}>Projekt</th>
+                    <th style=${{ textAlign: "right", padding: "9px", borderBottom: "1px solid " + COLORS.border }}>Razem</th>
+                    ${warehouses.map(w => html`<th key=${w.id} style=${{ textAlign: "right", padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${w.label}</th>`)}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${projectRows.map(row => html`
+                    <tr key=${row.project}>
+                      <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${row.project}</td>
+                      <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, textAlign: "right" }}>${row.count}</td>
+                      ${warehouses.map(w => html`<td key=${w.id} style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, textAlign: "right" }}>${row.counts[w.id] || 0}</td>`)}
+                    </tr>
+                  `)}
+                </tbody>
+              </table>
+            </div>
+          ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "18px" }}>Brak projektow do wyswietlenia.</div>`}
+        </section>
+      `;
+    }
+
     function ManagerView({ user, token, reports, users, reloadReports, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
       const [resettingCode, setResettingCode] = useState("");
+      const canSeeProduction = user && (user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
 
       const remove = async id => {
         if (!confirm("Usunac raport?")) return;
@@ -1099,7 +1218,7 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            ${["reports", "projects", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "projects" ? "Projekty" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
+            ${["reports", ...(canSeeProduction ? ["production"] : []), "projects", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "projects" ? "Projekty" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
           ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} />` : tab === "account" ? html`
@@ -1108,6 +1227,8 @@
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
           ` : tab === "projects" ? html`
             <${ProjectsTab} reports=${reports} />
+          ` : tab === "production" ? html`
+            <${ProductionTab} reports=${reports} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Dodaj uzytkownika</h2>
