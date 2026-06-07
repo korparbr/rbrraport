@@ -718,7 +718,11 @@
       return html`
         <div style=${S.app}>
           <header style=${S.header}>
-            <div style=${{ fontWeight: 900 }}>FlowRBR <span style=${{ color: COLORS.dim, fontSize: "12px" }}>wersja ratunkowa</span></div>
+            <div style=${{ fontWeight: 900 }}>
+              FlowRBR
+              <span style=${{ color: COLORS.dim, fontSize: "12px" }}>wersja ratunkowa</span>
+              <span style=${{ marginLeft: "8px", color: COLORS.green, background: COLORS.green + "18", border: "1px solid " + COLORS.green + "55", borderRadius: "999px", padding: "2px 8px", fontSize: "11px" }}>AKTUALIZACJA 15:50</span>
+            </div>
             ${user ? html`<div style=${{ color: COLORS.muted, fontSize: "14px" }}>${user.role || "worker"} / ${user.code || user.login}</div>` : null}
           </header>
           ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : (user.role === "manager" || user.role === "supervisor") ?
