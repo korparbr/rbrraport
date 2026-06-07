@@ -586,6 +586,11 @@
       const clearFilters = () => {
         setDateFrom(""); setDateTo(""); setWorker("all"); setProject("all"); setStage("all"); setMsg(null);
       };
+      const openDatePicker = e => {
+        try {
+          if (e.currentTarget.showPicker) e.currentTarget.showPicker();
+        } catch (_) {}
+      };
       const csvCell = value => {
         const text = String(value == null ? "" : value);
         return /[",\n;]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
@@ -626,11 +631,11 @@
           <div className="grid-3" style=${S.row3}>
             <div>
               <label style=${S.label}>Data od</label>
-              <input style=${S.input} type="date" value=${dateFrom} onInput=${e => setDateFrom(e.target.value)} />
+              <input style=${S.input} type="date" value=${dateFrom} onInput=${e => setDateFrom(e.target.value)} onClick=${openDatePicker} onFocus=${openDatePicker} />
             </div>
             <div>
               <label style=${S.label}>Data do</label>
-              <input style=${S.input} type="date" value=${dateTo} onInput=${e => setDateTo(e.target.value)} />
+              <input style=${S.input} type="date" value=${dateTo} onInput=${e => setDateTo(e.target.value)} onClick=${openDatePicker} onFocus=${openDatePicker} />
             </div>
             <div>
               <label style=${S.label}>Pracownik</label>
@@ -669,33 +674,6 @@
     }
 
     function ManagerAccount({ user, token, users }) {
-      const [msg, setMsg] = useState(null);
-      const [resetting, setResetting] = useState(false);
-      const workers = useMemo(() => (users || []).filter(u => (u.role || "worker") === "worker"), [users]);
-
-      const resetAllWorkers = async () => {
-        if (!workers.length) return setMsg({ type: "warning", text: "Brak pracownikow do resetu." });
-        if (!confirm("Zresetowac haslo wszystkim pracownikom do: zmien123?")) return;
-        setResetting(true); setMsg(null);
-        let ok = 0;
-        let fail = 0;
-        for (const worker of workers) {
-          const code = worker.code || worker.login;
-          if (!code) { fail++; continue; }
-          try {
-            await api.resetPassword(token, code);
-            ok++;
-          } catch (_) {
-            fail++;
-          }
-        }
-        setResetting(false);
-        setMsg({
-          type: fail ? "warning" : "success",
-          text: "Reset zakonczony. Sukces: " + ok + ", bledy: " + fail + ". Domyslne haslo: zmien123."
-        });
-      };
-
       return html`
         <section style=${S.card}>
           <h2 style=${S.title}>Konto</h2>
@@ -705,16 +683,6 @@
             <div>Rola: <strong style=${{ color: COLORS.text }}>${user.role || "manager"}</strong></div>
           </div>
           <${ChangePasswordBox} token=${token} />
-          <div style=${{ marginTop: "18px", paddingTop: "16px", borderTop: "1px solid " + COLORS.border }}>
-            <h3 style=${{ ...S.title, fontSize: "17px" }}>Reset hasel pracownikow</h3>
-            <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
-              Resetuje haslo wszystkim pracownikom do wartosci: <strong style=${{ color: COLORS.text }}>zmien123</strong>.
-            </div>
-            <button style=${{ ...S.danger, opacity: resetting ? 0.6 : 1 }} disabled=${resetting} onClick=${resetAllWorkers}>
-              ${resetting ? "Resetowanie..." : "Resetuj wszystkim pracownikom"}
-            </button>
-            <${Message} msg=${msg} />
-          </div>
         </section>
       `;
     }
@@ -804,6 +772,7 @@
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
+      const [resettingCode, setResettingCode] = useState("");
 
       const remove = async id => {
         if (!confirm("Usunac raport?")) return;
@@ -818,6 +787,20 @@
           setMsg({ type: "success", text: "Uzytkownik dodany." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
+        }
+      };
+      const resetWorkerPassword = async worker => {
+        const code = worker.code || worker.login;
+        if (!code) return setMsg({ type: "error", text: "Brak kodu pracownika." });
+        if (!confirm("Zresetowac haslo pracownika " + (worker.name || code) + " do: zmien123?")) return;
+        setResettingCode(code); setMsg(null);
+        try {
+          await api.resetPassword(token, code);
+          setMsg({ type: "success", text: "Haslo pracownika " + (worker.name || code) + " zresetowane do: zmien123." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setResettingCode("");
         }
       };
 
@@ -855,7 +838,27 @@
             </section>
             <section style=${S.card}>
               <h2 style=${S.title}>Lista uzytkownikow</h2>
-              ${users.map(u => html`<div key=${u.code || u.login} style=${{ padding: "9px 0", borderTop: "1px solid " + COLORS.border }}><strong>${u.code || u.login}</strong> <span style=${{ color: COLORS.muted }}>${u.name} / ${u.role || "worker"}</span></div>`)}
+              <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "10px" }}>
+                Reset hasla jest dostepny przy pracownikach. Domyslne haslo: <strong style=${{ color: COLORS.text }}>zmien123</strong>.
+              </div>
+              ${users.map(u => {
+                const code = u.code || u.login;
+                const role = u.role || "worker";
+                const isWorker = role === "worker";
+                return html`
+                  <div key=${code} style=${{ padding: "10px 0", borderTop: "1px solid " + COLORS.border, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                    <div>
+                      <strong>${code}</strong>
+                      <span style=${{ color: COLORS.muted }}> ${u.name} / ${role}</span>
+                    </div>
+                    ${isWorker ? html`
+                      <button style=${{ ...S.danger, opacity: resettingCode === code ? 0.6 : 1 }} disabled=${resettingCode === code} onClick=${() => resetWorkerPassword(u)}>
+                        ${resettingCode === code ? "Resetowanie..." : "Reset hasla"}
+                      </button>
+                    ` : html`<span style=${{ color: COLORS.dim, fontSize: "12px" }}>bez resetu</span>`}
+                  </div>
+                `;
+              })}
             </section>
           `}
         </main>
