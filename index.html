@@ -133,6 +133,30 @@
         product: productNo(l.product ?? l.product_no ?? l.productNo ?? l.product_number ?? l.productNumber ?? l.bathroom ?? l.bathroom_no ?? l.bathroomNo)
       }))
     });
+    const lineText = line => "projekt " + (line.project || "-") + ", etap " + stageLabel(String(line.stage || "")) + ", lazienka " + (line.product || "-");
+    const responseLines = (data, keys) => {
+      if (!data) return [];
+      for (const key of keys) {
+        if (Array.isArray(data[key])) return data[key].map(l => typeof l === "object" ? lineText(normalizeReport({ lines: [l] }).lines[0]) : String(l));
+      }
+      return [];
+    };
+    const saveReportMessage = (data, fallbackCount) => {
+      const skipped = responseLines(data, ["skipped", "duplicates", "duplicateLines", "notSaved", "rejected", "alreadyReported"]);
+      const savedCount = data && (data.savedCount ?? data.insertedCount ?? data.createdCount ?? data.saved ?? data.inserted);
+      if (skipped.length) {
+        const savedText = savedCount != null ? " Zapisano: " + savedCount + "." : "";
+        return { type: "warning", text: "Raport zapisany. Nie zapisano, bo juz zaraportowane: " + skipped.join("; ") + "." + savedText };
+      }
+      return { type: "success", text: "Raport zapisany. Zapisano pozycji: " + (savedCount != null ? savedCount : fallbackCount) + "." };
+    };
+    const saveReportErrorMessage = e => {
+      const text = e && e.message ? e.message : "Blad serwera";
+      if (/zaraport|duplik|duplicate|already|istnieje|zapisany/i.test(text)) {
+        return { type: "warning", text: "Raport nie zostal zapisany w calosci. Serwer zwrocil informacje: " + text };
+      }
+      return { type: "error", text };
+    };
 
     const S = {
       app: { minHeight: "100vh", background: COLORS.bg, color: COLORS.text, fontFamily: "Segoe UI, Arial, sans-serif" },
@@ -220,29 +244,11 @@
       const [msg, setMsg] = useState(null);
 
       const max = project ? PROJECTS[project] || 0 : 0;
-      const visibleReportLinesCount = useMemo(() => (reports || []).reduce((sum, report) => sum + (report.lines || []).length, 0), [reports]);
       const products = useMemo(() => Array.from({ length: max }, (_, i) => i + 1), [max]);
       const usedInCurrentReport = useMemo(() => new Set(
         lines.filter(l => sameProject(l.project, project) && sameStage(l.stage, stage)).map(l => productNo(l.product))
       ), [lines, project, stage]);
-      const usedInSavedReports = useMemo(() => {
-        const used = new Map();
-        (reports || []).forEach(report => {
-          (report.lines || []).forEach(line => {
-            if (sameProject(line.project, project) && sameStage(line.stage, stage)) {
-              used.set(productNo(line.product), {
-                date: report.date || report.report_date || "",
-                worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
-              });
-            }
-          });
-        });
-        return used;
-      }, [reports, project, stage]);
-      const isUsedProduct = product => usedInCurrentReport.has(product) || usedInSavedReports.has(product);
-      useEffect(() => {
-        setSelectedProducts(prev => prev.filter(product => !isUsedProduct(product)));
-      }, [usedInCurrentReport, usedInSavedReports]);
+      const isUsedProduct = product => usedInCurrentReport.has(product);
 
       const resetSelection = () => {
         setSelectedProducts([]);
@@ -310,12 +316,9 @@
               <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: "7px", maxHeight: "320px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
                 ${products.map(product => {
                   const selected = selectedProducts.includes(product);
-                  const savedInfo = usedInSavedReports.get(product);
                   const usedCurrent = usedInCurrentReport.has(product);
-                  const used = Boolean(savedInfo) || usedCurrent;
-                  const title = savedInfo
-                    ? "Ten etap byl juz zapisany" + (savedInfo.date ? " dnia " + savedInfo.date : "") + (savedInfo.worker ? " przez " + savedInfo.worker : "")
-                    : usedCurrent ? "Ta lazienka jest juz dodana w tym raporcie" : "Kliknij, aby zaznaczyc";
+                  const used = usedCurrent;
+                  const title = usedCurrent ? "Ta lazienka jest juz dodana w tym raporcie" : "Kliknij, aby zaznaczyc";
                   return html`
                     <button
                       key=${product}
@@ -324,10 +327,10 @@
                       disabled=${used}
                       style=${{
                         minHeight: "38px",
-                        border: "1px solid " + (savedInfo ? COLORS.orange : selected ? COLORS.accent : COLORS.border),
+                        border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
                         borderRadius: "8px",
-                        background: savedInfo ? COLORS.orange + "24" : usedCurrent ? COLORS.panel2 : selected ? COLORS.accent : COLORS.panel,
-                        color: savedInfo ? COLORS.orange : usedCurrent ? COLORS.dim : selected ? "#fff" : COLORS.text,
+                        background: usedCurrent ? COLORS.panel2 : selected ? COLORS.accent : COLORS.panel,
+                        color: usedCurrent ? COLORS.dim : selected ? "#fff" : COLORS.text,
                         fontWeight: selected ? 800 : 600,
                         cursor: used ? "not-allowed" : "pointer",
                         opacity: usedCurrent ? 0.45 : 1
@@ -340,10 +343,7 @@
                 ${selectedProducts.length ? "Zaznaczono: " + selectedProducts.slice().sort((a, b) => a - b).join(", ") : "Kliknij numery lazienek, ktore wykonales."}
               </div>
               <div style=${{ display: "flex", gap: "12px", flexWrap: "wrap", color: COLORS.dim, fontSize: "12px", marginTop: "8px" }}>
-                <span><strong style=${{ color: COLORS.orange }}>Pomaranczowe</strong> - etap juz zapisany przez kogos</span>
                 <span><strong style=${{ color: COLORS.dim }}>Wyszarzone</strong> - dodane w tym raporcie</span>
-                <span>Znalezione blokady z zapisanych raportow: <strong>${usedInSavedReports.size}</strong></span>
-                <span>Formularz widzi: <strong>${(reports || []).length}</strong> raportow / <strong>${visibleReportLinesCount}</strong> pozycji</span>
               </div>
             </div>
           ` : null}
@@ -599,13 +599,14 @@
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
         setSaving(true); setMsg(null);
         try {
-          await api.addReportAsWorker(token, workerCode, date, lines);
+          const result = await api.addReportAsWorker(token, workerCode, date, lines);
           setLines([]);
           await reloadReports();
           const worker = workers.find(w => (w.code || w.login) === workerCode);
-          setMsg({ type: "success", text: "Raport zapisany za pracownika: " + (worker ? worker.name : workerCode) + "." });
+          const msg = saveReportMessage(result, lines.length);
+          setMsg({ ...msg, text: msg.text + " Pracownik: " + (worker ? worker.name : workerCode) + "." });
         } catch (e) {
-          setMsg({ type: "error", text: e.message });
+          setMsg(saveReportErrorMessage(e));
         } finally {
           setSaving(false);
         }
@@ -889,12 +890,12 @@
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
         setSaving(true); setMsg(null);
         try {
-          await api.addReport(token, date, lines);
+          const result = await api.addReport(token, date, lines);
           setLines([]);
           await reload();
-          setMsg({ type: "success", text: "Raport zapisany." });
+          setMsg(saveReportMessage(result, lines.length));
         } catch (e) {
-          setMsg({ type: "error", text: e.message });
+          setMsg(saveReportErrorMessage(e));
         } finally {
           setSaving(false);
         }
@@ -1387,7 +1388,10 @@
         const code = (u && (u.code || u.login) || "").toUpperCase();
         return !!u && (u.role === "admin" || u.role === "manager" || u.role === "supervisor" || code === "RBR056");
       };
-      const reloadReports = async (t = token) => setReports((await api.getReports(t)).map(normalizeReport));
+      const reloadReports = async (t = token) => {
+        const serverReports = (await api.getReports(t)).map(normalizeReport);
+        setReports(serverReports);
+      };
       const reloadUsers = async (t = token) => setUsers(await api.getUsers(t));
 
       useEffect(() => {
