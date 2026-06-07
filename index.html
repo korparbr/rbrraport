@@ -870,6 +870,171 @@
       `;
     }
 
+    function ProjectsTab({ reports }) {
+      const STORAGE_KEY = "flowrbr_projects_1_01";
+      const CLOSED_KEY = "flowrbr_closed_projects_1_01";
+      const [customProjects, setCustomProjects] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { return {}; }
+      });
+      const [closedProjects, setClosedProjects] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(CLOSED_KEY) || "[]"); } catch (_) { return []; }
+      });
+      const [selectedProject, setSelectedProject] = useState("");
+      const [newProject, setNewProject] = useState("");
+      const [newCount, setNewCount] = useState("");
+      const [msg, setMsg] = useState(null);
+
+      const warehouses = [
+        { id: "projekt", label: "Projekt", stage: "brak raportu", color: "#e5eaf3", text: COLORS.text },
+        { id: "rolling", label: "Rolling", stage: "4. Skrecanie", color: "#dbeafe", text: "#1d4ed8" },
+        { id: "produkcja", label: "Produkcja", stage: "5. Nawozenie", color: "#dcfce7", text: "#166534" },
+        { id: "magazyn", label: "Magazyn", stage: "19. Pakowanie", color: "#fef3c7", text: "#92400e" },
+        { id: "wyslane", label: "Wyslane", stage: "21. Zaladunek", color: "#fee2e2", text: "#991b1b" }
+      ];
+      const stageToWarehouse = { "4": "rolling", "5": "produkcja", "19": "magazyn", "21": "wyslane" };
+      const warehouseById = id => warehouses.find(w => w.id === id) || warehouses[0];
+      const saveCustom = next => {
+        setCustomProjects(next);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      };
+      const saveClosed = next => {
+        setClosedProjects(next);
+        localStorage.setItem(CLOSED_KEY, JSON.stringify(next));
+      };
+
+      const allProjects = useMemo(() => {
+        const merged = { ...PROJECTS, ...customProjects };
+        return Object.keys(merged)
+          .filter(project => !closedProjects.includes(project))
+          .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
+          .map(project => ({ project, count: Number(merged[project]) || 0 }));
+      }, [customProjects, closedProjects]);
+
+      const selectedCount = selectedProject
+        ? Number(({ ...PROJECTS, ...customProjects })[selectedProject]) || 0
+        : 0;
+      const bathroomStates = useMemo(() => {
+        const states = {};
+        if (!selectedProject) return states;
+        reports.forEach(report => {
+          (report.lines || []).forEach(line => {
+            if (line.project !== selectedProject) return;
+            const target = stageToWarehouse[line.stage];
+            if (!target) return;
+            const product = Number(line.product);
+            const previous = states[product];
+            const priority = { rolling: 1, produkcja: 2, magazyn: 3, wyslane: 4 }[target] || 0;
+            const previousPriority = previous ? ({ rolling: 1, produkcja: 2, magazyn: 3, wyslane: 4 }[previous.id] || 0) : 0;
+            if (!previous || priority >= previousPriority) {
+              states[product] = { id: target, date: report.date || "", stage: line.stage };
+            }
+          });
+        });
+        return states;
+      }, [reports, selectedProject]);
+
+      const addProject = () => {
+        const project = newProject.trim();
+        const count = Number(newCount);
+        if (!project) return setMsg({ type: "error", text: "Wpisz nr zlecenia/projektu." });
+        if (!count || count < 1) return setMsg({ type: "error", text: "Wpisz ilosc lazienek wieksza od 0." });
+        if (PROJECTS[project] || customProjects[project]) return setMsg({ type: "error", text: "Taki projekt juz istnieje." });
+        const next = { ...customProjects, [project]: count };
+        saveCustom(next);
+        setClosedProjects(closedProjects.filter(p => p !== project));
+        localStorage.setItem(CLOSED_KEY, JSON.stringify(closedProjects.filter(p => p !== project)));
+        setSelectedProject(project);
+        setNewProject("");
+        setNewCount("");
+        setMsg({ type: "success", text: "Projekt dodany." });
+      };
+      const closeProject = project => {
+        if (!project) return;
+        if (!confirm("Zamknac projekt " + project + "? Projekt zniknie z widoku aplikacji.")) return;
+        const next = [...new Set([...closedProjects, project])];
+        saveClosed(next);
+        if (selectedProject === project) setSelectedProject("");
+        setMsg({ type: "success", text: "Projekt " + project + " zamkniety." });
+      };
+
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
+            <h2 style=${{ ...S.title, margin: 0 }}>Projekty</h2>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              ${warehouses.map(w => html`
+                <span key=${w.id} style=${{ background: w.color, color: w.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 700 }}>
+                  ${w.label} - ${w.stage}
+                </span>
+              `)}
+            </div>
+          </div>
+          <div className="grid-3" style=${S.row3}>
+            <input style=${S.input} placeholder="Nr zlecenia / projektu" value=${newProject} onInput=${e => setNewProject(e.target.value)} />
+            <input style=${S.input} type="number" min="1" placeholder="Ilosc lazienek" value=${newCount} onInput=${e => setNewCount(e.target.value)} />
+            <button style=${S.btn} onClick=${addProject}>Dodaj projekt</button>
+          </div>
+          <${Message} msg=${msg} />
+        </section>
+
+        <section style=${S.card}>
+          <h3 style=${{ ...S.title, fontSize: "18px" }}>Lista projektow</h3>
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(118px, 1fr))", gap: "10px" }}>
+            ${allProjects.map(item => html`
+              <button
+                key=${item.project}
+                onClick=${() => setSelectedProject(item.project)}
+                style=${{
+                  background: selectedProject === item.project ? COLORS.accent : COLORS.panel2,
+                  color: selectedProject === item.project ? "#fff" : COLORS.text,
+                  border: "1px solid " + (selectedProject === item.project ? COLORS.accent : COLORS.border),
+                  borderRadius: "10px",
+                  padding: "12px",
+                  cursor: "pointer",
+                  textAlign: "left"
+                }}
+              >
+                <div style=${{ fontWeight: 900, fontSize: "18px" }}>${item.project}</div>
+                <div style=${{ opacity: 0.78, fontSize: "12px", marginTop: "4px" }}>${item.count} lazienek</div>
+              </button>
+            `)}
+          </div>
+        </section>
+
+        ${selectedProject ? html`
+          <section style=${S.card}>
+            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Projekt ${selectedProject}</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>${selectedCount} lazienek</div>
+              </div>
+              <button style=${S.danger} onClick=${() => closeProject(selectedProject)}>Zamknij projekt</button>
+            </div>
+            <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "8px" }}>
+              ${Array.from({ length: selectedCount }, (_, i) => i + 1).map(product => {
+                const state = bathroomStates[product] || { id: "projekt" };
+                const wh = warehouseById(state.id);
+                return html`
+                  <div key=${product} title=${wh.label + (state.date ? " / " + state.date : "")} style=${{
+                    minHeight: "46px",
+                    border: "1px solid " + COLORS.border,
+                    borderRadius: "9px",
+                    background: wh.color,
+                    color: wh.text,
+                    display: "grid",
+                    placeItems: "center",
+                    fontWeight: 900
+                  }}>
+                    ${product}
+                  </div>
+                `;
+              })}
+            </div>
+          </section>
+        ` : null}
+      `;
+    }
+
     function ManagerView({ user, token, reports, users, reloadReports, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
@@ -916,13 +1081,15 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            ${["reports", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
+            ${["reports", "projects", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "projects" ? "Projekty" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
           ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} />` : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} />
           ` : tab === "database" ? html`
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
+          ` : tab === "projects" ? html`
+            <${ProjectsTab} reports=${reports} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Dodaj uzytkownika</h2>
