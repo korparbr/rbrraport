@@ -1034,6 +1034,83 @@
           label: color ? color.label : "Brak etapu z legendy"
         };
       };
+      const hexToRgb = hex => {
+        const value = String(hex || "#ffffff").replace("#", "");
+        const full = value.length === 3 ? value.split("").map(x => x + x).join("") : value;
+        const num = parseInt(full, 16);
+        return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+      };
+      const exportMapPdf = () => {
+        if (selectedHall.future) return setMsg({ type: "warning", text: "Hala ISO bedzie dodana w przyszlosci." });
+        try {
+          const { jsPDF } = window.jspdf;
+          const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+          const pageW = doc.internal.pageSize.getWidth();
+          const margin = 8;
+          let y = 10;
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(15);
+          doc.text("Mapa - " + selectedHall.label, margin, y);
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(8);
+          doc.text("Wygenerowano: " + today(), pageW - margin - 42, y);
+          y += 7;
+
+          let lx = margin;
+          stageColors.forEach(s => {
+            const rgb = hexToRgb(s.color);
+            doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+            doc.setDrawColor(150, 160, 175);
+            doc.rect(lx, y - 4, 5, 4, "FD");
+            doc.setTextColor(20, 30, 45);
+            doc.text(s.label, lx + 6, y - 1);
+            lx += Math.min(40, 8 + s.label.length * 1.8);
+            if (lx > pageW - 50) { lx = margin; y += 6; }
+          });
+          y += 6;
+
+          const rowHeader = 8;
+          const gap = 1;
+          const cellW = Math.min(12, (pageW - margin * 2 - rowHeader - (selectedHall.cols - 1) * gap) / selectedHall.cols);
+          const cellH = selectedHall.rows.length <= 2 ? 22 : 15;
+          doc.setFontSize(7);
+          doc.setTextColor(65, 75, 90);
+          selectedHall.rows.forEach((row, rowIndex) => {
+            const cy = y + rowIndex * (cellH + gap);
+            doc.setFont("helvetica", "bold");
+            doc.text(row, margin + 2, cy + cellH / 2);
+            for (let col = 1; col <= selectedHall.cols; col++) {
+              const cell = layoutByCell[row + "-" + col];
+              const st = styleForCell(cell);
+              const bg = hexToRgb(st.background);
+              const tx = hexToRgb(st.color);
+              const x = margin + rowHeader + (col - 1) * (cellW + gap);
+              doc.setFillColor(bg[0], bg[1], bg[2]);
+              doc.setDrawColor(150, 160, 175);
+              doc.rect(x, cy, cellW, cellH, "FD");
+              doc.setTextColor(tx[0], tx[1], tx[2]);
+              doc.setFont("helvetica", "bold");
+              doc.setFontSize(6);
+              if (cell) {
+                const label = st.label.replace("Ceramika podlogi", "Ceramika podl.").replace("Montaz sanit.", "Montaz sanit.");
+                doc.text(String(cell.project), x + 1, cy + 4);
+                doc.text("Laz. " + cell.product, x + 1, cy + 8);
+                doc.setFont("helvetica", "normal");
+                doc.setFontSize(5);
+                doc.text(doc.splitTextToSize(label, cellW - 2).slice(0, 2), x + 1, cy + 12);
+              } else if (rowIndex === 0) {
+                doc.setFont("helvetica", "normal");
+                doc.setFontSize(5);
+                doc.text(String(col), x + cellW / 2 - 1, cy - 1);
+              }
+            }
+          });
+          doc.save("flowrbr_mapa_" + hall + "_" + today() + ".pdf");
+          setMsg({ type: "success", text: "PDF mapy wygenerowany." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
       const addManual = () => {
         if (selectedHall.future) return;
         const row = manual.row;
@@ -1119,6 +1196,7 @@
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>Uklady hal produkcyjnych z kolorami wedlug aktualnego etapu.</div>
             </div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button style=${S.btn} onClick=${exportMapPdf}>Generuj PDF</button>
               <label style=${S.ghost}>
                 Zdjecie AI
                 <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
