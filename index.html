@@ -932,6 +932,15 @@
         });
         return states;
       }, [reports, selectedProject]);
+      const warehouseSummary = useMemo(() => {
+        const summary = Object.fromEntries(warehouses.map(w => [w.id, 0]));
+        if (!selectedProject || !selectedCount) return summary;
+        for (let product = 1; product <= selectedCount; product++) {
+          const state = bathroomStates[product] || { id: "projekt" };
+          summary[state.id] = (summary[state.id] || 0) + 1;
+        }
+        return summary;
+      }, [bathroomStates, selectedProject, selectedCount]);
 
       const addProject = () => {
         const project = newProject.trim();
@@ -1009,6 +1018,15 @@
                 <div style=${{ color: COLORS.muted, fontSize: "13px" }}>${selectedCount} lazienek</div>
               </div>
               <button style=${S.danger} onClick=${() => closeProject(selectedProject)}>Zamknij projekt</button>
+            </div>
+            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: "10px", marginBottom: "14px" }}>
+              ${warehouses.map(w => html`
+                <div key=${w.id} style=${{ background: w.color, color: w.text, border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "12px" }}>
+                  <div style=${{ fontSize: "12px", fontWeight: 800 }}>${w.label}</div>
+                  <div style=${{ fontSize: "28px", fontWeight: 900, marginTop: "4px" }}>${warehouseSummary[w.id] || 0}</div>
+                  <div style=${{ fontSize: "12px", opacity: 0.8 }}>lazienek</div>
+                </div>
+              `)}
             </div>
             <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "8px" }}>
               ${Array.from({ length: selectedCount }, (_, i) => i + 1).map(product => {
