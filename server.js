@@ -126,6 +126,23 @@ async function ensureMapLayoutsTable() {
   );
 }
 
+async function ensureUsersBlockColumn() {
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE");
+}
+
+async function ensureTransportDatesTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS transport_dates (
+      project TEXT NOT NULL,
+      product INTEGER NOT NULL,
+      load_date DATE NOT NULL,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project, product)
+    )
+  `);
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -146,6 +163,7 @@ app.post('/api/login', async (req, res) => {
     const r = await pool.query('SELECT * FROM users WHERE UPPER(code) = UPPER($1)', [code.trim()]);
     const user = r.rows[0];
     if (!user) return res.status(401).json({ error: 'Nie znaleziono konta dla tego kodu' });
+    if (user.is_blocked) return res.status(403).json({ error: 'Konto jest zablokowane. Skontaktuj się z przełożonym.' });
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Nieprawidłowe hasło' });
     const token = jwt.sign({ code: user.code, name: user.name, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
@@ -172,7 +190,8 @@ app.post('/api/change-password', auth, async (req, res) => {
 // ─── USERS ────────────────────────────────────────────────────────────────────
 app.get('/api/users', auth, managerOnly, async (req, res) => {
   try {
-    const r = await pool.query("SELECT code, name, role, must_change_password, created_at FROM users WHERE code != 'ADMIN' ORDER BY name");
+    await ensureUsersBlockColumn();
+    const r = await pool.query("SELECT code, name, role, must_change_password, is_blocked, created_at FROM users WHERE code != 'ADMIN' ORDER BY name");
     res.json(r.rows);
   } catch { res.status(500).json({ error: 'Błąd serwera' }); }
 });
@@ -202,6 +221,25 @@ app.put('/api/users/:code/reset-password', auth, managerOnly, async (req, res) =
   const hash = await bcrypt.hash('zmien123', 10);
   await pool.query('UPDATE users SET password_hash=$1, must_change_password=TRUE WHERE code=$2', [hash, req.params.code]);
   res.json({ success: true });
+});
+
+app.put('/api/users/:code/block', auth, managerOnly, async (req, res) => {
+  const code = String(req.params.code || '').toUpperCase();
+  const blocked = !!req.body.blocked;
+  if (!code || code === 'ADMIN') return res.status(400).json({ error: 'Nieprawidłowy użytkownik' });
+  if (code === String(req.user.code || '').toUpperCase()) return res.status(400).json({ error: 'Nie możesz zablokować swojego konta' });
+  try {
+    await ensureUsersBlockColumn();
+    const target = await pool.query('SELECT role FROM users WHERE code=$1', [code]);
+    if (!target.rows.length) return res.status(404).json({ error: 'Nie znaleziono użytkownika' });
+    if (target.rows[0].role === 'manager' && req.user.role !== 'supervisor' && req.user.code !== 'ADMIN') {
+      return res.status(403).json({ error: 'Tylko supervisor lub admin może blokować menedżerów.' });
+    }
+    await pool.query('UPDATE users SET is_blocked=$1 WHERE code=$2', [blocked, code]);
+    res.json({ success: true, code, blocked });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Błąd serwera' });
+  }
 });
 
 app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
@@ -409,6 +447,40 @@ app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
   }
 });
 
+app.get('/api/transport-dates', auth, async (req, res) => {
+  try {
+    await ensureTransportDatesTable();
+    const r = await pool.query('SELECT project, product, load_date::text AS "loadDate", updated_by AS "updatedBy", updated_at AS "updatedAt" FROM transport_dates ORDER BY load_date, project, product');
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Błąd odczytu transportu' });
+  }
+});
+
+app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const product = Number(req.body.product);
+  const loadDate = String(req.body.loadDate || '').trim();
+  if (!project || !Number.isInteger(product) || product < 1) return res.status(400).json({ error: 'Brak projektu lub numeru łazienki' });
+  try {
+    await ensureTransportDatesTable();
+    if (!loadDate) {
+      await pool.query('DELETE FROM transport_dates WHERE project=$1 AND product=$2', [project, product]);
+      return res.json({ success: true, deleted: true });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(loadDate)) return res.status(400).json({ error: 'Nieprawidłowa data załadunku' });
+    await pool.query(
+      `INSERT INTO transport_dates (project, product, load_date, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,NOW())
+       ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, product, loadDate, req.user.code]
+    );
+    res.json({ success: true, project, product, loadDate });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Błąd zapisu transportu' });
+  }
+});
+
 app.get('/api/email-recipients', auth, managerOnly, async (req, res) => {
   try {
     const r = await pool.query('SELECT email FROM email_recipients ORDER BY email');
@@ -508,11 +580,16 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
 // ─── DATABASE BACKUP ──────────────────────────────────────────────────────────
 app.get('/api/backup', auth, managerOnly, async (req, res) => {
   try {
-    const [users, reports, lines, recipients] = await Promise.all([
+    await ensureUsersBlockColumn();
+    await ensureMapLayoutsTable();
+    await ensureTransportDatesTable();
+    const [users, reports, lines, recipients, mapLayouts, transportDates] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
       pool.query('SELECT * FROM email_recipients ORDER BY id'),
+      pool.query('SELECT * FROM map_layouts ORDER BY id'),
+      pool.query('SELECT * FROM transport_dates ORDER BY load_date, project, product'),
     ]);
 
     const backup = {
@@ -523,11 +600,15 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         reports: reports.rows,
         report_lines: lines.rows,
         email_recipients: recipients.rows,
+        map_layouts: mapLayouts.rows,
+        transport_dates: transportDates.rows,
       },
       counts: {
         users: users.rows.length,
         reports: reports.rows.length,
         report_lines: lines.rows.length,
+        map_layouts: mapLayouts.rows.length,
+        transport_dates: transportDates.rows.length,
       }
     };
 
@@ -573,6 +654,34 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
           [l.id, l.report_id, l.project, l.product, l.stage, l.contractor_code, l.note||'', l.photos||null, l.created_at]
         );
         linesAdded++;
+      }
+    }
+
+    let transportRestored = 0;
+    if (Array.isArray(data.transport_dates)) {
+      await ensureTransportDatesTable();
+      for (const t of data.transport_dates) {
+        await client.query(
+          `INSERT INTO transport_dates (project, product, load_date, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,COALESCE($5,NOW()))
+           ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [t.project, t.product, t.load_date || t.loadDate, t.updated_by || t.updatedBy || req.user.code, t.updated_at || t.updatedAt || null]
+        );
+        transportRestored++;
+      }
+    }
+
+    let mapsRestored = 0;
+    if (Array.isArray(data.map_layouts)) {
+      await ensureMapLayoutsTable();
+      for (const m of data.map_layouts) {
+        await client.query(
+          `INSERT INTO map_layouts (id, layouts, photos, updated_by, updated_at)
+           VALUES ($1,$2::jsonb,$3::jsonb,$4,COALESCE($5,NOW()))
+           ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, photos=EXCLUDED.photos, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [m.id || 'main', JSON.stringify(normalizeMapLayouts(m.layouts || {})), JSON.stringify(normalizeMapPhotos(m.photos || {})), m.updated_by || req.user.code, m.updated_at || null]
+        );
+        mapsRestored++;
       }
     }
     

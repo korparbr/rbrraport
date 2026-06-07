@@ -58,9 +58,12 @@
       getUsers: token => apiRequest("GET", "/api/users", null, token),
       addUser: (token, code, name, password, role) => apiRequest("POST", "/api/users", { code, name, password, role }, token),
       resetPassword: (token, code) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/reset-password", {}, token),
+      setUserBlocked: (token, code, blocked) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/block", { blocked }, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
+      getTransportDates: token => apiRequest("GET", "/api/transport-dates", null, token),
+      saveTransportDate: (token, project, product, loadDate) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
       saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
@@ -137,6 +140,30 @@
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const productNo = value => Number(value);
+    const transportKey = (project, product) => String(project || "").trim() + "#" + productNo(product);
+    const daysUntil = date => {
+      if (!date) return null;
+      const base = new Date(today() + "T00:00:00");
+      const target = new Date(date + "T00:00:00");
+      return Math.round((target - base) / 86400000);
+    };
+    const transportAlert = date => {
+      const days = daysUntil(date);
+      if (days == null || days > 16) return null;
+      if (days <= 0) return { color: "#111827", text: "#fff", label: "dzisiaj" };
+      if (days === 1) return { color: "#dc2626", text: "#fff", label: "jutro" };
+      if (days === 2) return { color: "#f97316", text: "#111827", label: "pojutrze" };
+      if (days === 3) return { color: "#fde047", text: "#111827", label: "za 3 dni" };
+      if (days <= 6) return { color: "#7c3aed", text: "#fff", label: "za " + days + " dni" };
+      if (days <= 8) return { color: "#2563eb", text: "#fff", label: "za " + days + " dni" };
+      if (days <= 12) return { color: "#16a34a", text: "#fff", label: "za " + days + " dni" };
+      return { color: "#99f6e4", text: "#134e4a", label: "za " + days + " dni" };
+    };
+    const transportMap = items => {
+      const map = {};
+      (items || []).forEach(item => { map[transportKey(item.project, item.product)] = item.loadDate; });
+      return map;
+    };
     const getReportLines = r => r.lines || r.report_lines || r.reportLines || r.items || r.entries || [];
     const normalizeReport = r => ({
       ...r,
@@ -896,7 +923,7 @@
       `;
     }
 
-    function WorkerView({ user, token, reports, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
@@ -965,7 +992,7 @@
           ` : tab === "history" ? html`
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} transportDates=${transportDates} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
@@ -982,7 +1009,7 @@
       `;
     }
 
-    function MapsTab({ reports, token, canEditMaps }) {
+    function MapsTab({ reports, token, canEditMaps, transportDates }) {
       const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const [hall, setHall] = useState("betonowanie");
@@ -1022,6 +1049,7 @@
       ];
       const stageOrder = { "4": 1, "6.1": 2, "7.1": 3, "9": 4, "10": 5, "11.2": 6, "13.1": 7, "13.2": 8, "15.1": 9, "17": 10 };
       const selectedHall = halls.find(h => h.id === hall) || halls[0];
+      const loadDateByBathroom = useMemo(() => transportMap(transportDates), [transportDates]);
       const saveLayouts = next => {
         if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik moze ogladac mapy i generowac PDF, ale nie moze ich modyfikowac." });
         setLayouts(next);
@@ -1472,6 +1500,8 @@
                     const st = styleForCell(cell);
                     const isDragging = dragCell && cell && cellKey(dragCell) === cellKey(cell);
                     const isSelected = selectedCell && cell && bathroomKey(selectedCell.project, selectedCell.product) === bathroomKey(cell.project, cell.product);
+                    const loadDate = cell ? loadDateByBathroom[transportKey(cell.project, cell.product)] : "";
+                    const alert = transportAlert(loadDate);
                     return html`
                       <button
                         key=${row + "-" + col}
@@ -1493,6 +1523,7 @@
                           cursor: edit ? (cell ? "grab" : "pointer") : (cell ? "pointer" : "default"),
                           padding: 0,
                           overflow: "hidden",
+                          position: "relative",
                           display: "flex",
                           flexDirection: "column",
                           fontSize: "11px",
@@ -1503,6 +1534,24 @@
                         }}
                       >
                         ${cell ? html`
+                          ${alert ? html`
+                            <span title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{
+                              position: "absolute",
+                              top: "4px",
+                              right: "4px",
+                              width: "22px",
+                              height: "22px",
+                              borderRadius: "999px",
+                              background: alert.color,
+                              color: alert.text,
+                              display: "grid",
+                              placeItems: "center",
+                              fontWeight: 900,
+                              fontSize: "16px",
+                              border: "1px solid " + COLORS.border,
+                              zIndex: 2
+                            }}>!</span>
+                          ` : null}
                           <div style=${{
                             background: st.background,
                             color: st.color,
@@ -1877,12 +1926,113 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, reloadReports, reloadUsers, logout }) {
+    function packedBathrooms(reports) {
+      const map = {};
+      (reports || []).forEach(report => {
+        (report.lines || []).forEach(line => {
+          if (String(line.stage) !== "19") return;
+          const key = transportKey(line.project, line.product);
+          const current = map[key];
+          if (!current || (report.date || "") >= (current.packDate || "")) {
+            map[key] = {
+              project: String(line.project || ""),
+              product: productNo(line.product),
+              packDate: report.date || "",
+              worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
+            };
+          }
+        });
+      });
+      return Object.values(map).sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
+    }
+
+    function WarehouseTab({ reports, transportDates }) {
+      const packed = useMemo(() => packedBathrooms(reports), [reports]);
+      const loads = useMemo(() => transportMap(transportDates), [transportDates]);
+      return html`
+        <section style=${S.card}>
+          <h2 style=${S.title}>Magazyn</h2>
+          <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>Spakowane lazienki z raportu 19. Pakowanie.</div>
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "10px" }}>
+            ${packed.map(item => {
+              const loadDate = loads[transportKey(item.project, item.product)];
+              const alert = transportAlert(loadDate);
+              return html`
+                <div key=${item.project + "-" + item.product} style=${{ position: "relative", background: "#fef3c7", color: "#92400e", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", minHeight: "96px" }}>
+                  ${alert ? html`<div title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{ position: "absolute", top: "8px", right: "8px", width: "24px", height: "24px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900 }}>!</div>` : null}
+                  <div style=${{ fontWeight: 900, fontSize: "18px" }}>${item.project}</div>
+                  <div style=${{ fontWeight: 900 }}>Laz. ${item.product}</div>
+                  <div style=${{ fontSize: "12px", marginTop: "6px" }}>Pakowanie: ${item.packDate || "-"}</div>
+                  ${loadDate ? html`<div style=${{ fontSize: "12px", marginTop: "3px" }}>Zaladunek: ${loadDate}</div>` : null}
+                </div>
+              `;
+            })}
+          </div>
+          ${packed.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "24px" }}>Brak spakowanych lazienek.</div>`}
+        </section>
+      `;
+    }
+
+    function TransportTab({ reports, transportDates, token, reloadTransportDates }) {
+      const packed = useMemo(() => packedBathrooms(reports), [reports]);
+      const loads = useMemo(() => transportMap(transportDates), [transportDates]);
+      const [filter, setFilter] = useState("");
+      const [savingKey, setSavingKey] = useState("");
+      const [msg, setMsg] = useState(null);
+      const visible = packed.filter(item => !filter || String(item.project).includes(filter.trim()));
+      const saveLoadDate = async (item, loadDate) => {
+        const key = transportKey(item.project, item.product);
+        setSavingKey(key); setMsg(null);
+        try {
+          await api.saveTransportDate(token, item.project, item.product, loadDate);
+          await reloadTransportDates();
+          setMsg({ type: "success", text: loadDate ? "Data zaladunku zapisana." : "Data zaladunku usunieta." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
+            <div>
+              <h2 style=${S.title}>Transport</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Ustawianie i edycja dat zaladunku dla spakowanych lazienek.</div>
+            </div>
+            <div style=${{ minWidth: "220px" }}>
+              <label style=${S.label}>Filtr projektu</label>
+              <input style=${S.input} value=${filter} onInput=${e => setFilter(e.target.value)} placeholder="Nr projektu" />
+            </div>
+          </div>
+          <${Message} msg=${msg} />
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: "10px" }}>
+            ${visible.map(item => {
+              const key = transportKey(item.project, item.product);
+              const loadDate = loads[key] || "";
+              const alert = transportAlert(loadDate);
+              return html`
+                <div key=${key} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "12px", position: "relative" }}>
+                  ${alert ? html`<div style=${{ position: "absolute", top: "10px", right: "10px", width: "24px", height: "24px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900 }}>!</div>` : null}
+                  <div style=${{ fontWeight: 900, fontSize: "17px" }}>Projekt ${item.project}</div>
+                  <div style=${{ color: COLORS.orange, fontWeight: 900 }}>Laz. ${item.product}</div>
+                  <div style=${{ color: COLORS.muted, fontSize: "12px", margin: "5px 0 8px" }}>Pakowanie: ${item.packDate || "-"}</div>
+                  <input style=${S.input} type="date" value=${loadDate} onInput=${e => saveLoadDate(item, e.target.value)} disabled=${savingKey === key} />
+                  ${loadDate ? html`<button style=${{ ...S.ghost, marginTop: "8px" }} disabled=${savingKey === key} onClick=${() => saveLoadDate(item, "")}>Wyczysc date</button>` : null}
+                </div>
+              `;
+            })}
+          </div>
+        </section>
+      `;
+    }
+
+    function ManagerView({ user, token, reports, users, transportDates, reloadTransportDates, reloadReports, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
       const [resettingCode, setResettingCode] = useState("");
-      const canSeeProduction = user && (user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
+      const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
 
       const remove = async id => {
         if (!confirm("Usunac raport?")) return;
@@ -1913,6 +2063,20 @@
           setResettingCode("");
         }
       };
+      const toggleBlocked = async worker => {
+        const code = worker.code || worker.login;
+        const blocked = !!worker.is_blocked;
+        if (!code) return;
+        if (!confirm((blocked ? "Odblokowac " : "Zablokowac ") + (worker.name || code) + "?")) return;
+        setMsg(null);
+        try {
+          await api.setUserBlocked(token, code, !blocked);
+          await reloadUsers();
+          setMsg({ type: "success", text: blocked ? "Uzytkownik odblokowany." : "Uzytkownik zablokowany." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
 
       return html`
         <main style=${S.main}>
@@ -1924,7 +2088,7 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            ${["reports", ...(canSeeProduction ? ["production"] : []), "projects", "maps", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "projects" ? "Projekty" : t === "maps" ? "Mapy" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
+            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport"] : []), "projects", "maps", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "projects" ? "Projekty" : t === "maps" ? "Mapy" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
           ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} reloadReports=${reloadReports} />` : tab === "account" ? html`
@@ -1934,9 +2098,13 @@
           ` : tab === "projects" ? html`
             <${ProjectsTab} reports=${reports} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} transportDates=${transportDates} />
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} />
+          ` : tab === "warehouse" ? html`
+            <${WarehouseTab} reports=${reports} transportDates=${transportDates} />
+          ` : tab === "transport" ? html`
+            <${TransportTab} reports=${reports} transportDates=${transportDates} token=${token} reloadTransportDates=${reloadTransportDates} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Dodaj uzytkownika</h2>
@@ -1963,17 +2131,22 @@
                 const code = u.code || u.login;
                 const role = u.role || "worker";
                 const isWorker = role === "worker";
+                const blocked = !!u.is_blocked;
                 return html`
                   <div key=${code} style=${{ padding: "10px 0", borderTop: "1px solid " + COLORS.border, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
                     <div>
                       <strong>${code}</strong>
                       <span style=${{ color: COLORS.muted }}> ${u.name} / ${role}</span>
+                      ${blocked ? html`<span style=${{ marginLeft: "8px", color: COLORS.red, fontWeight: 900 }}>ZABLOKOWANY</span>` : null}
                     </div>
-                    ${isWorker ? html`
-                      <button style=${{ ...S.danger, opacity: resettingCode === code ? 0.6 : 1 }} disabled=${resettingCode === code} onClick=${() => resetWorkerPassword(u)}>
-                        ${resettingCode === code ? "Resetowanie..." : "Reset hasla"}
-                      </button>
-                    ` : html`<span style=${{ color: COLORS.dim, fontSize: "12px" }}>bez resetu</span>`}
+                    <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      ${isWorker ? html`
+                        <button style=${{ ...S.ghost, opacity: resettingCode === code ? 0.6 : 1 }} disabled=${resettingCode === code} onClick=${() => resetWorkerPassword(u)}>
+                          ${resettingCode === code ? "Resetowanie..." : "Reset hasla"}
+                        </button>
+                      ` : null}
+                      <button style=${blocked ? S.btn : S.danger} onClick=${() => toggleBlocked(u)}>${blocked ? "Odblokuj" : "Zablokuj"}</button>
+                    </div>
                   </div>
                 `;
               })}
@@ -1988,6 +2161,7 @@
       const [user, setUser] = useState(null);
       const [reports, setReports] = useState([]);
       const [users, setUsers] = useState([]);
+      const [transportDates, setTransportDates] = useState([]);
       const [loaded, setLoaded] = useState(false);
 
       const logout = () => {
@@ -2012,6 +2186,10 @@
         setReports(serverReports);
       };
       const reloadUsers = async (t = token) => setUsers(await api.getUsers(t));
+      const reloadTransportDates = async (t = token) => {
+        const rows = await api.getTransportDates(t);
+        setTransportDates(rows || []);
+      };
 
       useEffect(() => {
         (async () => {
@@ -2021,6 +2199,7 @@
               setUser(restored);
               try {
                 await reloadReports(token);
+                await reloadTransportDates(token);
                 if (isManagerLike(restored)) await reloadUsers(token);
               } catch (_) {}
             } else {
@@ -2036,6 +2215,7 @@
         setToken(newToken);
         setUser(userData);
         await reloadReports(newToken);
+        await reloadTransportDates(newToken);
         if (isManagerLike(userData)) await reloadUsers(newToken);
       };
 
@@ -2049,8 +2229,8 @@
             ${user ? html`<div style=${{ color: COLORS.muted, fontSize: "14px" }}>${user.role || "worker"} / ${user.code || user.login}</div>` : null}
           </header>
           ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }
