@@ -926,6 +926,7 @@
             ${[
               ["add", "Dodaj raport"],
               ["history", "Historia"],
+              ["maps", "Mapy"],
               ["account", "Konto"]
             ].map(t => html`<button key=${t[0]} style=${tab === t[0] ? S.btn : S.ghost} onClick=${() => setTab(t[0])}>${t[1]}</button>`)}
           </div>
@@ -943,6 +944,8 @@
             </section>
           ` : tab === "history" ? html`
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
+          ` : tab === "maps" ? html`
+            <${MapsTab} reports=${reports} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
@@ -956,6 +959,232 @@
             </section>
           `}
         </main>
+      `;
+    }
+
+    function MapsTab({ reports }) {
+      const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
+      const [hall, setHall] = useState("betonowanie");
+      const [edit, setEdit] = useState(false);
+      const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "" });
+      const [msg, setMsg] = useState(null);
+      const [layouts, setLayouts] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { return {}; }
+      });
+
+      const halls = [
+        { id: "betonowanie", label: "Hala Betonowanie", cols: 23, rows: ["F", "E"], aliases: ["betonowanie", "hala betonowanie", "beton"] },
+        { id: "namiot1", label: "Namiot 1", cols: 22, rows: ["F", "E", "D", "C", "B", "A"], aliases: ["namiot 1", "namiot1"] },
+        { id: "namiot2", label: "Namiot 2", cols: 22, rows: ["F", "E", "D", "C", "B", "A"], aliases: ["namiot 2", "namiot2"] },
+        { id: "iso", label: "Hala ISO", cols: 0, rows: [], future: true, aliases: ["iso", "hala iso"] }
+      ];
+      const stageColors = [
+        { stage: "4", label: "4 Skrecanie", color: "#e5e7eb", text: COLORS.text },
+        { stage: "6.1", label: "6.1 Szlifowanie", color: "#9ca3af", text: "#111827" },
+        { stage: "7.1", label: "7.1 Izolowanie", color: "#ef4444", text: "#fff" },
+        { stage: "11.2", label: "11.2 Ceramika podlogi", color: "#3b82f6", text: "#fff" },
+        { stage: "13.1", label: "13.1 Fugowanie", color: "#f97316", text: "#fff" },
+        { stage: "10", label: "10 Malowanie", color: "#ffffff", text: COLORS.text },
+        { stage: "15.1", label: "15.1 Montaz sanit.", color: "#92400e", text: "#fff" },
+        { stage: "13.2", label: "13.2 Silikonowanie", color: "#fde047", text: "#111827" },
+        { stage: "17", label: "17 Czyszczenie", color: "#86efac", text: "#064e3b" }
+      ];
+      const stageOrder = { "4": 1, "6.1": 2, "7.1": 3, "10": 4, "11.2": 5, "13.1": 6, "13.2": 7, "15.1": 8, "17": 9 };
+      const selectedHall = halls.find(h => h.id === hall) || halls[0];
+      const saveLayouts = next => {
+        setLayouts(next);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      };
+      const normalizeHall = value => String(value || "").trim().toLowerCase();
+      const hallIdFromValue = value => {
+        const normalized = normalizeHall(value);
+        const found = halls.find(h => h.aliases.some(alias => normalized.includes(alias)));
+        return found ? found.id : "";
+      };
+      const cellKey = cell => cell.row + "-" + cell.col;
+      const bathroomKey = (project, product) => String(project || "").trim() + "#" + productNo(product);
+      const currentLayout = layouts[hall] || [];
+      const layoutByCell = useMemo(() => {
+        const map = {};
+        currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
+        return map;
+      }, [currentLayout]);
+      const stageByBathroom = useMemo(() => {
+        const map = {};
+        (reports || []).forEach(report => {
+          (report.lines || []).forEach(line => {
+            const stage = String(line.stage || "");
+            if (!stageOrder[stage]) return;
+            const key = bathroomKey(line.project, line.product);
+            const current = map[key];
+            const score = stageOrder[stage];
+            const currentScore = current ? stageOrder[current.stage] || 0 : 0;
+            if (!current || score >= currentScore) {
+              map[key] = { stage, date: report.date || "" };
+            }
+          });
+        });
+        return map;
+      }, [reports]);
+      const styleForCell = cell => {
+        if (!cell) return { background: COLORS.panel, color: COLORS.dim, border: COLORS.border, label: "" };
+        const state = stageByBathroom[bathroomKey(cell.project, cell.product)];
+        const color = stageColors.find(s => s.stage === (state && state.stage));
+        return {
+          background: color ? color.color : "#f8fafc",
+          color: color ? color.text : COLORS.text,
+          border: color && color.stage === "10" ? "#cbd5e1" : COLORS.border,
+          label: color ? color.label : "Brak etapu z legendy"
+        };
+      };
+      const generateLayout = () => {
+        if (selectedHall.future) return setMsg({ type: "warning", text: "Hala ISO bedzie dodana w przyszlosci." });
+        const entries = [];
+        const seen = new Set();
+        (reports || [])
+          .slice()
+          .sort((a, b) => (a.date || "").localeCompare(b.date || ""))
+          .forEach(report => {
+            (report.lines || []).forEach(line => {
+              if (!sameStage(line.stage, "5")) return;
+              if (hallIdFromValue(line.hall) !== hall) return;
+              const key = bathroomKey(line.project, line.product);
+              if (!line.project || !line.product || seen.has(key)) return;
+              seen.add(key);
+              entries.push({ project: String(line.project), product: productNo(line.product) });
+            });
+          });
+        const capacity = selectedHall.cols * selectedHall.rows.length;
+        const cells = entries.slice(0, capacity).map((item, index) => ({
+          ...item,
+          row: selectedHall.rows[Math.floor(index / selectedHall.cols)],
+          col: (index % selectedHall.cols) + 1
+        }));
+        saveLayouts({ ...layouts, [hall]: cells });
+        setMsg({ type: cells.length ? "success" : "warning", text: cells.length ? "Uklad wygenerowany z raportow 5 - Nawozenie: " + cells.length + " lazienek." : "Nie znaleziono raportow 5 - Nawozenie z wybrana hala." });
+      };
+      const addManual = () => {
+        if (selectedHall.future) return;
+        const row = manual.row;
+        const col = Number(manual.col);
+        if (!selectedHall.rows.includes(row)) return setMsg({ type: "error", text: "Wybierz poprawny wiersz." });
+        if (!col || col < 1 || col > selectedHall.cols) return setMsg({ type: "error", text: "Wybierz poprawna kolumne." });
+        if (!manual.project.trim()) return setMsg({ type: "error", text: "Wpisz projekt." });
+        if (!Number(manual.product)) return setMsg({ type: "error", text: "Wpisz numer lazienki." });
+        const nextCell = { row, col, project: manual.project.trim(), product: productNo(manual.product) };
+        const next = currentLayout.filter(cell => cellKey(cell) !== cellKey(nextCell));
+        saveLayouts({ ...layouts, [hall]: [...next, nextCell].sort((a, b) => selectedHall.rows.indexOf(a.row) - selectedHall.rows.indexOf(b.row) || a.col - b.col) });
+        setMsg({ type: "success", text: "Pozycja zapisana w ukladzie." });
+      };
+      const editCell = cell => {
+        setEdit(true);
+        setManual({ row: cell.row, col: String(cell.col), project: cell.project || "", product: String(cell.product || "") });
+      };
+      const removeManual = () => {
+        const key = manual.row + "-" + Number(manual.col);
+        saveLayouts({ ...layouts, [hall]: currentLayout.filter(cell => cellKey(cell) !== key) });
+        setMsg({ type: "success", text: "Pozycja usunieta z ukladu." });
+      };
+      const importPhoto = e => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        setMsg({ type: "warning", text: "Zdjecie dodane, ale automatyczne ukladanie AI wymaga podlaczenia OCR/AI w backendzie. Na razie uzyj 'Generuj z raportow 5 - Nawozenie' albo trybu modyfikacji." });
+        e.target.value = "";
+      };
+
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
+            <div>
+              <h2 style=${{ ...S.title, margin: 0 }}>Mapy</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>Uklady hal produkcyjnych z kolorami wedlug aktualnego etapu.</div>
+            </div>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button style=${S.btn} onClick=${generateLayout}>Dodaj nowy uklad</button>
+              <label style=${S.ghost}>
+                Zdjecie AI
+                <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
+              </label>
+              <button style=${edit ? S.btn : S.ghost} onClick=${() => setEdit(!edit)}>Modyfikuj</button>
+            </div>
+          </div>
+          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+            ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: "1", project: "", product: "" }); }}>${h.label}</button>`)}
+          </div>
+          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            ${stageColors.map(s => html`<span key=${s.stage} style=${{ background: s.color, color: s.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 800 }}>${s.label}</span>`)}
+          </div>
+          <${Message} msg=${msg} />
+        </section>
+
+        ${edit && !selectedHall.future ? html`
+          <section style=${S.card}>
+            <h3 style=${{ ...S.title, fontSize: "18px" }}>Modyfikuj uklad</h3>
+            <div className="grid-3" style=${S.row3}>
+              <select style=${S.input} value=${manual.row} onChange=${e => setManual({ ...manual, row: e.target.value })}>
+                ${selectedHall.rows.map(row => html`<option key=${row} value=${row}>Wiersz ${row}</option>`)}
+              </select>
+              <input style=${S.input} type="number" min="1" max=${selectedHall.cols} placeholder="Kolumna" value=${manual.col} onInput=${e => setManual({ ...manual, col: e.target.value })} />
+              <input style=${S.input} placeholder="Projekt" value=${manual.project} onInput=${e => setManual({ ...manual, project: e.target.value })} />
+              <input style=${S.input} type="number" min="1" placeholder="Nr lazienki" value=${manual.product} onInput=${e => setManual({ ...manual, product: e.target.value })} />
+              <button style=${S.btn} onClick=${addManual}>Zapisz pozycje</button>
+              <button style=${S.danger} onClick=${removeManual}>Usun z pola</button>
+            </div>
+          </section>
+        ` : null}
+
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "12px" }}>
+            <div>
+              <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>${selectedHall.label}</h3>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>
+                ${selectedHall.future ? "Do przygotowania w przyszlosci." : "Kolumny 1-" + selectedHall.cols + " od lewej, wiersze " + selectedHall.rows.join("-") + " od gory."}
+              </div>
+            </div>
+            <div style=${{ color: COLORS.muted, fontSize: "13px" }}>W ukladzie: <strong style=${{ color: COLORS.text }}>${currentLayout.length}</strong></div>
+          </div>
+          ${selectedHall.future ? html`
+            <div style=${{ color: COLORS.dim, textAlign: "center", padding: "36px" }}>Hala ISO bedzie dodana w przyszlosci.</div>
+          ` : html`
+            <div style=${{ overflowX: "auto" }}>
+              <div style=${{ display: "grid", gridTemplateColumns: "54px repeat(" + selectedHall.cols + ", minmax(54px, 1fr))", gap: "6px", minWidth: (72 + selectedHall.cols * 60) + "px" }}>
+                <div></div>
+                ${Array.from({ length: selectedHall.cols }, (_, i) => i + 1).map(col => html`<div key=${"h" + col} style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "center", fontWeight: 800 }}>${col}</div>`)}
+                ${selectedHall.rows.flatMap(row => [
+                  html`<div key=${"r" + row} style=${{ color: COLORS.muted, fontWeight: 900, display: "grid", placeItems: "center" }}>${row}</div>`,
+                  ...Array.from({ length: selectedHall.cols }, (_, i) => {
+                    const col = i + 1;
+                    const cell = layoutByCell[row + "-" + col];
+                    const st = styleForCell(cell);
+                    return html`
+                      <button
+                        key=${row + "-" + col}
+                        disabled=${!edit && !cell}
+                        onClick=${() => cell ? editCell(cell) : setManual({ ...manual, row, col: String(col) })}
+                        title=${cell ? st.label + " / projekt " + cell.project + " / lazienka " + cell.product : "Puste pole"}
+                        style=${{
+                          minHeight: "54px",
+                          border: "1px solid " + st.border,
+                          borderRadius: "8px",
+                          background: st.background,
+                          color: st.color,
+                          cursor: edit ? "pointer" : "default",
+                          padding: "4px",
+                          display: "grid",
+                          placeItems: "center",
+                          fontSize: "11px",
+                          fontWeight: 900
+                        }}
+                      >
+                        ${cell ? html`<span>${cell.project}<br />${cell.product}</span>` : ""}
+                      </button>
+                    `;
+                  })
+                ])}
+              </div>
+            </div>
+          `}
+        </section>
       `;
     }
 
@@ -1307,7 +1536,7 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            ${["reports", ...(canSeeProduction ? ["production"] : []), "projects", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "projects" ? "Projekty" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
+            ${["reports", ...(canSeeProduction ? ["production"] : []), "projects", "maps", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "projects" ? "Projekty" : t === "maps" ? "Mapy" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
           ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} reloadReports=${reloadReports} />` : tab === "account" ? html`
@@ -1316,6 +1545,8 @@
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
           ` : tab === "projects" ? html`
             <${ProjectsTab} reports=${reports} />
+          ` : tab === "maps" ? html`
+            <${MapsTab} reports=${reports} />
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} />
           ` : html`
