@@ -512,19 +512,6 @@
           setSaving(false);
         }
       };
-      const removeReport = async id => {
-        if (!confirm("Usunac ten raport?")) return;
-        setMsg(null);
-        try {
-          await api.deleteReport(token, id);
-          await reload();
-          setMsg({ type: "success", text: "Raport zostal usuniety." });
-          setTab("history");
-        } catch (e) {
-          setMsg({ type: "error", text: e.message });
-        }
-      };
-
       return html`
         <div style=${{ marginTop: "18px", paddingTop: "16px", borderTop: "1px solid " + COLORS.border }}>
           <h3 style=${{ ...S.title, fontSize: "17px" }}>Reset hasla</h3>
@@ -571,6 +558,18 @@
           setMsg({ type: "error", text: e.message });
         } finally {
           setSaving(false);
+        }
+      };
+      const removeReport = async id => {
+        if (!confirm("Usunac ten raport?")) return;
+        setMsg(null);
+        try {
+          await api.deleteReport(token, id);
+          await reload();
+          setMsg({ type: "success", text: "Raport zostal usuniety." });
+          setTab("history");
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
         }
       };
 
