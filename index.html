@@ -367,7 +367,7 @@
       `;
     }
 
-    function WorkerHistory({ reports, user }) {
+    function WorkerHistory({ reports, user, onDelete }) {
       const [month, setMonth] = useState("");
       const [project, setProject] = useState("all");
       const [stage, setStage] = useState("all");
@@ -486,7 +486,7 @@
           </div>
           <${Message} msg=${msg} />
         </section>
-        <${ReportsList} reports=${filteredReports} users=${[]} showWorker=${false} />
+        <${ReportsList} reports=${filteredReports} users=${[]} showWorker=${false} onDelete=${onDelete} />
       `;
     }
 
@@ -512,10 +512,25 @@
           setSaving(false);
         }
       };
+      const removeReport = async id => {
+        if (!confirm("Usunac ten raport?")) return;
+        setMsg(null);
+        try {
+          await api.deleteReport(token, id);
+          await reload();
+          setMsg({ type: "success", text: "Raport zostal usuniety." });
+          setTab("history");
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
 
       return html`
         <div style=${{ marginTop: "18px", paddingTop: "16px", borderTop: "1px solid " + COLORS.border }}>
-          <h3 style=${{ ...S.title, fontSize: "17px" }}>Zmiana hasla</h3>
+          <h3 style=${{ ...S.title, fontSize: "17px" }}>Reset hasla</h3>
+          <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
+            Ustaw nowe haslo do swojego konta. Dla bezpieczenstwa wpisz najpierw obecne haslo.
+          </div>
           <div className="grid-3" style=${S.row3}>
             <div>
               <label style=${S.label}>Obecne haslo</label>
@@ -530,7 +545,7 @@
               <input style=${S.input} type="password" value=${confirm} onInput=${e => setConfirm(e.target.value)} onKeyDown=${e => e.key === "Enter" && save()} />
             </div>
           </div>
-          <button style=${{ ...S.btn, marginTop: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${save}>${saving ? "Zapisywanie..." : "Zmien haslo"}</button>
+          <button style=${{ ...S.btn, marginTop: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${save}>${saving ? "Resetowanie..." : "Resetuj haslo"}</button>
           <${Message} msg=${msg} />
         </div>
       `;
@@ -588,7 +603,7 @@
               <${Message} msg=${msg} />
             </section>
           ` : tab === "history" ? html`
-            <${WorkerHistory} reports=${mine} user=${user} />
+            <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
