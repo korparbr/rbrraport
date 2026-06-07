@@ -1391,6 +1391,18 @@
         savePhotos(next);
         setMsg({ type: "success", text: "Zdjecie podgladu usuniete." });
       };
+      const selectedLoadDate = selectedCell ? loadDateByBathroom[transportKey(selectedCell.project, selectedCell.product)] : "";
+      const selectedLoadAlert = transportAlert(selectedLoadDate);
+      const transportLegend = [
+        { label: "dzisiaj", color: "#111827", text: "#fff" },
+        { label: "jutro", color: "#dc2626", text: "#fff" },
+        { label: "pojutrze", color: "#f97316", text: "#111827" },
+        { label: "za 3 dni", color: "#fde047", text: "#111827" },
+        { label: "4-6 dni", color: "#7c3aed", text: "#fff" },
+        { label: "7-8 dni", color: "#2563eb", text: "#fff" },
+        { label: "9-12 dni", color: "#16a34a", text: "#fff" },
+        { label: "13-16 dni", color: "#99f6e4", text: "#134e4a" }
+      ];
 
       return html`
         <section style=${S.card}>
@@ -1418,6 +1430,16 @@
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             ${stageColors.map(s => html`<span key=${s.stage} style=${{ background: s.color, color: s.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 800 }}>${s.label}</span>`)}
+          </div>
+          <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "12px", paddingTop: "10px" }}>
+            <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda zaladunku</div>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              ${transportLegend.map(item => html`
+                <span key=${item.label} style=${{ background: item.color, color: item.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                  ! ${item.label}
+                </span>
+              `)}
+            </div>
           </div>
           <${Message} msg=${msg} />
         </section>
@@ -1522,7 +1544,7 @@
                           color: COLORS.text,
                           cursor: edit ? (cell ? "grab" : "pointer") : (cell ? "pointer" : "default"),
                           padding: 0,
-                          overflow: "hidden",
+                          overflow: "visible",
                           position: "relative",
                           display: "flex",
                           flexDirection: "column",
@@ -1537,7 +1559,7 @@
                           ${alert ? html`
                             <span title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{
                               position: "absolute",
-                              top: "4px",
+                              top: "-9px",
                               right: "4px",
                               width: "22px",
                               height: "22px",
@@ -1584,6 +1606,9 @@
               <div>
                 <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Historia lazienki</h3>
                 <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Projekt ${selectedCell.project} / Lazienka ${selectedCell.product}</div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>
+                  Data zaladunku: ${selectedLoadDate ? html`<strong style=${{ color: selectedLoadAlert ? selectedLoadAlert.color : COLORS.text }}>${selectedLoadDate}</strong> ${selectedLoadAlert ? "(" + selectedLoadAlert.label + ")" : ""}` : "brak"}
+                </div>
               </div>
               <button style=${S.ghost} onClick=${() => setSelectedCell(null)}>Zamknij</button>
             </div>
