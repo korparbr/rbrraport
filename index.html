@@ -983,12 +983,12 @@
       const stageColors = [
         { stage: "4", label: "4 Skrecanie", color: "#e5e7eb", text: COLORS.text },
         { stage: "6.1", label: "6.1 Szlifowanie", color: "#9ca3af", text: "#111827" },
-        { stage: "7.1", label: "7.1 Izolowanie", color: "#ef4444", text: "#fff" },
+        { stage: "7.1", label: "7.1 Izolowanie", color: "#111827", text: "#fff" },
         { stage: "9", label: "9 Szpachlowanie", color: "#3b82f6", text: "#fff" },
-        { stage: "11.2", label: "11.2 Ceramika podlogi", color: "#f9a8d4", text: "#831843" },
+        { stage: "11.2", label: "11.2 Ceramika podlogi", color: "#ef4444", text: "#fff" },
         { stage: "13.1", label: "13.1 Fugowanie", color: "#f97316", text: "#fff" },
-        { stage: "10", label: "10 Malowanie", color: "#ffffff", text: COLORS.text },
-        { stage: "15.1", label: "15.1 Montaz sanit.", color: "#92400e", text: "#fff" },
+        { stage: "10", label: "10 Malowanie", color: "#ccfbf1", text: "#134e4a" },
+        { stage: "15.1", label: "15.1 Montaz sanit.", color: "#d6a56d", text: "#3b2412" },
         { stage: "13.2", label: "13.2 Silikonowanie", color: "#fde047", text: "#111827" },
         { stage: "17", label: "17 Czyszczenie", color: "#86efac", text: "#064e3b" }
       ];
@@ -1072,7 +1072,10 @@
           const rowHeader = 8;
           const gap = 1;
           const cellW = Math.min(12, (pageW - margin * 2 - rowHeader - (selectedHall.cols - 1) * gap) / selectedHall.cols);
-          const cellH = selectedHall.rows.length <= 2 ? 22 : 15;
+          const cellH = selectedHall.rows.length <= 2 ? 22 : 19;
+          const infoFont = selectedHall.rows.length <= 2 ? 6.2 : 7;
+          const stageFont = selectedHall.rows.length <= 2 ? 5.1 : 5.7;
+          const colorH = Math.max(14, cellH * 0.72);
           doc.setFontSize(7);
           doc.setTextColor(65, 75, 90);
           selectedHall.rows.forEach((row, rowIndex) => {
@@ -1085,23 +1088,32 @@
               const bg = hexToRgb(st.background);
               const tx = hexToRgb(st.color);
               const x = margin + rowHeader + (col - 1) * (cellW + gap);
-              doc.setFillColor(bg[0], bg[1], bg[2]);
               doc.setDrawColor(150, 160, 175);
-              doc.rect(x, cy, cellW, cellH, "FD");
-              doc.setTextColor(tx[0], tx[1], tx[2]);
-              doc.setFont("helvetica", "bold");
-              doc.setFontSize(6);
               if (cell) {
+                doc.setFillColor(bg[0], bg[1], bg[2]);
+                doc.rect(x, cy, cellW, colorH, "F");
+                doc.setFillColor(255, 255, 255);
+                doc.rect(x, cy + colorH, cellW, cellH - colorH, "F");
+                doc.rect(x, cy, cellW, cellH, "S");
+                doc.setTextColor(tx[0], tx[1], tx[2]);
+                doc.setFont("helvetica", "bold");
+                doc.setFontSize(infoFont);
                 const label = st.label.replace("Ceramika podlogi", "Ceramika podl.").replace("Montaz sanit.", "Montaz sanit.");
-                doc.text(String(cell.project), x + 1, cy + 4);
-                doc.text("Laz. " + cell.product, x + 1, cy + 8);
+                doc.text(String(cell.project), x + 1, cy + 4.2);
+                doc.text("Laz. " + cell.product, x + 1, cy + 8.4);
                 doc.setFont("helvetica", "normal");
-                doc.setFontSize(5);
-                doc.text(doc.splitTextToSize(label, cellW - 2).slice(0, 2), x + 1, cy + 12);
+                doc.setFontSize(stageFont);
+                doc.text(doc.splitTextToSize(label, cellW - 2).slice(0, 2), x + 1, cy + 12.2);
               } else if (rowIndex === 0) {
+                doc.setFillColor(255, 255, 255);
+                doc.rect(x, cy, cellW, cellH, "S");
+                doc.setTextColor(65, 75, 90);
                 doc.setFont("helvetica", "normal");
                 doc.setFontSize(5);
                 doc.text(String(col), x + cellW / 2 - 1, cy - 1);
+              } else {
+                doc.setFillColor(255, 255, 255);
+                doc.rect(x, cy, cellW, cellH, "S");
               }
             }
           });
