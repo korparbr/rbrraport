@@ -1946,6 +1946,40 @@
       return Object.values(map).sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
     }
 
+    function transportProjectItems(reports) {
+      const counts = {};
+      Object.entries(PROJECTS).forEach(([project, count]) => { counts[project] = Number(count) || 0; });
+      const stagePriority = { "19": 3, "21": 4 };
+      const states = {};
+      (reports || []).forEach(report => {
+        (report.lines || []).forEach(line => {
+          const project = String(line.project || "");
+          const product = productNo(line.product);
+          if (!project || !product) return;
+          counts[project] = Math.max(counts[project] || 0, product);
+          const key = transportKey(project, product);
+          const current = states[key];
+          const score = stagePriority[String(line.stage)] || 1;
+          const currentScore = current ? current.score : 0;
+          if (!current || score >= currentScore || (String(line.stage) === "19" && (report.date || "") >= (current.packDate || ""))) {
+            states[key] = {
+              project,
+              product,
+              status: String(line.stage) === "19" || String(line.stage) === "21" ? "magazyn" : "produkcja",
+              packDate: String(line.stage) === "19" ? (report.date || "") : (current && current.packDate) || "",
+              score
+            };
+          }
+        });
+      });
+      return Object.keys(counts)
+        .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
+        .flatMap(project => Array.from({ length: counts[project] }, (_, i) => {
+          const product = i + 1;
+          return states[transportKey(project, product)] || { project, product, status: "produkcja", packDate: "" };
+        }));
+    }
+
     function WarehouseTab({ reports, transportDates }) {
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
@@ -1975,11 +2009,25 @@
 
     function TransportTab({ reports, transportDates, token, reloadTransportDates }) {
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
+      const transportItems = useMemo(() => transportProjectItems(reports), [reports]);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
       const [filter, setFilter] = useState("");
+      const [batchDate, setBatchDate] = useState(today());
+      const [batchProject, setBatchProject] = useState("");
+      const [selectedProducts, setSelectedProducts] = useState([]);
       const [savingKey, setSavingKey] = useState("");
       const [msg, setMsg] = useState(null);
-      const visible = packed.filter(item => !filter || String(item.project).includes(filter.trim()));
+      const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
+      const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
+      const visible = transportItems.filter(item => loads[transportKey(item.project, item.product)]).filter(item => !filter || String(item.project).includes(filter.trim()));
+      const selectBatchProject = project => {
+        setBatchProject(project);
+        setSelectedProducts([]);
+      };
+      const toggleProduct = product => {
+        setSelectedProducts(prev => prev.includes(product) ? prev.filter(p => p !== product) : [...prev, product].sort((a, b) => a - b));
+      };
+      const selectAllBatch = () => setSelectedProducts(batchItems.map(item => item.product));
       const saveLoadDate = async (item, loadDate) => {
         const key = transportKey(item.project, item.product);
         setSavingKey(key); setMsg(null);
@@ -1987,6 +2035,24 @@
           await api.saveTransportDate(token, item.project, item.product, loadDate);
           await reloadTransportDates();
           setMsg({ type: "success", text: loadDate ? "Data zaladunku zapisana." : "Data zaladunku usunieta." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
+      const saveBatchTransport = async () => {
+        if (!batchDate) return setMsg({ type: "error", text: "Wybierz date zaladunku." });
+        if (!batchProject) return setMsg({ type: "error", text: "Wybierz projekt." });
+        if (!selectedProducts.length) return setMsg({ type: "error", text: "Zaznacz co najmniej jedna lazienke." });
+        setSavingKey("batch"); setMsg(null);
+        try {
+          for (const product of selectedProducts) {
+            await api.saveTransportDate(token, batchProject, product, batchDate);
+          }
+          await reloadTransportDates();
+          setSelectedProducts([]);
+          setMsg({ type: "success", text: "Transport zapisany dla " + selectedProducts.length + " lazienek." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -2006,17 +2072,70 @@
             </div>
           </div>
           <${Message} msg=${msg} />
+          <div style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", marginBottom: "14px" }}>
+            <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Dodaj transport</h3>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px", fontSize: "12px", fontWeight: 900 }}>
+              <span style=${{ background: "#dcfce7", color: "#166534", border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>zielony - magazyn</span>
+              <span style=${{ background: "#fee2e2", color: "#991b1b", border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>czerwony - produkcja</span>
+            </div>
+            <div className="grid-3" style=${S.row3}>
+              <div>
+                <label style=${S.label}>Data zaladunku</label>
+                <input style=${S.input} type="date" value=${batchDate} onInput=${e => setBatchDate(e.target.value)} />
+              </div>
+              <div>
+                <label style=${S.label}>Projekt</label>
+                <select style=${S.input} value=${batchProject} onChange=${e => selectBatchProject(e.target.value)}>
+                  <option value="">- wybierz projekt -</option>
+                  ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+                </select>
+              </div>
+              <div style=${{ display: "flex", alignItems: "end", gap: "8px", flexWrap: "wrap" }}>
+                <button style=${S.ghost} disabled=${!batchItems.length} onClick=${selectAllBatch}>Zaznacz wszystkie</button>
+                <button style=${{ ...S.btn, opacity: savingKey === "batch" ? 0.6 : 1 }} disabled=${savingKey === "batch"} onClick=${saveBatchTransport}>${savingKey === "batch" ? "Zapisywanie..." : "Zapisz transport"}</button>
+              </div>
+            </div>
+            ${batchProject ? html`
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))", gap: "8px", marginTop: "12px" }}>
+                ${batchItems.map(item => {
+                  const selected = selectedProducts.includes(item.product);
+                  const loadDate = loads[transportKey(item.project, item.product)];
+                  const isWarehouse = item.status === "magazyn";
+                  const bg = selected ? COLORS.accent : (isWarehouse ? "#dcfce7" : "#fee2e2");
+                  const fg = selected ? "#fff" : (isWarehouse ? "#166534" : "#991b1b");
+                  return html`
+                    <button key=${item.product} onClick=${() => toggleProduct(item.product)} style=${{
+                      minHeight: "54px",
+                      border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
+                      borderRadius: "8px",
+                      background: bg,
+                      color: fg,
+                      fontWeight: 900,
+                      cursor: "pointer"
+                    }}>
+                      ${item.product}
+                      <div style=${{ fontSize: "10px", opacity: 0.85 }}>${isWarehouse ? "magazyn" : "produkcja"}</div>
+                      ${loadDate ? html`<div style=${{ fontSize: "10px", opacity: 0.8 }}>${loadDate}</div>` : null}
+                    </button>
+                  `;
+                })}
+              </div>
+              <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "8px" }}>Zaznaczono: ${selectedProducts.length}</div>
+            ` : null}
+          </div>
           <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: "10px" }}>
             ${visible.map(item => {
               const key = transportKey(item.project, item.product);
               const loadDate = loads[key] || "";
               const alert = transportAlert(loadDate);
+              const isWarehouse = item.status === "magazyn";
               return html`
-                <div key=${key} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "12px", position: "relative" }}>
+                <div key=${key} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: isWarehouse ? "#dcfce7" : "#fee2e2", color: isWarehouse ? "#166534" : "#991b1b", padding: "12px", position: "relative" }}>
                   ${alert ? html`<div style=${{ position: "absolute", top: "10px", right: "10px", width: "24px", height: "24px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900 }}>!</div>` : null}
                   <div style=${{ fontWeight: 900, fontSize: "17px" }}>Projekt ${item.project}</div>
                   <div style=${{ color: COLORS.orange, fontWeight: 900 }}>Laz. ${item.product}</div>
-                  <div style=${{ color: COLORS.muted, fontSize: "12px", margin: "5px 0 8px" }}>Pakowanie: ${item.packDate || "-"}</div>
+                  <div style=${{ fontSize: "12px", margin: "5px 0 3px", fontWeight: 900 }}>${isWarehouse ? "Magazyn" : "Produkcja"}</div>
+                  <div style=${{ color: isWarehouse ? "#166534" : "#991b1b", opacity: 0.8, fontSize: "12px", margin: "0 0 8px" }}>Pakowanie: ${item.packDate || "-"}</div>
                   <input style=${S.input} type="date" value=${loadDate} onInput=${e => saveLoadDate(item, e.target.value)} disabled=${savingKey === key} />
                   ${loadDate ? html`<button style=${{ ...S.ghost, marginTop: "8px" }} disabled=${savingKey === key} onClick=${() => saveLoadDate(item, "")}>Wyczysc date</button>` : null}
                 </div>
