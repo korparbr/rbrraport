@@ -39,6 +39,15 @@
       if (!res.ok) throw new Error((data && data.error) || "Blad serwera");
       return data;
     }
+    async function apiUpload(method, path, formData, token) {
+      const headers = {};
+      if (token) headers.Authorization = "Bearer " + token;
+      const res = await fetch(BASE_URL + path, { method, headers, body: formData });
+      let data = null;
+      try { data = await res.json(); } catch (_) {}
+      if (!res.ok) throw new Error((data && data.error) || "Blad serwera");
+      return data;
+    }
 
     const api = {
       login: (code, password) => apiRequest("POST", "/api/login", { code, password }),
@@ -53,7 +62,13 @@
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
-      saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token)
+      saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token),
+      importMapPhoto: (token, hall, file) => {
+        const form = new FormData();
+        form.append("hall", hall);
+        form.append("photo", file);
+        return apiUpload("POST", "/api/maps/import-photo", form, token);
+      }
     };
 
     const { useEffect, useMemo, useRef, useState } = React;
@@ -972,6 +987,8 @@
       const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "" });
       const [dragCell, setDragCell] = useState(null);
       const [selectedCell, setSelectedCell] = useState(null);
+      const [aiDetected, setAiDetected] = useState([]);
+      const [aiLoading, setAiLoading] = useState(false);
       const [msg, setMsg] = useState(null);
       const [serverAvailable, setServerAvailable] = useState(null);
       const suppressClickRef = useRef(false);
@@ -1266,6 +1283,55 @@
         reader.onerror = () => setMsg({ type: "error", text: "Nie udalo sie wczytac zdjecia." });
         reader.readAsDataURL(file);
       };
+      const normalizeAiRows = data => {
+        const rows = data && (data.items || data.cells || data.detected || data.layout || data);
+        if (!Array.isArray(rows)) return [];
+        return rows.map(item => ({
+          row: String(item.row || "").trim().toUpperCase(),
+          col: Number(item.col ?? item.column),
+          project: String(item.project ?? item.projectNo ?? item.order ?? "").trim(),
+          product: productNo(item.product ?? item.productNo ?? item.bathroom ?? item.bathroomNo)
+        })).filter(item =>
+          selectedHall.rows.includes(item.row) &&
+          item.col >= 1 &&
+          item.col <= selectedHall.cols &&
+          item.project &&
+          item.product
+        );
+      };
+      const importPhotoAi = async e => {
+        if (!canEditMaps) return;
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        setAiLoading(true);
+        setAiDetected([]);
+        setMsg(null);
+        try {
+          const data = await api.importMapPhoto(token, hall, file);
+          const rows = normalizeAiRows(data);
+          setAiDetected(rows);
+          setMsg(rows.length
+            ? { type: "success", text: "AI wykrylo " + rows.length + " pozycji. Sprawdz liste i kliknij Zatwierdz uklad." }
+            : { type: "warning", text: "AI nie zwrocilo poprawnych pozycji dla tej hali." });
+        } catch (err) {
+          setMsg({ type: "error", text: "Import AI nie zadzialal. Backend musi obslugiwac POST /api/maps/import-photo. Szczegoly: " + err.message });
+        } finally {
+          setAiLoading(false);
+          e.target.value = "";
+        }
+      };
+      const applyAiDetected = () => {
+        if (!aiDetected.length) return;
+        const byCell = {};
+        currentLayout.forEach(cell => { byCell[cellKey(cell)] = cell; });
+        aiDetected.forEach(cell => { byCell[cellKey(cell)] = cell; });
+        const next = Object.values(byCell)
+          .filter(cell => selectedHall.rows.includes(cell.row) && cell.col >= 1 && cell.col <= selectedHall.cols)
+          .sort((a, b) => selectedHall.rows.indexOf(a.row) - selectedHall.rows.indexOf(b.row) || a.col - b.col);
+        saveLayouts({ ...layouts, [hall]: next });
+        setAiDetected([]);
+        setMsg({ type: "success", text: "Uklad z AI zatwierdzony i zapisany." });
+      };
       const removePhoto = () => {
         const next = { ...photos };
         delete next[hall];
@@ -1289,6 +1355,10 @@
                 <label style=${S.ghost}>
                   Wgraj zdjecie podgladu
                   <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
+                </label>
+                <label style=${{ ...S.btn, opacity: aiLoading ? 0.6 : 1 }}>
+                  ${aiLoading ? "Analiza AI..." : "Import AI ze zdjecia"}
+                  <input type="file" accept="image/*" disabled=${aiLoading} style=${{ display: "none" }} onChange=${importPhotoAi} />
                 </label>
                 <button style=${edit ? S.btn : S.ghost} onClick=${() => setEdit(!edit)}>Modyfikuj</button>
               ` : null}
@@ -1316,6 +1386,30 @@
               <input style=${S.input} type="number" min="1" placeholder="Nr lazienki" value=${manual.product} onInput=${e => setManual({ ...manual, product: e.target.value })} />
               <button style=${S.btn} onClick=${addManual}>Zapisz pozycje</button>
               <button style=${S.danger} onClick=${removeManual}>Usun z pola</button>
+            </div>
+          </section>
+        ` : null}
+
+        ${canEditMaps && aiDetected.length ? html`
+          <section style=${S.card}>
+            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Podglad importu AI</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>AI wykrylo ${aiDetected.length} pozycji dla: ${selectedHall.label}. Zatwierdzenie nadpisze pola o tych samych wspolrzednych.</div>
+              </div>
+              <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button style=${S.btn} onClick=${applyAiDetected}>Zatwierdz uklad</button>
+                <button style=${S.ghost} onClick=${() => setAiDetected([])}>Anuluj</button>
+              </div>
+            </div>
+            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "8px" }}>
+              ${aiDetected.map((item, i) => html`
+                <div key=${i + "-" + item.row + "-" + item.col} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                  <div style=${{ fontWeight: 900 }}>Pole ${item.row}-${item.col}</div>
+                  <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>Projekt ${item.project}</div>
+                  <div style=${{ color: COLORS.orange, fontWeight: 900 }}>Laz. ${item.product}</div>
+                </div>
+              `)}
             </div>
           </section>
         ` : null}
