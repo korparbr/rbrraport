@@ -185,20 +185,35 @@
 
       const max = project ? PROJECTS[project] || 0 : 0;
       const products = useMemo(() => Array.from({ length: max }, (_, i) => i + 1), [max]);
-      const usedProducts = useMemo(() => new Set(
+      const usedInCurrentReport = useMemo(() => new Set(
         lines.filter(l => l.project === project && l.stage === stage).map(l => l.product)
       ), [lines, project, stage]);
+      const usedInSavedReports = useMemo(() => {
+        const used = new Map();
+        (reports || []).forEach(report => {
+          (report.lines || []).forEach(line => {
+            if (line.project === project && line.stage === stage) {
+              used.set(Number(line.product), {
+                date: report.date || report.report_date || "",
+                worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
+              });
+            }
+          });
+        });
+        return used;
+      }, [reports, project, stage]);
+      const isUsedProduct = product => usedInCurrentReport.has(product) || usedInSavedReports.has(product);
 
       const resetSelection = () => {
         setSelectedProducts([]);
         setMsg(null);
       };
       const toggleProduct = product => {
-        if (usedProducts.has(product)) return;
+        if (isUsedProduct(product)) return;
         setSelectedProducts(prev => prev.includes(product) ? prev.filter(p => p !== product) : [...prev, product]);
       };
       const selectRange = count => {
-        const available = products.filter(p => !usedProducts.has(p)).slice(0, count);
+        const available = products.filter(p => !isUsedProduct(p)).slice(0, count);
         setSelectedProducts(available);
       };
 
@@ -208,10 +223,10 @@
         if (!selectedProducts.length) return setMsg({ type: "error", text: "Zaznacz co najmniej jedna lazienke." });
         if (stage === "5" && !hall) return setMsg({ type: "error", text: "Dla etapu 5 wybierz hale." });
         const next = selectedProducts
-          .filter(p => !usedProducts.has(p))
+          .filter(p => !isUsedProduct(p))
           .sort((a, b) => a - b)
           .map(product => ({ project, product, stage, note, hall: stage === "5" ? hall : undefined }));
-        if (!next.length) return setMsg({ type: "warning", text: "Te pozycje sa juz dodane w tym raporcie." });
+        if (!next.length) return setMsg({ type: "warning", text: "Ten etap jest juz zapisany dla wybranych lazienek." });
         onChange([...lines, ...next]);
         setSelectedProducts([]); setNote(""); setMsg({ type: "success", text: "Dodano " + next.length + " pozycji." });
       };
@@ -255,21 +270,27 @@
               <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: "7px", maxHeight: "320px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
                 ${products.map(product => {
                   const selected = selectedProducts.includes(product);
-                  const used = usedProducts.has(product);
+                  const savedInfo = usedInSavedReports.get(product);
+                  const usedCurrent = usedInCurrentReport.has(product);
+                  const used = Boolean(savedInfo) || usedCurrent;
+                  const title = savedInfo
+                    ? "Ten etap byl juz zapisany" + (savedInfo.date ? " dnia " + savedInfo.date : "") + (savedInfo.worker ? " przez " + savedInfo.worker : "")
+                    : usedCurrent ? "Ta lazienka jest juz dodana w tym raporcie" : "Kliknij, aby zaznaczyc";
                   return html`
                     <button
                       key=${product}
+                      title=${title}
                       onClick=${() => toggleProduct(product)}
                       disabled=${used}
                       style=${{
                         minHeight: "38px",
-                        border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
+                        border: "1px solid " + (savedInfo ? COLORS.orange : selected ? COLORS.accent : COLORS.border),
                         borderRadius: "8px",
-                        background: used ? COLORS.panel2 : selected ? COLORS.accent : COLORS.panel,
-                        color: used ? COLORS.dim : selected ? "#fff" : COLORS.text,
+                        background: savedInfo ? COLORS.orange + "24" : usedCurrent ? COLORS.panel2 : selected ? COLORS.accent : COLORS.panel,
+                        color: savedInfo ? COLORS.orange : usedCurrent ? COLORS.dim : selected ? "#fff" : COLORS.text,
                         fontWeight: selected ? 800 : 600,
                         cursor: used ? "not-allowed" : "pointer",
-                        opacity: used ? 0.45 : 1
+                        opacity: usedCurrent ? 0.45 : 1
                       }}
                     >${product}</button>
                   `;
@@ -277,6 +298,10 @@
               </div>
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "8px" }}>
                 ${selectedProducts.length ? "Zaznaczono: " + selectedProducts.slice().sort((a, b) => a - b).join(", ") : "Kliknij numery lazienek, ktore wykonales."}
+              </div>
+              <div style=${{ display: "flex", gap: "12px", flexWrap: "wrap", color: COLORS.dim, fontSize: "12px", marginTop: "8px" }}>
+                <span><strong style=${{ color: COLORS.orange }}>Pomaranczowe</strong> - etap juz zapisany przez kogos</span>
+                <span><strong style=${{ color: COLORS.dim }}>Wyszarzone</strong> - dodane w tym raporcie</span>
               </div>
             </div>
           ` : null}
@@ -363,6 +388,18 @@
         }))
         .filter(r => r.lines.length > 0)
         .sort((a, b) => (b.date || "").localeCompare(a.date || "")), [reports, month, project, stage]);
+      const stageCounts = useMemo(() => {
+        const counts = new Map();
+        filteredReports.forEach(report => {
+          (report.lines || []).forEach(line => {
+            const key = line.stage || "";
+            counts.set(key, (counts.get(key) || 0) + 1);
+          });
+        });
+        return [...counts.entries()]
+          .map(([id, count]) => ({ id, label: stageLabel(id), count }))
+          .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+      }, [filteredReports]);
 
       const exportPdf = () => {
         try {
@@ -436,9 +473,66 @@
           <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "12px" }}>
             Wyniki: ${filteredReports.reduce((sum, r) => sum + r.lines.length, 0)} pozycji w ${filteredReports.length} raportach.
           </div>
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px", marginTop: "12px" }}>
+            ${stageCounts.length ? stageCounts.map(item => html`
+              <div key=${item.id} style=${{ background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                <div style=${{ color: COLORS.muted, fontSize: "12px", minHeight: "32px" }}>${item.label}</div>
+                <div style=${{ color: COLORS.accent, fontSize: "24px", fontWeight: 900, marginTop: "4px" }}>${item.count}</div>
+                <div style=${{ color: COLORS.dim, fontSize: "12px" }}>lazienek</div>
+              </div>
+            `) : html`
+              <div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak danych do podsumowania etapow.</div>
+            `}
+          </div>
           <${Message} msg=${msg} />
         </section>
         <${ReportsList} reports=${filteredReports} users=${[]} showWorker=${false} />
+      `;
+    }
+
+    function ChangePasswordBox({ token }) {
+      const [current, setCurrent] = useState("");
+      const [next, setNext] = useState("");
+      const [confirm, setConfirm] = useState("");
+      const [saving, setSaving] = useState(false);
+      const [msg, setMsg] = useState(null);
+
+      const save = async () => {
+        if (!current) return setMsg({ type: "error", text: "Wpisz obecne haslo." });
+        if (next.length < 4) return setMsg({ type: "error", text: "Nowe haslo musi miec co najmniej 4 znaki." });
+        if (next !== confirm) return setMsg({ type: "error", text: "Nowe hasla nie sa takie same." });
+        setSaving(true); setMsg(null);
+        try {
+          await api.changePassword(token, current, next);
+          setCurrent(""); setNext(""); setConfirm("");
+          setMsg({ type: "success", text: "Haslo zostalo zmienione." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      return html`
+        <div style=${{ marginTop: "18px", paddingTop: "16px", borderTop: "1px solid " + COLORS.border }}>
+          <h3 style=${{ ...S.title, fontSize: "17px" }}>Zmiana hasla</h3>
+          <div className="grid-3" style=${S.row3}>
+            <div>
+              <label style=${S.label}>Obecne haslo</label>
+              <input style=${S.input} type="password" value=${current} onInput=${e => setCurrent(e.target.value)} />
+            </div>
+            <div>
+              <label style=${S.label}>Nowe haslo</label>
+              <input style=${S.input} type="password" value=${next} onInput=${e => setNext(e.target.value)} />
+            </div>
+            <div>
+              <label style=${S.label}>Powtorz nowe haslo</label>
+              <input style=${S.input} type="password" value=${confirm} onInput=${e => setConfirm(e.target.value)} onKeyDown=${e => e.key === "Enter" && save()} />
+            </div>
+          </div>
+          <button style=${{ ...S.btn, marginTop: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${save}>${saving ? "Zapisywanie..." : "Zmien haslo"}</button>
+          <${Message} msg=${msg} />
+        </div>
       `;
     }
 
@@ -503,6 +597,7 @@
                 <div>Kod: <strong style=${{ color: COLORS.text }}>${user.code || user.login}</strong></div>
                 <div>Rola: <strong style=${{ color: COLORS.text }}>${user.role || "worker"}</strong></div>
               </div>
+              <${ChangePasswordBox} token=${token} />
               <button style=${{ ...S.ghost, marginTop: "14px" }} onClick=${logout}>Wyloguj</button>
             </section>
           `}
