@@ -1284,7 +1284,7 @@
         reader.readAsDataURL(file);
       };
       const normalizeAiRows = data => {
-        const rows = data && (data.items || data.cells || data.detected || data.layout || data);
+        const rows = data && (data.items || data.cells || data.detected || data.layout || data.results || data);
         if (!Array.isArray(rows)) return [];
         return rows.map(item => ({
           row: String(item.row || "").trim().toUpperCase(),
@@ -1299,6 +1299,7 @@
           item.product
         );
       };
+      const aiImportHelp = "Serwer musi miec endpoint POST /api/maps/import-photo, ktory odbiera pole hall i plik photo, analizuje zdjecie i zwraca liste pozycji: [{ row, col, project, product }].";
       const importPhotoAi = async e => {
         if (!canEditMaps) return;
         const file = e.target.files && e.target.files[0];
@@ -1314,7 +1315,7 @@
             ? { type: "success", text: "AI wykrylo " + rows.length + " pozycji. Sprawdz liste i kliknij Zatwierdz uklad." }
             : { type: "warning", text: "AI nie zwrocilo poprawnych pozycji dla tej hali." });
         } catch (err) {
-          setMsg({ type: "error", text: "Import AI nie zadzialal. Backend musi obslugiwac POST /api/maps/import-photo. Szczegoly: " + err.message });
+          setMsg({ type: "error", text: "Import AI nie zadzialal. " + aiImportHelp + " Szczegoly: " + err.message });
         } finally {
           setAiLoading(false);
           e.target.value = "";
@@ -1364,6 +1365,11 @@
               ` : null}
             </div>
           </div>
+          ${canEditMaps ? html`
+            <div style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px", color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
+              Import AI dziala po podlaczeniu endpointu na serwerze. Do czasu podlaczenia mozesz wgrac zdjecie jako podglad i przepisywac lazienki klikajac kafelki.
+            </div>
+          ` : null}
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
             ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: "1", project: "", product: "" }); }}>${h.label}</button>`)}
           </div>
