@@ -51,7 +51,9 @@
       resetPassword: (token, code) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/reset-password", {}, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
-      changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token)
+      changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
+      getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
+      saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token)
     };
 
     const { useEffect, useMemo, useRef, useState } = React;
@@ -945,7 +947,7 @@
           ` : tab === "history" ? html`
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${false} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
@@ -962,16 +964,22 @@
       `;
     }
 
-    function MapsTab({ reports }) {
+    function MapsTab({ reports, token, canEditMaps }) {
       const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
+      const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
       const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "" });
       const [dragCell, setDragCell] = useState(null);
+      const [selectedCell, setSelectedCell] = useState(null);
       const [msg, setMsg] = useState(null);
+      const [serverAvailable, setServerAvailable] = useState(null);
       const suppressClickRef = useRef(false);
       const [layouts, setLayouts] = useState(() => {
         try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { return {}; }
+      });
+      const [photos, setPhotos] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(PHOTO_KEY) || "{}"); } catch (_) { return {}; }
       });
 
       const halls = [
@@ -995,9 +1003,38 @@
       const stageOrder = { "4": 1, "6.1": 2, "7.1": 3, "9": 4, "10": 5, "11.2": 6, "13.1": 7, "13.2": 8, "15.1": 9, "17": 10 };
       const selectedHall = halls.find(h => h.id === hall) || halls[0];
       const saveLayouts = next => {
+        if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik moze ogladac mapy i generowac PDF, ale nie moze ich modyfikowac." });
         setLayouts(next);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        if (token && canEditMaps) {
+          api.saveMapLayouts(token, next)
+            .then(() => setServerAvailable(true))
+            .catch(() => {
+              setServerAvailable(false);
+              setMsg({ type: "warning", text: "Mapa zapisana lokalnie, ale serwer nie przyjal zapisu map. Trzeba dodac endpoint /api/maps-layouts, zeby inni uzytkownicy widzieli zmiany." });
+            });
+        }
       };
+      const savePhotos = next => {
+        if (!canEditMaps) return;
+        setPhotos(next);
+        localStorage.setItem(PHOTO_KEY, JSON.stringify(next));
+      };
+      useEffect(() => {
+        if (!token) return;
+        api.getMapLayouts(token)
+          .then(data => {
+            const next = data && (data.layouts || data);
+            if (next && typeof next === "object" && !Array.isArray(next)) {
+              setLayouts(next);
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+              setServerAvailable(true);
+            }
+          })
+          .catch(() => {
+            setServerAvailable(false);
+          });
+      }, [token]);
       const cellKey = cell => cell.row + "-" + cell.col;
       const bathroomKey = (project, product) => String(project || "").trim() + "#" + productNo(product);
       const currentLayout = layouts[hall] || [];
@@ -1023,6 +1060,18 @@
         });
         return map;
       }, [reports]);
+      const selectedHistory = useMemo(() => {
+        if (!selectedCell) return [];
+        return (reports || [])
+          .flatMap(report => (report.lines || [])
+            .filter(line => sameProject(line.project, selectedCell.project) && productNo(line.product) === productNo(selectedCell.product))
+            .map(line => ({
+              ...line,
+              date: report.date || "",
+              worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
+            })))
+          .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (stageOrder[a.stage] || 0) - (stageOrder[b.stage] || 0));
+      }, [reports, selectedCell]);
       const styleForCell = cell => {
         if (!cell) return { background: COLORS.panel, color: COLORS.dim, border: COLORS.border, label: "" };
         const state = stageByBathroom[bathroomKey(cell.project, cell.product)];
@@ -1124,6 +1173,7 @@
         }
       };
       const addManual = () => {
+        if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik nie moze modyfikowac map." });
         if (selectedHall.future) return;
         const row = manual.row;
         const col = Number(manual.col);
@@ -1137,7 +1187,7 @@
         setMsg({ type: "success", text: "Pozycja zapisana w ukladzie." });
       };
       const chooseCell = (row, col, cell) => {
-        if (!edit) return;
+        if (!canEditMaps || !edit) return;
         if (suppressClickRef.current) {
           suppressClickRef.current = false;
           return;
@@ -1145,13 +1195,22 @@
         setManual({ row, col: String(col), project: cell ? cell.project || "" : "", product: cell ? String(cell.product || "") : "" });
         setMsg(null);
       };
+      const selectCellHistory = cell => {
+        if (!cell) return;
+        setSelectedCell(cell);
+        setMsg(null);
+      };
+      const handleCellClick = (row, col, cell) => {
+        if (edit) return chooseCell(row, col, cell);
+        return selectCellHistory(cell);
+      };
       const startDrag = (cell, e) => {
-        if (!edit || !cell) return;
+        if (!canEditMaps || !edit || !cell) return;
         setDragCell(cell);
         try { if (e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
       };
       const finishDrop = (row, col, targetCell, e) => {
-        if (!edit || !dragCell) return;
+        if (!canEditMaps || !edit || !dragCell) return;
         if (e && e.preventDefault) e.preventDefault();
         let targetRow = row;
         let targetCol = col;
@@ -1189,15 +1248,29 @@
         setMsg({ type: "success", text: "Lazienka przeniesiona na pole " + targetRow + "-" + targetCol + "." });
       };
       const removeManual = () => {
+        if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik nie moze modyfikowac map." });
         const key = manual.row + "-" + Number(manual.col);
         saveLayouts({ ...layouts, [hall]: currentLayout.filter(cell => cellKey(cell) !== key) });
         setMsg({ type: "success", text: "Pozycja usunieta z ukladu." });
       };
       const importPhoto = e => {
+        if (!canEditMaps) return;
         const file = e.target.files && e.target.files[0];
         if (!file) return;
-        setMsg({ type: "warning", text: "Zdjecie dodane, ale automatyczne ukladanie AI wymaga podlaczenia OCR/AI w backendzie. Na razie uzyj trybu modyfikacji i klikaj kafelki, aby dodawac lub zmieniac lazienki." });
-        e.target.value = "";
+        const reader = new FileReader();
+        reader.onload = () => {
+          savePhotos({ ...photos, [hall]: reader.result });
+          setMsg({ type: "success", text: "Zdjecie dodane jako podglad hali. Uzyj go jako sciagi i klikaj kafelki na szachownicy." });
+          e.target.value = "";
+        };
+        reader.onerror = () => setMsg({ type: "error", text: "Nie udalo sie wczytac zdjecia." });
+        reader.readAsDataURL(file);
+      };
+      const removePhoto = () => {
+        const next = { ...photos };
+        delete next[hall];
+        savePhotos(next);
+        setMsg({ type: "success", text: "Zdjecie podgladu usuniete." });
       };
 
       return html`
@@ -1206,14 +1279,19 @@
             <div>
               <h2 style=${{ ...S.title, margin: 0 }}>Mapy</h2>
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>Uklady hal produkcyjnych z kolorami wedlug aktualnego etapu.</div>
+              <div style=${{ color: serverAvailable === false ? COLORS.orange : COLORS.dim, fontSize: "12px", marginTop: "4px" }}>
+                ${serverAvailable === true ? "Mapa zsynchronizowana z serwerem." : serverAvailable === false ? "Mapa dziala lokalnie - backend musi dodac /api/maps-layouts, aby widzieli ja wszyscy." : "Sprawdzanie zapisu map na serwerze..."}
+              </div>
             </div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <button style=${S.btn} onClick=${exportMapPdf}>Generuj PDF</button>
-              <label style=${S.ghost}>
-                Zdjecie AI
-                <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
-              </label>
-              <button style=${edit ? S.btn : S.ghost} onClick=${() => setEdit(!edit)}>Modyfikuj</button>
+              ${canEditMaps ? html`
+                <label style=${S.ghost}>
+                  Wgraj zdjecie podgladu
+                  <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
+                </label>
+                <button style=${edit ? S.btn : S.ghost} onClick=${() => setEdit(!edit)}>Modyfikuj</button>
+              ` : null}
             </div>
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
@@ -1225,7 +1303,7 @@
           <${Message} msg=${msg} />
         </section>
 
-        ${edit && !selectedHall.future ? html`
+        ${canEditMaps && edit && !selectedHall.future ? html`
           <section style=${S.card}>
             <h3 style=${{ ...S.title, fontSize: "18px" }}>Modyfikuj uklad</h3>
             <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "10px" }}>Kliknij kafelke, aby edytowac. Przytrzymaj zajeta kafelke i pusc na wolnym polu, aby przeniesc lazienke.</div>
@@ -1243,6 +1321,19 @@
         ` : null}
 
         <section style=${S.card}>
+          ${photos[hall] ? html`
+            <div style=${{ marginBottom: "14px" }}>
+              <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+                <h3 style=${{ ...S.title, fontSize: "16px", margin: 0 }}>Zdjecie podgladu hali</h3>
+                ${canEditMaps ? html`<button style=${S.danger} onClick=${removePhoto}>Usun zdjecie</button>` : null}
+              </div>
+              <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", overflow: "hidden", background: COLORS.bg }}>
+                <img src=${photos[hall]} alt=${"Podglad " + selectedHall.label} style=${{ display: "block", width: "100%", maxHeight: "520px", objectFit: "contain", background: "#fff" }} />
+              </div>
+            </div>
+          ` : canEditMaps ? html`
+            <div style=${{ color: COLORS.dim, fontSize: "13px", marginBottom: "12px" }}>Mozesz wgrac zdjecie hali jako podglad. Zdjecie sluzy jako sciaga do recznego wpisywania lazienek w szachownicy.</div>
+          ` : null}
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "12px" }}>
             <div>
               <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>${selectedHall.label}</h3>
@@ -1266,35 +1357,56 @@
                     const cell = layoutByCell[row + "-" + col];
                     const st = styleForCell(cell);
                     const isDragging = dragCell && cell && cellKey(dragCell) === cellKey(cell);
+                    const isSelected = selectedCell && cell && bathroomKey(selectedCell.project, selectedCell.product) === bathroomKey(cell.project, cell.product);
                     return html`
                       <button
                         key=${row + "-" + col}
                         data-map-cell="1"
                         data-row=${row}
                         data-col=${col}
-                        disabled=${!edit}
+                        disabled=${edit ? false : !cell}
                         onPointerDown=${e => startDrag(cell, e)}
                         onPointerUp=${e => finishDrop(row, col, cell, e)}
                         onPointerCancel=${() => setDragCell(null)}
-                        onClick=${() => chooseCell(row, col, cell)}
+                        onClick=${() => handleCellClick(row, col, cell)}
                         title=${cell ? st.label + " / projekt " + cell.project + " / lazienka " + cell.product : "Puste pole"}
                         style=${{
-                          minHeight: "54px",
-                          border: (isDragging ? "2px solid " + COLORS.accent : "1px solid " + st.border),
+                          minHeight: selectedHall.rows.length <= 2 ? "68px" : "74px",
+                          border: (isDragging || isSelected ? "2px solid " + COLORS.accent : "1px solid " + st.border),
                           borderRadius: "8px",
-                          background: st.background,
-                          color: st.color,
-                          cursor: edit ? (cell ? "grab" : "pointer") : "default",
-                          padding: "4px",
-                          display: "grid",
-                          placeItems: "center",
+                          background: "#fff",
+                          color: COLORS.text,
+                          cursor: edit ? (cell ? "grab" : "pointer") : (cell ? "pointer" : "default"),
+                          padding: 0,
+                          overflow: "hidden",
+                          display: "flex",
+                          flexDirection: "column",
                           fontSize: "11px",
                           fontWeight: 900,
                           touchAction: edit ? "none" : "auto",
-                          opacity: isDragging ? 0.72 : 1
+                          opacity: isDragging ? 0.72 : 1,
+                          boxShadow: isSelected ? "0 0 0 3px rgba(39,94,254,0.18)" : "none"
                         }}
                       >
-                        ${cell ? html`<span>${cell.project}<br />${cell.product}</span>` : ""}
+                        ${cell ? html`
+                          <div style=${{
+                            background: st.background,
+                            color: st.color,
+                            width: "100%",
+                            minHeight: "70%",
+                            display: "grid",
+                            placeItems: "center",
+                            padding: "4px 2px",
+                            lineHeight: 1.12
+                          }}>
+                            <span style=${{ pointerEvents: "none" }}>
+                              ${cell.project}<br />
+                              Laz. ${cell.product}<br />
+                              <span style=${{ fontSize: "10px", fontWeight: 800 }}>${st.label}</span>
+                            </span>
+                          </div>
+                          <div style=${{ flex: 1, background: "#fff", width: "100%" }}></div>
+                        ` : ""}
                       </button>
                     `;
                   })
@@ -1303,6 +1415,50 @@
             </div>
           `}
         </section>
+        ${selectedCell ? html`
+          <section style=${S.card}>
+            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Historia lazienki</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Projekt ${selectedCell.project} / Lazienka ${selectedCell.product}</div>
+              </div>
+              <button style=${S.ghost} onClick=${() => setSelectedCell(null)}>Zamknij</button>
+            </div>
+            ${selectedHistory.length ? html`
+              <div style=${{ display: "grid", gap: "8px" }}>
+                ${selectedHistory.map((line, i) => {
+                  const color = stageColors.find(s => s.stage === String(line.stage));
+                  return html`
+                    <div key=${i + "-" + line.date + "-" + line.stage} style=${{
+                      display: "grid",
+                      gridTemplateColumns: "110px 1fr 160px",
+                      gap: "10px",
+                      alignItems: "center",
+                      padding: "10px",
+                      border: "1px solid " + (color ? color.color : COLORS.border),
+                      borderRadius: "8px",
+                      background: color ? color.color + "26" : COLORS.panel2
+                    }}>
+                      <strong>${line.date || "-"}</strong>
+                      <span style=${{
+                        display: "inline-block",
+                        background: color ? color.color : COLORS.panel2,
+                        color: color ? color.text : COLORS.text,
+                        border: "1px solid " + COLORS.border,
+                        borderRadius: "999px",
+                        padding: "6px 10px",
+                        fontWeight: 900
+                      }}>${stageLabel(line.stage)}</span>
+                      <span style=${{ color: COLORS.muted, fontSize: "13px", textAlign: "right" }}>${line.worker || ""}</span>
+                    </div>
+                  `;
+                })}
+              </div>
+            ` : html`
+              <div style=${{ color: COLORS.dim, textAlign: "center", padding: "20px" }}>Brak raportow dla tej lazienki.</div>
+            `}
+          </section>
+        ` : null}
       `;
     }
 
@@ -1664,7 +1820,7 @@
           ` : tab === "projects" ? html`
             <${ProjectsTab} reports=${reports} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} />
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} />
           ` : html`
