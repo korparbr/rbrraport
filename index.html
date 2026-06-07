@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR - wersja ratunkowa</title>
+  <title>FlowRBR 1.01</title>
   <meta name="theme-color" content="#6c63ff" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -47,6 +47,7 @@
       deleteReport: (token, id) => apiRequest("DELETE", "/api/reports/" + id, null, token),
       getUsers: token => apiRequest("GET", "/api/users", null, token),
       addUser: (token, code, name, password, role) => apiRequest("POST", "/api/users", { code, name, password, role }, token),
+      resetPassword: (token, code) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/reset-password", {}, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token)
     };
 
@@ -538,6 +539,186 @@
       `;
     }
 
+    function ManagerReports({ reports, users, onDelete }) {
+      const [dateFrom, setDateFrom] = useState("");
+      const [dateTo, setDateTo] = useState("");
+      const [worker, setWorker] = useState("all");
+      const [project, setProject] = useState("all");
+      const [stage, setStage] = useState("all");
+      const [msg, setMsg] = useState(null);
+
+      const workerName = code => {
+        const u = (users || []).find(x => (x.code || x.login) === code);
+        return u ? u.name : code;
+      };
+      const allLines = useMemo(() => reports.flatMap(report => (report.lines || []).map(line => ({
+        ...line,
+        reportId: report.id,
+        date: report.date || "",
+        workerLogin: report.workerLogin || report.worker_code || "",
+        workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || "")
+      }))), [reports, users]);
+      const workers = useMemo(() => [...new Set(allLines.map(l => l.workerLogin).filter(Boolean))].sort(), [allLines]);
+      const projects = useMemo(() => [...new Set(allLines.map(l => l.project).filter(Boolean))].sort(), [allLines]);
+      const stages = useMemo(() => [...new Set(allLines.map(l => l.stage).filter(Boolean))].sort((a, b) => stageLabel(a).localeCompare(stageLabel(b))), [allLines]);
+
+      const filteredReports = useMemo(() => reports
+        .filter(report => !dateFrom || (report.date || "") >= dateFrom)
+        .filter(report => !dateTo || (report.date || "") <= dateTo)
+        .filter(report => worker === "all" || (report.workerLogin || report.worker_code) === worker)
+        .map(report => ({
+          ...report,
+          lines: (report.lines || []).filter(line =>
+            (project === "all" || line.project === project) &&
+            (stage === "all" || line.stage === stage)
+          )
+        }))
+        .filter(report => (report.lines || []).length > 0)
+        .sort((a, b) => (b.date || "").localeCompare(a.date || "")), [reports, dateFrom, dateTo, worker, project, stage]);
+
+      const filteredLines = useMemo(() => filteredReports.flatMap(report => (report.lines || []).map(line => ({
+        ...line,
+        date: report.date || "",
+        workerLogin: report.workerLogin || report.worker_code || "",
+        workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || "")
+      }))), [filteredReports, users]);
+
+      const clearFilters = () => {
+        setDateFrom(""); setDateTo(""); setWorker("all"); setProject("all"); setStage("all"); setMsg(null);
+      };
+      const csvCell = value => {
+        const text = String(value == null ? "" : value);
+        return /[",\n;]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+      };
+      const exportCsv = () => {
+        try {
+          const header = ["Data", "Pracownik kod", "Pracownik", "Zlecenie", "Lazienka", "Etap", "Hala", "Uwagi"];
+          const rows = filteredLines.map(line => [
+            line.date,
+            line.workerLogin,
+            line.workerName,
+            line.project,
+            line.product,
+            stageLabel(line.stage),
+            line.hall || "",
+            line.note || ""
+          ]);
+          const csv = "\ufeff" + [header, ...rows].map(row => row.map(csvCell).join(";")).join("\n");
+          const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "flowrbr_raporty_" + today() + ".csv";
+          a.click();
+          URL.revokeObjectURL(url);
+          setMsg({ type: "success", text: "CSV wyeksportowany: " + rows.length + " pozycji." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
+            <h2 style=${{ ...S.title, margin: 0 }}>Raporty</h2>
+            <button style=${S.btn} onClick=${exportCsv}>Export CSV</button>
+          </div>
+          <div className="grid-3" style=${S.row3}>
+            <div>
+              <label style=${S.label}>Data od</label>
+              <input style=${S.input} type="date" value=${dateFrom} onInput=${e => setDateFrom(e.target.value)} />
+            </div>
+            <div>
+              <label style=${S.label}>Data do</label>
+              <input style=${S.input} type="date" value=${dateTo} onInput=${e => setDateTo(e.target.value)} />
+            </div>
+            <div>
+              <label style=${S.label}>Pracownik</label>
+              <select style=${S.input} value=${worker} onChange=${e => setWorker(e.target.value)}>
+                <option value="all">Wszyscy</option>
+                ${workers.map(code => html`<option key=${code} value=${code}>${workerName(code)} (${code})</option>`)}
+              </select>
+            </div>
+          </div>
+          <div className="grid-3" style=${{ ...S.row3, marginTop: "12px" }}>
+            <div>
+              <label style=${S.label}>Zlecenie / projekt</label>
+              <select style=${S.input} value=${project} onChange=${e => setProject(e.target.value)}>
+                <option value="all">Wszystkie</option>
+                ${projects.map(p => html`<option key=${p} value=${p}>${p}</option>`)}
+              </select>
+            </div>
+            <div>
+              <label style=${S.label}>Etap</label>
+              <select style=${S.input} value=${stage} onChange=${e => setStage(e.target.value)}>
+                <option value="all">Wszystkie</option>
+                ${stages.map(s => html`<option key=${s} value=${s}>${stageLabel(s)}</option>`)}
+              </select>
+            </div>
+            <div style=${{ display: "flex", alignItems: "end" }}>
+              <button style=${S.ghost} onClick=${clearFilters}>Wyczysc filtry</button>
+            </div>
+          </div>
+          <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "12px" }}>
+            Wyniki: ${filteredLines.length} pozycji w ${filteredReports.length} raportach.
+          </div>
+          <${Message} msg=${msg} />
+        </section>
+        <${ReportsList} reports=${filteredReports} users=${users} onDelete=${onDelete} showWorker=${true} />
+      `;
+    }
+
+    function ManagerAccount({ user, token, users }) {
+      const [msg, setMsg] = useState(null);
+      const [resetting, setResetting] = useState(false);
+      const workers = useMemo(() => (users || []).filter(u => (u.role || "worker") === "worker"), [users]);
+
+      const resetAllWorkers = async () => {
+        if (!workers.length) return setMsg({ type: "warning", text: "Brak pracownikow do resetu." });
+        if (!confirm("Zresetowac haslo wszystkim pracownikom do: zmien123?")) return;
+        setResetting(true); setMsg(null);
+        let ok = 0;
+        let fail = 0;
+        for (const worker of workers) {
+          const code = worker.code || worker.login;
+          if (!code) { fail++; continue; }
+          try {
+            await api.resetPassword(token, code);
+            ok++;
+          } catch (_) {
+            fail++;
+          }
+        }
+        setResetting(false);
+        setMsg({
+          type: fail ? "warning" : "success",
+          text: "Reset zakonczony. Sukces: " + ok + ", bledy: " + fail + ". Domyslne haslo: zmien123."
+        });
+      };
+
+      return html`
+        <section style=${S.card}>
+          <h2 style=${S.title}>Konto</h2>
+          <div style=${{ color: COLORS.muted, lineHeight: 1.7 }}>
+            <div>Uzytkownik: <strong style=${{ color: COLORS.text }}>${user.name || "-"}</strong></div>
+            <div>Kod: <strong style=${{ color: COLORS.text }}>${user.code || user.login}</strong></div>
+            <div>Rola: <strong style=${{ color: COLORS.text }}>${user.role || "manager"}</strong></div>
+          </div>
+          <${ChangePasswordBox} token=${token} />
+          <div style=${{ marginTop: "18px", paddingTop: "16px", borderTop: "1px solid " + COLORS.border }}>
+            <h3 style=${{ ...S.title, fontSize: "17px" }}>Reset hasel pracownikow</h3>
+            <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
+              Resetuje haslo wszystkim pracownikom do wartosci: <strong style=${{ color: COLORS.text }}>zmien123</strong>.
+            </div>
+            <button style=${{ ...S.danger, opacity: resetting ? 0.6 : 1 }} disabled=${resetting} onClick=${resetAllWorkers}>
+              ${resetting ? "Resetowanie..." : "Resetuj wszystkim pracownikom"}
+            </button>
+            <${Message} msg=${msg} />
+          </div>
+        </section>
+      `;
+    }
+
     function WorkerView({ user, token, reports, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
@@ -650,10 +831,12 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            ${["reports", "users"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : "Uzytkownicy"}</button>`)}
+            ${["reports", "users", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "users" ? "Uzytkownicy" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
-          ${tab === "reports" ? html`<${ReportsList} reports=${reports.slice().sort((a, b) => b.date.localeCompare(a.date))} users=${users} onDelete=${remove} showWorker=${true} />` : html`
+          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} />` : tab === "account" ? html`
+            <${ManagerAccount} user=${user} token=${token} users=${users} />
+          ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Dodaj uzytkownika</h2>
               <div className="grid-3" style=${S.row3}>
@@ -699,6 +882,10 @@
           return null;
         }
       };
+      const isManagerLike = u => {
+        const code = (u && (u.code || u.login) || "").toUpperCase();
+        return !!u && (u.role === "manager" || u.role === "supervisor" || code === "RBR056");
+      };
       const reloadReports = async (t = token) => setReports((await api.getReports(t)).map(normalizeReport));
       const reloadUsers = async (t = token) => setUsers(await api.getUsers(t));
 
@@ -710,7 +897,7 @@
               setUser(restored);
               try {
                 await reloadReports(token);
-                if (restored.role === "manager" || restored.role === "supervisor") await reloadUsers(token);
+                if (isManagerLike(restored)) await reloadUsers(token);
               } catch (_) {}
             } else {
               logout();
@@ -725,7 +912,7 @@
         setToken(newToken);
         setUser(userData);
         await reloadReports(newToken);
-        if (userData.role === "manager" || userData.role === "supervisor") await reloadUsers(newToken);
+        if (isManagerLike(userData)) await reloadUsers(newToken);
       };
 
       if (!loaded) return html`<div style=${{ ...S.app, display: "grid", placeItems: "center", color: COLORS.muted }}>Ladowanie...</div>`;
@@ -734,12 +921,11 @@
           <header style=${S.header}>
             <div style=${{ fontWeight: 900 }}>
               FlowRBR
-              <span style=${{ color: COLORS.dim, fontSize: "12px" }}>wersja ratunkowa</span>
-              <span style=${{ marginLeft: "8px", color: COLORS.green, background: COLORS.green + "18", border: "1px solid " + COLORS.green + "55", borderRadius: "999px", padding: "2px 8px", fontSize: "11px" }}>AKTUALIZACJA 15:50</span>
+              <span style=${{ color: COLORS.dim, fontSize: "12px" }}>wersja 1.01</span>
             </div>
             ${user ? html`<div style=${{ color: COLORS.muted, fontSize: "14px" }}>${user.role || "worker"} / ${user.code || user.login}</div>` : null}
           </header>
-          ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : (user.role === "manager" || user.role === "supervisor") ?
+          ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : isManagerLike(user) ?
             html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
             html`<${WorkerView} user=${user} token=${token} reports=${reports} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
