@@ -3025,6 +3025,13 @@
     }
 
     function TransportTab({ reports, transportDates, token, serverProjects, reloadTransportDates }) {
+      const transportPanelStyle = {
+        ...S.card,
+        width: "calc(100vw - 36px)",
+        maxWidth: "none",
+        marginLeft: "calc(50% - 50vw + 18px)",
+        marginRight: "calc(50% - 50vw + 18px)"
+      };
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
       const transportItems = useMemo(() => transportProjectItems(reports, serverProjects), [reports, serverProjects]);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
@@ -3175,7 +3182,7 @@
         }
       };
       return html`
-        <section style=${S.card}>
+        <section style=${transportPanelStyle}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
             <div>
               <h2 style=${S.title}>Transport</h2>
@@ -3299,8 +3306,8 @@
               <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "8px" }}>Zaznaczono: ${selectedProducts.length}</div>
             ` : null}
           </div>
-          <div style=${{ overflowX: "auto", border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel }}>
-            <table style=${{ width: "100%", minWidth: "1520px", borderCollapse: "collapse", fontSize: "12px" }}>
+          <div style=${{ overflowX: "auto", width: "100%", border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel }}>
+            <table style=${{ width: "max(100%, 1520px)", borderCollapse: "collapse", fontSize: "12px" }}>
               <thead>
                 <tr style=${{ background: "#f8fafc", color: COLORS.text }}>
                   ${["Lp", "Nr. zlecenia", "Nazwa zlecenia", "NACZEPA", "LKW", "Numery lazienek", "Kierunek", "Ilosc", "Data zaladunku", "Rozmiar", "Data rozladunku", "Przewoznik", "Notatka", "Spoznienia", "Edycja"].map(label => html`
@@ -3514,9 +3521,12 @@
         if (next.has(normalized)) next.delete(normalized); else next.add(normalized);
         setStageWorkers([...next]);
       };
+      const mainStyle = tab === "transport"
+        ? { ...S.main, width: "100%", maxWidth: "none", padding: "16px 18px" }
+        : S.main;
 
       return html`
-        <main style=${S.main}>
+        <main style=${mainStyle}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
             <div>
               <h1 style=${{ ...S.title, marginBottom: "4px" }}>Panel menedzera</h1>
@@ -3524,7 +3534,7 @@
             </div>
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
-          <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+          <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
             ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "calculations"] : []), "projects", "maps", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Mapy" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
