@@ -155,6 +155,14 @@ async function ensureTransportDatesTable() {
     )
   `);
   await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS lkw_number INTEGER");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS order_name TEXT");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS trailer TEXT");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS direction TEXT");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS size_label TEXT");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS unload_date DATE");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS carrier TEXT");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS note TEXT");
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS delay_note TEXT");
 }
 
 async function ensureProjectsTables() {
@@ -822,7 +830,14 @@ app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
 app.get('/api/transport-dates', auth, async (req, res) => {
   try {
     await ensureTransportDatesTable();
-    const r = await pool.query('SELECT project, product, load_date::text AS "loadDate", lkw_number AS "lkwNumber", updated_by AS "updatedBy", updated_at AS "updatedAt" FROM transport_dates ORDER BY load_date, project, COALESCE(lkw_number, 999999), product');
+    const r = await pool.query(
+      `SELECT project, product, load_date::text AS "loadDate", lkw_number AS "lkwNumber",
+              order_name AS "orderName", trailer, direction, size_label AS "sizeLabel",
+              unload_date::text AS "unloadDate", carrier, note, delay_note AS "delayNote",
+              updated_by AS "updatedBy", updated_at AS "updatedAt"
+       FROM transport_dates
+       ORDER BY load_date, project, COALESCE(lkw_number, 999999), product`
+    );
     res.json(r.rows);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd odczytu transportu' });
@@ -919,6 +934,15 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
   const loadDate = String(req.body.loadDate || '').trim();
+  const unloadDate = String(req.body.unloadDate || '').trim();
+  const cleanText = (value, max = 240) => String(value || '').trim().slice(0, max) || null;
+  const orderName = cleanText(req.body.orderName);
+  const trailer = cleanText(req.body.trailer);
+  const direction = cleanText(req.body.direction);
+  const sizeLabel = cleanText(req.body.sizeLabel);
+  const carrier = cleanText(req.body.carrier);
+  const note = cleanText(req.body.note, 1000);
+  const delayNote = cleanText(req.body.delayNote, 500);
   let lkwNumber = req.body.lkwNumber === '' || req.body.lkwNumber == null ? null : Number(req.body.lkwNumber);
   if (!project || !Number.isInteger(product) || product < 1) return res.status(400).json({ error: 'Brak projektu lub numeru łazienki' });
   try {
@@ -928,6 +952,7 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
       return res.json({ success: true, deleted: true });
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(loadDate)) return res.status(400).json({ error: 'Nieprawidłowa data załadunku' });
+    if (unloadDate && !/^\d{4}-\d{2}-\d{2}$/.test(unloadDate)) return res.status(400).json({ error: 'Nieprawidlowa data rozladunku' });
     if (lkwNumber !== null && (!Number.isInteger(lkwNumber) || lkwNumber < 1)) return res.status(400).json({ error: 'Nieprawidlowy numer LKW' });
     if (lkwNumber === null) {
       const current = await pool.query(
@@ -942,12 +967,19 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
       }
     }
     await pool.query(
-      `INSERT INTO transport_dates (project, product, load_date, lkw_number, updated_by, updated_at)
-       VALUES ($1,$2,$3,$4,$5,NOW())
-       ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
-      [project, product, loadDate, lkwNumber, req.user.code]
+      `INSERT INTO transport_dates (
+         project, product, load_date, lkw_number, order_name, trailer, direction, size_label,
+         unload_date, carrier, note, delay_note, updated_by, updated_at
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+       ON CONFLICT (project, product) DO UPDATE SET
+         load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, order_name=EXCLUDED.order_name,
+         trailer=EXCLUDED.trailer, direction=EXCLUDED.direction, size_label=EXCLUDED.size_label,
+         unload_date=EXCLUDED.unload_date, carrier=EXCLUDED.carrier, note=EXCLUDED.note,
+         delay_note=EXCLUDED.delay_note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, product, loadDate, lkwNumber, orderName, trailer, direction, sizeLabel, unloadDate || null, carrier, note, delayNote, req.user.code]
     );
-    res.json({ success: true, project, product, loadDate, lkwNumber });
+    res.json({ success: true, project, product, loadDate, lkwNumber, orderName, trailer, direction, sizeLabel, unloadDate, carrier, note, delayNote });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd zapisu transportu' });
   }
@@ -1157,10 +1189,22 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       await ensureTransportDatesTable();
       for (const t of data.transport_dates) {
         await client.query(
-          `INSERT INTO transport_dates (project, product, load_date, lkw_number, updated_by, updated_at)
-           VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()))
-           ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
-          [t.project, t.product, t.load_date || t.loadDate, t.lkw_number || t.lkwNumber || null, t.updated_by || t.updatedBy || req.user.code, t.updated_at || t.updatedAt || null]
+          `INSERT INTO transport_dates (
+             project, product, load_date, lkw_number, order_name, trailer, direction, size_label,
+             unload_date, carrier, note, delay_note, updated_by, updated_at
+           )
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,COALESCE($14,NOW()))
+           ON CONFLICT (project, product) DO UPDATE SET
+             load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, order_name=EXCLUDED.order_name,
+             trailer=EXCLUDED.trailer, direction=EXCLUDED.direction, size_label=EXCLUDED.size_label,
+             unload_date=EXCLUDED.unload_date, carrier=EXCLUDED.carrier, note=EXCLUDED.note,
+             delay_note=EXCLUDED.delay_note, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [
+            t.project, t.product, t.load_date || t.loadDate, t.lkw_number || t.lkwNumber || null,
+            t.order_name || t.orderName || null, t.trailer || null, t.direction || null, t.size_label || t.sizeLabel || null,
+            t.unload_date || t.unloadDate || null, t.carrier || null, t.note || null, t.delay_note || t.delayNote || null,
+            t.updated_by || t.updatedBy || req.user.code, t.updated_at || t.updatedAt || null
+          ]
         );
         transportRestored++;
       }

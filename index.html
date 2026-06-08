@@ -77,7 +77,7 @@
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
       getTransportDates: token => apiRequest("GET", "/api/transport-dates", null, token),
-      saveTransportDate: (token, project, product, loadDate, lkwNumber) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate, lkwNumber }, token),
+      saveTransportDate: (token, project, product, loadDate, lkwNumber, details = {}) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate, lkwNumber, ...details }, token),
       getBathroomComments: token => apiRequest("GET", "/api/bathroom-comments", null, token),
       addBathroomComment: (token, project, product, comment) => apiRequest("POST", "/api/bathroom-comments", { project, product, comment }, token),
       setBathroomCommentDone: (token, id, done) => apiRequest("PUT", "/api/bathroom-comments/" + id + "/done", { done }, token),
@@ -2937,6 +2937,7 @@
       const [batchDate, setBatchDate] = useState(today());
       const [batchLkw, setBatchLkw] = useState("");
       const [batchProject, setBatchProject] = useState("");
+      const [batchDetails, setBatchDetails] = useState({ orderName: "", trailer: "", direction: "", sizeLabel: "", unloadDate: "", carrier: "", note: "", delayNote: "" });
       const [selectedProducts, setSelectedProducts] = useState([]);
       const [savingKey, setSavingKey] = useState("");
       const [msg, setMsg] = useState(null);
@@ -2962,6 +2963,14 @@
             project: item.project,
             loadDate: info.loadDate || "",
             lkwNumber: info.lkwNumber || "",
+            orderName: info.orderName || "",
+            trailer: info.trailer || "",
+            direction: info.direction || "",
+            sizeLabel: info.sizeLabel || "",
+            unloadDate: info.unloadDate || "",
+            carrier: info.carrier || "",
+            note: info.note || "",
+            delayNote: info.delayNote || "",
             items: []
           });
           groups.get(key).items.push(item);
@@ -2982,7 +2991,9 @@
       const rowEditValue = (row, field) => {
         const edit = rowEdits[row.key] || {};
         if (field in edit) return edit[field];
-        return field === "loadDate" ? row.loadDate : (row.lkwNumber || "");
+        if (field === "loadDate") return row.loadDate;
+        if (field === "lkwNumber") return row.lkwNumber || "";
+        return row[field] || "";
       };
       const setRowEdit = (row, field, value) => {
         setRowEdits(prev => ({ ...prev, [row.key]: { ...(prev[row.key] || {}), [field]: value } }));
@@ -3003,11 +3014,21 @@
       const saveTransportRow = async row => {
         const loadDate = rowEditValue(row, "loadDate");
         const lkwNumber = rowEditValue(row, "lkwNumber");
+        const details = {
+          orderName: rowEditValue(row, "orderName"),
+          trailer: rowEditValue(row, "trailer"),
+          direction: rowEditValue(row, "direction"),
+          sizeLabel: rowEditValue(row, "sizeLabel"),
+          unloadDate: rowEditValue(row, "unloadDate"),
+          carrier: rowEditValue(row, "carrier"),
+          note: rowEditValue(row, "note"),
+          delayNote: rowEditValue(row, "delayNote")
+        };
         if (!loadDate) return setMsg({ type: "error", text: "Wybierz date zaladunku." });
         setSavingKey(row.key); setMsg(null);
         try {
           for (const item of row.items) {
-            await api.saveTransportDate(token, item.project, item.product, loadDate, lkwNumber);
+            await api.saveTransportDate(token, item.project, item.product, loadDate, lkwNumber, details);
           }
           await reloadTransportDates();
           setRowEdits(prev => {
@@ -3044,11 +3065,12 @@
         setSavingKey("batch"); setMsg(null);
         try {
           for (const product of selectedProducts) {
-            await api.saveTransportDate(token, batchProject, product, batchDate, batchLkw);
+            await api.saveTransportDate(token, batchProject, product, batchDate, batchLkw, batchDetails);
           }
           await reloadTransportDates();
           setSelectedProducts([]);
           setBatchLkw("");
+          setBatchDetails({ orderName: "", trailer: "", direction: "", sizeLabel: "", unloadDate: "", carrier: "", note: "", delayNote: "" });
           setMsg({ type: "success", text: "Transport zapisany dla " + selectedProducts.length + " lazienek." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
@@ -3116,6 +3138,40 @@
                 <button style=${{ ...S.btn, opacity: savingKey === "batch" ? 0.6 : 1 }} disabled=${savingKey === "batch"} onClick=${saveBatchTransport}>${savingKey === "batch" ? "Zapisywanie..." : "Zapisz transport"}</button>
               </div>
             </div>
+            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "8px", marginTop: "10px" }}>
+              <div>
+                <label style=${S.label}>Nazwa zlecenia</label>
+                <input style=${S.input} value=${batchDetails.orderName} onInput=${e => setBatchDetails({ ...batchDetails, orderName: e.target.value })} />
+              </div>
+              <div>
+                <label style=${S.label}>Naczepa</label>
+                <input style=${S.input} value=${batchDetails.trailer} onInput=${e => setBatchDetails({ ...batchDetails, trailer: e.target.value })} />
+              </div>
+              <div>
+                <label style=${S.label}>Kierunek</label>
+                <input style=${S.input} value=${batchDetails.direction} onInput=${e => setBatchDetails({ ...batchDetails, direction: e.target.value })} />
+              </div>
+              <div>
+                <label style=${S.label}>Rozmiar</label>
+                <input style=${S.input} placeholder="np. duze / male" value=${batchDetails.sizeLabel} onInput=${e => setBatchDetails({ ...batchDetails, sizeLabel: e.target.value })} />
+              </div>
+              <div>
+                <label style=${S.label}>Data rozladunku</label>
+                <input style=${S.input} type="date" value=${batchDetails.unloadDate} onInput=${e => setBatchDetails({ ...batchDetails, unloadDate: e.target.value })} />
+              </div>
+              <div>
+                <label style=${S.label}>Przewoznik</label>
+                <input style=${S.input} value=${batchDetails.carrier} onInput=${e => setBatchDetails({ ...batchDetails, carrier: e.target.value })} />
+              </div>
+              <div>
+                <label style=${S.label}>Spoznienia</label>
+                <input style=${S.input} value=${batchDetails.delayNote} onInput=${e => setBatchDetails({ ...batchDetails, delayNote: e.target.value })} />
+              </div>
+              <div style=${{ gridColumn: "1 / -1" }}>
+                <label style=${S.label}>Notatka</label>
+                <input style=${S.input} value=${batchDetails.note} onInput=${e => setBatchDetails({ ...batchDetails, note: e.target.value })} />
+              </div>
+            </div>
             ${batchProject ? html`
               <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(54px, 1fr))", gap: "6px", marginTop: "12px" }}>
                 ${batchItems.map(item => {
@@ -3148,7 +3204,7 @@
             ` : null}
           </div>
           <div style=${{ overflowX: "auto", border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel }}>
-            <table style=${{ width: "100%", minWidth: "1180px", borderCollapse: "collapse", fontSize: "12px" }}>
+            <table style=${{ width: "100%", minWidth: "1520px", borderCollapse: "collapse", fontSize: "12px" }}>
               <thead>
                 <tr style=${{ background: "#f8fafc", color: COLORS.text }}>
                   ${["Lp", "Nr. zlecenia", "Nazwa zlecenia", "NACZEPA", "LKW", "Numery lazienek", "Kierunek", "Ilosc", "Data zaladunku", "Rozmiar", "Data rozladunku", "Przewoznik", "Notatka", "Spoznienia", "Edycja"].map(label => html`
@@ -3164,9 +3220,15 @@
                     <tr key=${row.key} style=${{ background: "#b7d7a8", color: "#111827", fontWeight: 800 }}>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${index + 1}</td>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.project}</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>-</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>-</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.lkwNumber || "-"}</td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "130px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "orderName")} onInput=${e => setRowEdit(row, "orderName", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "95px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "trailer")} onInput=${e => setRowEdit(row, "trailer", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "72px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} type="number" min="1" placeholder="LKW" value=${rowEditValue(row, "lkwNumber")} onInput=${e => setRowEdit(row, "lkwNumber", e.target.value)} disabled=${saving} />
+                      </td>
                       <td style=${{ padding: "6px", border: "1px solid " + COLORS.border }}>
                         <div style=${{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "4px" }}>
                           ${row.items.map(item => {
@@ -3190,21 +3252,31 @@
                           })}
                         </div>
                       </td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>-</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.items.length}</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center", whiteSpace: "nowrap" }}>
-                        ${alert ? html`<span title=${alert.label} style=${{ display: "inline-grid", placeItems: "center", width: "17px", height: "17px", marginRight: "5px", borderRadius: "999px", background: alert.color, color: alert.text, fontWeight: 900 }}>!</span>` : null}
-                        ${row.loadDate || "-"}
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "110px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "direction")} onInput=${e => setRowEdit(row, "direction", e.target.value)} disabled=${saving} />
                       </td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>-</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>-</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>-</td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border }}></td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}></td>
-                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, minWidth: "240px" }}>
-                        <div style=${{ display: "grid", gridTemplateColumns: "1fr 70px auto auto", gap: "5px", alignItems: "center" }}>
-                          <input style=${{ ...S.input, minHeight: "32px", padding: "6px 7px", fontSize: "12px" }} type="date" value=${rowEditValue(row, "loadDate")} onInput=${e => setRowEdit(row, "loadDate", e.target.value)} disabled=${saving} />
-                          <input style=${{ ...S.input, minHeight: "32px", padding: "6px 7px", fontSize: "12px" }} type="number" min="1" placeholder="LKW" value=${rowEditValue(row, "lkwNumber")} onInput=${e => setRowEdit(row, "lkwNumber", e.target.value)} disabled=${saving} />
+                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.items.length}</td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", whiteSpace: "nowrap", minWidth: "132px" }}>
+                        ${alert ? html`<span title=${alert.label} style=${{ display: "inline-grid", placeItems: "center", width: "17px", height: "17px", marginRight: "5px", borderRadius: "999px", background: alert.color, color: alert.text, fontWeight: 900 }}>!</span>` : null}
+                        <input style=${{ ...S.input, width: "104px", minHeight: "30px", padding: "5px 6px", fontSize: "12px" }} type="date" value=${rowEditValue(row, "loadDate")} onInput=${e => setRowEdit(row, "loadDate", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "80px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "sizeLabel")} onInput=${e => setRowEdit(row, "sizeLabel", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "120px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px" }} type="date" value=${rowEditValue(row, "unloadDate")} onInput=${e => setRowEdit(row, "unloadDate", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "110px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "carrier")} onInput=${e => setRowEdit(row, "carrier", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, minWidth: "170px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px" }} value=${rowEditValue(row, "note")} onInput=${e => setRowEdit(row, "note", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "120px" }}>
+                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "delayNote")} onInput=${e => setRowEdit(row, "delayNote", e.target.value)} disabled=${saving} />
+                      </td>
+                      <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, minWidth: "130px" }}>
+                        <div style=${{ display: "grid", gridTemplateColumns: "auto auto", gap: "5px", alignItems: "center" }}>
                           <button style=${{ ...S.btn, padding: "7px 9px", fontSize: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${() => saveTransportRow(row)}>${saving ? "..." : "Zapisz"}</button>
                           <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px" }} disabled=${saving} onClick=${() => clearTransportRow(row)}>Wyczysc</button>
                         </div>
