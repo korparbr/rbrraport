@@ -152,9 +152,15 @@ async function ensureBathroomCommentsTable() {
       comment TEXT NOT NULL,
       author_code TEXT,
       author_name TEXT,
+      done BOOLEAN NOT NULL DEFAULT FALSE,
+      done_by TEXT,
+      done_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query("ALTER TABLE bathroom_comments ADD COLUMN IF NOT EXISTS done BOOLEAN NOT NULL DEFAULT FALSE");
+  await pool.query("ALTER TABLE bathroom_comments ADD COLUMN IF NOT EXISTS done_by TEXT");
+  await pool.query("ALTER TABLE bathroom_comments ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ");
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -165,8 +171,23 @@ function auth(req, res, next) {
   catch { res.status(401).json({ error: 'Nieprawidłowy token' }); }
 }
 function managerOnly(req, res, next) {
-  if (req.user.role !== 'manager' && req.user.role !== 'supervisor' && req.user.role !== 'viewer') return res.status(403).json({ error: 'Brak uprawnień' });
+  const role = req.user.role;
+  const code = String(req.user.code || '').toUpperCase();
+  if (role !== 'manager' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') return res.status(403).json({ error: 'Brak uprawnien' });
   next();
+}
+
+function normalizeUserRole(role) {
+  const value = String(role || 'worker').trim().toLowerCase();
+  return ['worker', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
+}
+
+function assertRoleAllowedForCode(code, role, res) {
+  if (role === 'supervisor' && String(code || '').toUpperCase() !== 'RBR056') {
+    res.status(400).json({ error: 'Rola supervisor jest zastrzezona tylko dla konta RBR056' });
+    return false;
+  }
+  return true;
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
@@ -211,16 +232,43 @@ app.get('/api/users', auth, managerOnly, async (req, res) => {
 });
 
 app.post('/api/users', auth, managerOnly, async (req, res) => {
-  const { code, name, password, role } = req.body;
-  if (!code || !name || !password || password.length < 4) return res.status(400).json({ error: 'Nieprawidłowe dane' });
+  const { code, name, password } = req.body;
+  const userCode = String(code || '').trim().toUpperCase();
+  const role = normalizeUserRole(req.body.role);
+  const requesterCode = String(req.user.code || '').toUpperCase();
+  if (!userCode || !name || !password || password.length < 4) return res.status(400).json({ error: 'Nieprawidlowe dane' });
+  if (!assertRoleAllowedForCode(userCode, role, res)) return;
+  if (role === 'admin' && requesterCode !== 'ADMIN' && requesterCode !== 'RBR056') return res.status(403).json({ error: 'Tylko admin moze tworzyc konta admin' });
   try {
     const hash = await bcrypt.hash(password, 10);
-    const mustChange = role === 'manager' ? false : true;
-    await pool.query('INSERT INTO users (code, name, password_hash, must_change_password, role) VALUES (UPPER($1),$2,$3,$4,$5)', [code, name, hash, mustChange, role || 'worker']);
+    const mustChange = role === 'manager' || role === 'supervisor' || role === 'admin' ? false : true;
+    await pool.query('INSERT INTO users (code, name, password_hash, must_change_password, role) VALUES ($1,$2,$3,$4,$5)', [userCode, name, hash, mustChange, role]);
     res.json({ success: true });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Konto już istnieje' });
     res.status(500).json({ error: 'Błąd serwera' });
+  }
+});
+
+app.put('/api/users/:code/role', auth, managerOnly, async (req, res) => {
+  const code = String(req.params.code || '').toUpperCase();
+  const role = normalizeUserRole(req.body.role);
+  const requesterCode = String(req.user.code || '').toUpperCase();
+  if (!code || code === 'ADMIN') return res.status(400).json({ error: 'Nieprawidlowy uzytkownik' });
+  if (code === requesterCode) return res.status(400).json({ error: 'Nie mozesz zmienic roli swojego konta' });
+  if (!assertRoleAllowedForCode(code, role, res)) return;
+  try {
+    const target = await pool.query('SELECT role FROM users WHERE code=$1', [code]);
+    if (!target.rows.length) return res.status(404).json({ error: 'Nie znaleziono uzytkownika' });
+    const targetRole = target.rows[0].role;
+    const canManagePrivileged = req.user.role === 'supervisor' || req.user.role === 'admin' || requesterCode === 'ADMIN' || requesterCode === 'RBR056';
+    if ((targetRole === 'manager' || targetRole === 'supervisor' || targetRole === 'admin' || role === 'manager' || role === 'supervisor' || role === 'admin') && !canManagePrivileged) {
+      return res.status(403).json({ error: 'Tylko supervisor lub admin moze zmieniac konta uprzywilejowane' });
+    }
+    await pool.query('UPDATE users SET role=$1 WHERE code=$2', [role, code]);
+    res.json({ success: true, code, role });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad serwera' });
   }
 });
 
@@ -257,14 +305,18 @@ app.put('/api/users/:code/block', auth, managerOnly, async (req, res) => {
 });
 
 app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
-  // Only supervisor/admin can delete managers
-  const target = await pool.query('SELECT role FROM users WHERE code=$1', [req.params.code]);
-  if (target.rows.length > 0 && target.rows[0].role === 'manager') {
-    if (req.user.role !== 'supervisor' && req.user.code !== 'ADMIN') {
-      return res.status(403).json({ error: 'Tylko kierownik lub admin może usuwać menedżerów.' });
+  const code = String(req.params.code || '').toUpperCase();
+  const requesterCode = String(req.user.code || '').toUpperCase();
+  if (!code || code === 'ADMIN') return res.status(400).json({ error: 'Nieprawidlowy uzytkownik' });
+  if (code === requesterCode) return res.status(400).json({ error: 'Nie mozesz usunac swojego konta' });
+  const target = await pool.query('SELECT role FROM users WHERE code=$1', [code]);
+  if (!target.rows.length) return res.status(404).json({ error: 'Nie znaleziono uzytkownika' });
+  if (target.rows[0].role === 'manager' || target.rows[0].role === 'supervisor') {
+    if (req.user.role !== 'supervisor' && req.user.role !== 'admin' && requesterCode !== 'ADMIN' && requesterCode !== 'RBR056') {
+      return res.status(403).json({ error: 'Tylko supervisor lub admin moze usuwac konta managerow i supervisora' });
     }
   }
-  await pool.query('DELETE FROM users WHERE code=$1', [req.params.code]);
+  await pool.query('DELETE FROM users WHERE code=$1', [code]);
   res.json({ success: true });
 });
 
@@ -474,7 +526,7 @@ app.get('/api/transport-dates', auth, async (req, res) => {
 app.get('/api/bathroom-comments', auth, async (req, res) => {
   try {
     await ensureBathroomCommentsTable();
-    const r = await pool.query('SELECT id, project, product, comment, author_code AS "authorCode", author_name AS "authorName", created_at AS "createdAt" FROM bathroom_comments ORDER BY created_at DESC');
+    const r = await pool.query('SELECT id, project, product, comment, author_code AS "authorCode", author_name AS "authorName", done, done_by AS "doneBy", done_at AS "doneAt", created_at AS "createdAt" FROM bathroom_comments ORDER BY created_at DESC');
     res.json(r.rows);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd odczytu komentarzy' });
@@ -495,6 +547,26 @@ app.post('/api/bathroom-comments', auth, managerOnly, async (req, res) => {
     res.json({ success: true, id: r.rows[0].id });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd zapisu komentarza' });
+  }
+});
+
+app.put('/api/bathroom-comments/:id/done', auth, managerOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  const done = !!req.body.done;
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Nieprawidlowy komentarz' });
+  try {
+    await ensureBathroomCommentsTable();
+    const r = await pool.query(
+      `UPDATE bathroom_comments
+       SET done=$2, done_by=$3, done_at=CASE WHEN $2 THEN NOW() ELSE NULL END
+       WHERE id=$1
+       RETURNING id`,
+      [id, done, done ? req.user.code : null]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Komentarz nie istnieje' });
+    res.json({ success: true, id, done });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Błąd zapisu statusu komentarza' });
   }
 });
 
@@ -737,9 +809,17 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
         const exists = await client.query('SELECT id FROM bathroom_comments WHERE id=$1', [c.id]);
         if (exists.rows.length === 0) {
           await client.query(
-            `INSERT INTO bathroom_comments (id, project, product, comment, author_code, author_name, created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))`,
-            [c.id, c.project, c.product, c.comment, c.author_code || c.authorCode || null, c.author_name || c.authorName || null, c.created_at || c.createdAt || null]
+            `INSERT INTO bathroom_comments (id, project, product, comment, author_code, author_name, done, done_by, done_at, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,NOW()))`,
+            [
+              c.id, c.project, c.product, c.comment,
+              c.author_code || c.authorCode || null,
+              c.author_name || c.authorName || null,
+              !!c.done,
+              c.done_by || c.doneBy || null,
+              c.done_at || c.doneAt || null,
+              c.created_at || c.createdAt || null
+            ]
           );
           commentsRestored++;
         }

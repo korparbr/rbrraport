@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.01</title>
+  <title>FlowRBR 1.1</title>
   <meta name="theme-color" content="#f7f8fb" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -59,6 +59,8 @@
       addUser: (token, code, name, password, role) => apiRequest("POST", "/api/users", { code, name, password, role }, token),
       resetPassword: (token, code) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/reset-password", {}, token),
       setUserBlocked: (token, code, blocked) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/block", { blocked }, token),
+      updateUserRole: (token, code, role) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/role", { role }, token),
+      deleteUser: (token, code) => apiRequest("DELETE", "/api/users/" + encodeURIComponent(code), null, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
@@ -66,6 +68,7 @@
       saveTransportDate: (token, project, product, loadDate) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate }, token),
       getBathroomComments: token => apiRequest("GET", "/api/bathroom-comments", null, token),
       addBathroomComment: (token, project, product, comment) => apiRequest("POST", "/api/bathroom-comments", { project, product, comment }, token),
+      setBathroomCommentDone: (token, id, done) => apiRequest("PUT", "/api/bathroom-comments/" + id + "/done", { done }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
       saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
@@ -236,7 +239,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.01</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.1</span>` : null}
         </div>
       `;
     }
@@ -1036,7 +1039,7 @@
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
-      const [mapFilterProject, setMapFilterProject] = useState("");
+      const [mapFilterProject, setMapFilterProject] = useState("all");
       const [mapFilterStage, setMapFilterStage] = useState("all");
       const [mapFilterAlerts, setMapFilterAlerts] = useState(false);
       const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "" });
@@ -1131,6 +1134,14 @@
       const cellKey = cell => cell.row + "-" + cell.col;
       const bathroomKey = (project, product) => String(project || "").trim() + "#" + productNo(product);
       const currentLayout = layouts[hall] || [];
+      const mapProjectOptions = useMemo(() => {
+        const projects = new Set(Object.keys(PROJECTS));
+        currentLayout.forEach(cell => { if (cell && cell.project) projects.add(String(cell.project)); });
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          if (line.project) projects.add(String(line.project));
+        }));
+        return [...projects].sort((a, b) => a.localeCompare(b, "pl", { numeric: true }));
+      }, [currentLayout, reports]);
       const layoutByCell = useMemo(() => {
         const map = {};
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
@@ -1169,6 +1180,16 @@
         if (!selectedCell) return [];
         return (bathroomComments || []).filter(c => sameProject(c.project, selectedCell.project) && productNo(c.product) === productNo(selectedCell.product));
       }, [bathroomComments, selectedCell]);
+      const commentStatusByBathroom = useMemo(() => {
+        const map = {};
+        (bathroomComments || []).forEach(c => {
+          const key = bathroomKey(c.project, c.product);
+          if (!map[key]) map[key] = { total: 0, open: 0 };
+          map[key].total++;
+          if (!c.done) map[key].open++;
+        });
+        return map;
+      }, [bathroomComments]);
       const addComment = async () => {
         if (!selectedCell || !newComment.trim()) return;
         setMsg(null);
@@ -1177,6 +1198,17 @@
           setNewComment("");
           await reloadBathroomComments();
           setMsg({ type: "success", text: "Komentarz dodany." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const setCommentDone = async (comment, done) => {
+        if (!comment || !canAddComments) return;
+        setMsg(null);
+        try {
+          await api.setBathroomCommentDone(token, comment.id, done);
+          await reloadBathroomComments();
+          setMsg({ type: "success", text: done ? "Komentarz oznaczony jako zrobiony." : "Komentarz oznaczony jako do zrobienia." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -1194,7 +1226,7 @@
       };
       const matchesMapFilters = (cell, alert) => {
         if (!cell) return true;
-        if (mapFilterProject.trim() && !String(cell.project || "").includes(mapFilterProject.trim())) return false;
+        if (mapFilterProject !== "all" && !sameProject(cell.project, mapFilterProject)) return false;
         if (mapFilterStage !== "all") {
           const state = stageByBathroom[bathroomKey(cell.project, cell.product)];
           if (!state || String(state.stage) !== mapFilterStage) return false;
@@ -1489,13 +1521,16 @@
           <div className="grid-3" style=${{ ...S.row3, marginTop: "12px" }}>
             <div>
               <label style=${S.label}>Filtr projektu</label>
-              <input style=${S.input} value=${mapFilterProject} onInput=${e => setMapFilterProject(e.target.value)} placeholder="np. 5551" />
+              <select style=${S.input} value=${mapFilterProject} onChange=${e => setMapFilterProject(e.target.value)}>
+                <option value="all">Wszystkie projekty</option>
+                ${mapProjectOptions.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+              </select>
             </div>
             <div>
               <label style=${S.label}>Filtr etapu</label>
               <select style=${S.input} value=${mapFilterStage} onChange=${e => setMapFilterStage(e.target.value)}>
-                <option value="all">Wszystkie</option>
-                ${stageColors.map(s => html`<option key=${s.stage} value=${s.stage}>${s.label}</option>`)}
+                <option value="all">Wszystkie etapy</option>
+                ${STAGES.map(s => html`<option key=${s[0]} value=${s[0]}>${s[1]}</option>`)}
               </select>
             </div>
             <div style=${{ display: "flex", alignItems: "end" }}>
@@ -1598,6 +1633,7 @@
                     const isSelected = selectedCell && cell && bathroomKey(selectedCell.project, selectedCell.product) === bathroomKey(cell.project, cell.product);
                     const loadDate = cell ? loadDateByBathroom[transportKey(cell.project, cell.product)] : "";
                     const alert = transportAlert(loadDate);
+                    const commentStatus = cell ? commentStatusByBathroom[bathroomKey(cell.project, cell.product)] : null;
                     const matchesFilter = matchesMapFilters(cell, alert);
                     return html`
                       <button
@@ -1648,6 +1684,21 @@
                               border: "1px solid " + COLORS.border,
                               zIndex: 2
                             }}>!</span>
+                          ` : null}
+                          ${commentStatus ? html`
+                            <span title=${commentStatus.open ? "Komentarz do zrobienia" : "Komentarze zrobione"} style=${{
+                              position: "absolute",
+                              left: "50%",
+                              bottom: "7px",
+                              transform: "translateX(-50%)",
+                              width: "13px",
+                              height: "13px",
+                              borderRadius: "999px",
+                              background: commentStatus.open ? "#ef4444" : "#22c55e",
+                              border: "2px solid #fff",
+                              boxShadow: "0 0 0 1px " + COLORS.border,
+                              zIndex: 2
+                            }}></span>
                           ` : null}
                           <div style=${{
                             background: st.background,
@@ -1726,8 +1777,19 @@
                 <div style=${{ display: "grid", gap: "8px", marginBottom: "10px" }}>
                   ${selectedComments.map(c => html`
                     <div key=${c.id} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
-                      <div style=${{ fontWeight: 800 }}>${c.comment}</div>
-                      <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${c.authorName || c.authorCode || ""} / ${(c.createdAt || "").slice(0, 10)}</div>
+                      <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start" }}>
+                        <div>
+                          <div style=${{ fontWeight: 800 }}>${c.comment}</div>
+                          <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${c.authorName || c.authorCode || ""} / ${(c.createdAt || "").slice(0, 10)}</div>
+                        </div>
+                        <span style=${{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", gap: "6px", color: c.done ? "#166534" : "#991b1b", fontSize: "12px", fontWeight: 900 }}>
+                          <span style=${{ width: "10px", height: "10px", borderRadius: "999px", background: c.done ? "#22c55e" : "#ef4444", display: "inline-block" }}></span>
+                          ${c.done ? "Zrobione" : "Do zrobienia"}
+                        </span>
+                      </div>
+                      ${canAddComments ? html`
+                        <button style=${{ ...S.ghost, marginTop: "8px", padding: "7px 10px" }} onClick=${() => setCommentDone(c, !c.done)}>${c.done ? "Cofnij" : "Zrobione"}</button>
+                      ` : null}
                     </div>
                   `)}
                 </div>
@@ -2270,7 +2332,20 @@
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
       const [resettingCode, setResettingCode] = useState("");
+      const [userFilter, setUserFilter] = useState({ text: "", role: "all", status: "all" });
       const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
+      const roleOptions = ["worker", "manager", "viewer", "supervisor"];
+      const visibleUsers = useMemo(() => (users || []).filter(u => {
+        const code = String(u.code || u.login || "");
+        const role = u.role || "worker";
+        const blocked = !!u.is_blocked;
+        const text = userFilter.text.trim().toLowerCase();
+        if (text && !(code.toLowerCase().includes(text) || String(u.name || "").toLowerCase().includes(text))) return false;
+        if (userFilter.role !== "all" && role !== userFilter.role) return false;
+        if (userFilter.status === "active" && blocked) return false;
+        if (userFilter.status === "blocked" && !blocked) return false;
+        return true;
+      }).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users, userFilter]);
 
       const remove = async id => {
         if (!confirm("Usunac raport?")) return;
@@ -2279,10 +2354,44 @@
       };
       const addUser = async () => {
         try {
-          await api.addUser(token, newUser.code.trim().toUpperCase(), newUser.name.trim(), newUser.password, newUser.role);
+          const code = newUser.code.trim().toUpperCase();
+          if (newUser.role === "supervisor" && code !== "RBR056") {
+            return setMsg({ type: "error", text: "Rola supervisor jest zastrzezona tylko dla konta RBR056." });
+          }
+          await api.addUser(token, code, newUser.name.trim(), newUser.password, newUser.role);
           setNewUser({ code: "", name: "", password: "zmien123", role: "worker" });
           await reloadUsers();
           setMsg({ type: "success", text: "Uzytkownik dodany." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const changeUserRole = async (worker, role) => {
+        const code = String(worker.code || worker.login || "").toUpperCase();
+        if (!code) return;
+        if (role === "supervisor" && code !== "RBR056") {
+          return setMsg({ type: "error", text: "Rola supervisor jest zastrzezona tylko dla konta RBR056." });
+        }
+        if (!confirm("Zmienic rodzaj konta " + (worker.name || code) + " na " + role + "?")) return;
+        setMsg(null);
+        try {
+          await api.updateUserRole(token, code, role);
+          await reloadUsers();
+          setMsg({ type: "success", text: "Rodzaj konta zostal zmieniony." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const deleteUser = async worker => {
+        const code = String(worker.code || worker.login || "").toUpperCase();
+        if (!code) return;
+        if (code === String(user.code || user.login || "").toUpperCase()) return setMsg({ type: "error", text: "Nie mozesz usunac swojego konta." });
+        if (!confirm("Usunac konto " + (worker.name || code) + "? Tej operacji nie cofniemy.")) return;
+        setMsg(null);
+        try {
+          await api.deleteUser(token, code);
+          await reloadUsers();
+          setMsg({ type: "success", text: "Konto zostalo usuniete." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -2353,9 +2462,7 @@
               </div>
               <div style=${{ display: "flex", gap: "8px", marginTop: "10px", alignItems: "center" }}>
                 <select style=${{ ...S.input, maxWidth: "180px" }} value=${newUser.role} onChange=${e => setNewUser({ ...newUser, role: e.target.value })}>
-                  <option value="worker">worker</option>
-                  <option value="manager">manager</option>
-                  <option value="viewer">viewer</option>
+                  ${roleOptions.map(role => html`<option key=${role} value=${role}>${role}${role === "supervisor" ? " (tylko RBR056)" : ""}</option>`)}
                 </select>
                 <button style=${S.btn} onClick=${addUser}>Dodaj</button>
               </div>
@@ -2365,18 +2472,34 @@
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "10px" }}>
                 Reset hasla jest dostepny przy pracownikach. Domyslne haslo: <strong style=${{ color: COLORS.text }}>zmien123</strong>.
               </div>
-              ${users.map(u => {
+              <div className="grid-3" style=${{ ...S.row3, marginBottom: "12px" }}>
+                <input style=${S.input} placeholder="Filtr: kod lub imie" value=${userFilter.text} onInput=${e => setUserFilter({ ...userFilter, text: e.target.value })} />
+                <select style=${S.input} value=${userFilter.role} onChange=${e => setUserFilter({ ...userFilter, role: e.target.value })}>
+                  <option value="all">Wszystkie role</option>
+                  ${roleOptions.map(role => html`<option key=${role} value=${role}>${role}</option>`)}
+                </select>
+                <select style=${S.input} value=${userFilter.status} onChange=${e => setUserFilter({ ...userFilter, status: e.target.value })}>
+                  <option value="all">Wszyscy</option>
+                  <option value="active">Aktywni</option>
+                  <option value="blocked">Zablokowani</option>
+                </select>
+              </div>
+              <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "8px" }}>Widoczne konta: ${visibleUsers.length} / ${users.length}</div>
+              ${visibleUsers.map(u => {
                 const code = u.code || u.login;
                 const role = u.role || "worker";
                 const isWorker = role === "worker";
                 const blocked = !!u.is_blocked;
                 return html`
-                  <div key=${code} style=${{ padding: "10px 0", borderTop: "1px solid " + COLORS.border, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+                  <div key=${code} style=${{ padding: "10px 0", borderTop: "1px solid " + COLORS.border, display: "grid", gridTemplateColumns: "minmax(180px, 1fr) minmax(160px, 220px) minmax(260px, auto)", alignItems: "center", gap: "12px" }}>
                     <div>
                       <strong>${code}</strong>
                       <span style=${{ color: COLORS.muted }}> ${u.name} / ${role}</span>
                       ${blocked ? html`<span style=${{ marginLeft: "8px", color: COLORS.red, fontWeight: 900 }}>ZABLOKOWANY</span>` : null}
                     </div>
+                    <select style=${S.input} value=${role} onChange=${e => changeUserRole(u, e.target.value)}>
+                      ${roleOptions.map(option => html`<option key=${option} value=${option}>${option}${option === "supervisor" ? " (tylko RBR056)" : ""}</option>`)}
+                    </select>
                     <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
                       ${isWorker ? html`
                         <button style=${{ ...S.ghost, opacity: resettingCode === code ? 0.6 : 1 }} disabled=${resettingCode === code} onClick=${() => resetWorkerPassword(u)}>
@@ -2384,6 +2507,7 @@
                         </button>
                       ` : null}
                       <button style=${blocked ? S.btn : S.danger} onClick=${() => toggleBlocked(u)}>${blocked ? "Odblokuj" : "Zablokuj"}</button>
+                      <button style=${S.danger} onClick=${() => deleteUser(u)}>Usun</button>
                     </div>
                   </div>
                 `;
