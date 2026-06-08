@@ -264,12 +264,16 @@ async function ensureProjectsTables() {
       count INTEGER NOT NULL DEFAULT 0,
       closed BOOLEAN NOT NULL DEFAULT FALSE,
       calculation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      imported_from_excel BOOLEAN NOT NULL DEFAULT FALSE,
+      import_source TEXT,
       updated_by TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
   await pool.query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS calculation_enabled BOOLEAN NOT NULL DEFAULT FALSE");
+  await pool.query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS imported_from_excel BOOLEAN NOT NULL DEFAULT FALSE");
+  await pool.query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS import_source TEXT");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS project_bathrooms (
       project TEXT NOT NULL REFERENCES projects(project) ON DELETE CASCADE,
@@ -613,7 +617,7 @@ app.get('/api/projects', auth, async (req, res) => {
   try {
     await ensureProjectsTables();
     const [projects, bathrooms] = await Promise.all([
-      pool.query('SELECT project, count, closed, calculation_enabled AS "calculationEnabled", updated_by AS "updatedBy", updated_at AS "updatedAt", created_at AS "createdAt" FROM projects ORDER BY project'),
+      pool.query('SELECT project, count, closed, calculation_enabled AS "calculationEnabled", imported_from_excel AS "importedFromExcel", import_source AS "importSource", updated_by AS "updatedBy", updated_at AS "updatedAt", created_at AS "createdAt" FROM projects ORDER BY project'),
       pool.query(`SELECT project, product, external_id AS "externalId", rbr_type AS "rbrType", ventilation_variant AS "ventilationVariant",
                   visible_high_walls AS "visibleHighWalls", requested_delivery AS "requestedDelivery"
                   FROM project_bathrooms ORDER BY project, product`)
@@ -636,8 +640,8 @@ app.post('/api/projects', auth, managerOnly, async (req, res) => {
   try {
     await ensureProjectsTables();
     await pool.query(
-      `INSERT INTO projects (project, count, closed, updated_by, updated_at)
-       VALUES ($1,$2,FALSE,$3,NOW())
+      `INSERT INTO projects (project, count, closed, imported_from_excel, import_source, updated_by, updated_at)
+       VALUES ($1,$2,FALSE,FALSE,NULL,$3,NOW())
        ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=FALSE, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
       [project, count, req.user.code]
     );
@@ -680,6 +684,7 @@ app.put('/api/projects/:project', auth, managerOnly, async (req, res) => {
 
 app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
+  const sourceFile = String(req.body.sourceFile || req.body.importSource || '').trim();
   const bathrooms = Array.isArray(req.body.bathrooms) ? req.body.bathrooms : [];
   if (!project || !bathrooms.length) return res.status(400).json({ error: 'Brak projektu lub lazienek do importu' });
   const client = await pool.connect();
@@ -699,10 +704,16 @@ app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
     const count = Math.max(Number(req.body.count) || 0, ...normalized.map(row => row.product));
     if (!count) return res.status(400).json({ error: 'Nie znaleziono numerow lazienek w pliku' });
     await client.query(
-      `INSERT INTO projects (project, count, closed, updated_by, updated_at)
-       VALUES ($1,$2,FALSE,$3,NOW())
-       ON CONFLICT (project) DO UPDATE SET count=GREATEST(projects.count, EXCLUDED.count), closed=FALSE, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
-      [project, count, req.user.code]
+      `INSERT INTO projects (project, count, closed, imported_from_excel, import_source, updated_by, updated_at)
+       VALUES ($1,$2,FALSE,TRUE,$3,$4,NOW())
+       ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=FALSE,
+         imported_from_excel=TRUE, import_source=COALESCE(EXCLUDED.import_source, projects.import_source),
+         updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, count, sourceFile || null, req.user.code]
+    );
+    await client.query(
+      'DELETE FROM project_bathrooms WHERE project=$1 AND NOT (product = ANY($2::int[]))',
+      [project, normalized.map(row => row.product)]
     );
     for (const row of normalized) {
       await client.query(
@@ -715,7 +726,7 @@ app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
       );
     }
     await client.query('COMMIT');
-    await auditLog(req, 'project_imported', project, { count, imported: normalized.length });
+    await auditLog(req, 'project_imported', project, { count, imported: normalized.length, sourceFile });
     res.json({ success: true, project, count, imported: normalized.length });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -1365,10 +1376,12 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       await ensureProjectsTables();
       for (const p of (data.projects || [])) {
         await client.query(
-          `INSERT INTO projects (project, count, closed, calculation_enabled, updated_by, updated_at, created_at)
-           VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()),COALESCE($7,NOW()))
-           ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=EXCLUDED.closed, calculation_enabled=EXCLUDED.calculation_enabled, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
-          [p.project, p.count || 0, !!p.closed, !!(p.calculation_enabled || p.calculationEnabled), p.updated_by || p.updatedBy || req.user.code, p.updated_at || p.updatedAt || null, p.created_at || p.createdAt || null]
+          `INSERT INTO projects (project, count, closed, calculation_enabled, imported_from_excel, import_source, updated_by, updated_at, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,NOW()),COALESCE($9,NOW()))
+           ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=EXCLUDED.closed, calculation_enabled=EXCLUDED.calculation_enabled,
+             imported_from_excel=EXCLUDED.imported_from_excel, import_source=EXCLUDED.import_source,
+             updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [p.project, p.count || 0, !!p.closed, !!(p.calculation_enabled || p.calculationEnabled), !!(p.imported_from_excel || p.importedFromExcel), p.import_source || p.importSource || null, p.updated_by || p.updatedBy || req.user.code, p.updated_at || p.updatedAt || null, p.created_at || p.createdAt || null]
         );
         projectsRestored++;
       }
