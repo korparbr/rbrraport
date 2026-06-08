@@ -1235,8 +1235,12 @@
         }
       };
 
+      const mainStyle = tab === "transport"
+        ? { ...S.main, width: "100%", maxWidth: "none", padding: "16px 18px" }
+        : S.main;
+
       return html`
-        <main style=${S.main}>
+        <main style=${mainStyle}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
             <div>
               <h1 style=${{ ...S.title, marginBottom: "4px" }}>Czesc, ${user.name || user.code}</h1>
@@ -1244,7 +1248,7 @@
             </div>
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
-          <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
+          <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
             ${[
               ["add", "Dodaj raport"],
               ["history", "Historia"],
@@ -2322,6 +2326,7 @@
         try { return JSON.parse(localStorage.getItem(CLOSED_KEY) || "[]"); } catch (_) { return []; }
       });
       const [selectedProject, setSelectedProject] = useState("");
+      const [selectedType, setSelectedType] = useState("all");
       const [newProject, setNewProject] = useState("");
       const [newCount, setNewCount] = useState("");
       const [editCount, setEditCount] = useState("");
@@ -2359,6 +2364,26 @@
       const selectedCount = selectedProject
         ? Number((allProjects.find(p => p.project === selectedProject) || {}).count || customProjects[selectedProject] || PROJECTS[selectedProject]) || 0
         : 0;
+      const selectProject = project => {
+        setSelectedProject(project);
+        setSelectedType("all");
+      };
+      const selectedTypeOptions = useMemo(() => {
+        if (!selectedProject || !selectedCount) return [];
+        const byKey = {};
+        for (let product = 1; product <= selectedCount; product++) {
+          const type = bathroomTypeInfo(serverProjects, selectedProject, product);
+          if (!type.hasExcelMeta) continue;
+          if (!byKey[type.key]) byKey[type.key] = { key: type.key, label: type.label, count: 0 };
+          byKey[type.key].count++;
+        }
+        return Object.values(byKey).sort((a, b) => a.label.localeCompare(b.label, "pl", { numeric: true }));
+      }, [serverProjects, selectedProject, selectedCount]);
+      const visibleProducts = useMemo(() => {
+        const products = Array.from({ length: selectedCount }, (_, i) => i + 1);
+        if (selectedType === "all") return products;
+        return products.filter(product => bathroomTypeInfo(serverProjects, selectedProject, product).key === selectedType);
+      }, [serverProjects, selectedProject, selectedCount, selectedType]);
       const bathroomStates = useMemo(() => {
         const states = {};
         if (!selectedProject) return states;
@@ -2404,7 +2429,7 @@
           setClosedProjects(closedProjects.filter(p => p !== project));
           localStorage.setItem(CLOSED_KEY, JSON.stringify(closedProjects.filter(p => p !== project)));
           await reloadProjects();
-          setSelectedProject(project);
+          selectProject(project);
           setNewProject("");
           setNewCount("");
           setMsg({ type: "success", text: "Projekt dodany." });
@@ -2420,7 +2445,10 @@
           const next = [...new Set([...closedProjects, project])];
           saveClosed(next);
           await reloadProjects();
-          if (selectedProject === project) setSelectedProject("");
+          if (selectedProject === project) {
+            setSelectedProject("");
+            setSelectedType("all");
+          }
           setMsg({ type: "success", text: "Projekt " + project + " zamkniety." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
@@ -2515,7 +2543,7 @@
           saveClosed(nextClosed);
           saveCustom({ ...customProjects, [project]: count });
           await reloadProjects();
-          setSelectedProject(project);
+          selectProject(project);
           setImportProjectNo("");
           setMsg({ type: "success", text: "Zaimportowano " + result.imported + " lazienek dla projektu " + project + "." });
         } catch (err) {
@@ -2561,7 +2589,7 @@
             ${allProjects.map(item => html`
               <button
                 key=${item.project}
-                onClick=${() => setSelectedProject(item.project)}
+                onClick=${() => selectProject(item.project)}
                 style=${{
                   background: selectedProject === item.project ? COLORS.accent : COLORS.panel2,
                   color: selectedProject === item.project ? "#fff" : COLORS.text,
@@ -2605,12 +2633,33 @@
                 </div>
               `)}
             </div>
+            ${selectedTypeOptions.length ? html`
+              <div style=${{ display: "grid", gridTemplateColumns: "minmax(220px, 420px) 1fr", gap: "10px", alignItems: "end", marginBottom: "14px" }}>
+                <div>
+                  <label style=${S.label}>Filtr typu</label>
+                  <select style=${S.input} value=${selectedType} onChange=${e => setSelectedType(e.target.value)}>
+                    <option value="all">Wszystkie typy (${selectedCount})</option>
+                    ${selectedTypeOptions.map(type => html`
+                      <option key=${type.key} value=${type.key}>${type.label} (${type.count})</option>
+                    `)}
+                  </select>
+                </div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", paddingBottom: "10px" }}>
+                  Widoczne lazienki: ${visibleProducts.length} / ${selectedCount}
+                </div>
+              </div>
+            ` : html`
+              <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
+                Ten projekt nie ma danych typow z importu Excela.
+              </div>
+            `}
             <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "8px" }}>
-              ${Array.from({ length: selectedCount }, (_, i) => i + 1).map(product => {
+              ${visibleProducts.map(product => {
                 const state = bathroomStates[product] || { id: "projekt" };
                 const wh = warehouseById(state.id);
+                const type = bathroomTypeInfo(serverProjects, selectedProject, product);
                 return html`
-                  <div key=${product} title=${wh.label + (state.date ? " / " + state.date : "")} style=${{
+                  <div key=${product} title=${wh.label + (state.date ? " / " + state.date : "") + (type.hasExcelMeta ? " / " + type.label : "")} style=${{
                     minHeight: "46px",
                     border: "1px solid " + COLORS.border,
                     borderRadius: "9px",
@@ -2624,6 +2673,9 @@
                   </div>
                 `;
               })}
+              ${visibleProducts.length ? null : html`
+                <div style=${{ gridColumn: "1 / -1", color: COLORS.dim, textAlign: "center", padding: "18px" }}>Brak lazienek dla wybranego typu.</div>
+              `}
             </div>
           </section>
         ` : null}
