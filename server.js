@@ -143,6 +143,20 @@ async function ensureTransportDatesTable() {
   `);
 }
 
+async function ensureBathroomCommentsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bathroom_comments (
+      id SERIAL PRIMARY KEY,
+      project TEXT NOT NULL,
+      product INTEGER NOT NULL,
+      comment TEXT NOT NULL,
+      author_code TEXT,
+      author_name TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -457,6 +471,33 @@ app.get('/api/transport-dates', auth, async (req, res) => {
   }
 });
 
+app.get('/api/bathroom-comments', auth, async (req, res) => {
+  try {
+    await ensureBathroomCommentsTable();
+    const r = await pool.query('SELECT id, project, product, comment, author_code AS "authorCode", author_name AS "authorName", created_at AS "createdAt" FROM bathroom_comments ORDER BY created_at DESC');
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Błąd odczytu komentarzy' });
+  }
+});
+
+app.post('/api/bathroom-comments', auth, managerOnly, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const product = Number(req.body.product);
+  const comment = String(req.body.comment || '').trim();
+  if (!project || !Number.isInteger(product) || product < 1 || !comment) return res.status(400).json({ error: 'Brak projektu, łazienki lub komentarza' });
+  try {
+    await ensureBathroomCommentsTable();
+    const r = await pool.query(
+      'INSERT INTO bathroom_comments (project, product, comment, author_code, author_name) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+      [project, product, comment, req.user.code, req.user.name || req.user.code]
+    );
+    res.json({ success: true, id: r.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Błąd zapisu komentarza' });
+  }
+});
+
 app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
@@ -583,13 +624,15 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     await ensureUsersBlockColumn();
     await ensureMapLayoutsTable();
     await ensureTransportDatesTable();
-    const [users, reports, lines, recipients, mapLayouts, transportDates] = await Promise.all([
+    await ensureBathroomCommentsTable();
+    const [users, reports, lines, recipients, mapLayouts, transportDates, comments] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
       pool.query('SELECT * FROM email_recipients ORDER BY id'),
       pool.query('SELECT * FROM map_layouts ORDER BY id'),
       pool.query('SELECT * FROM transport_dates ORDER BY load_date, project, product'),
+      pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
     ]);
 
     const backup = {
@@ -602,6 +645,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         email_recipients: recipients.rows,
         map_layouts: mapLayouts.rows,
         transport_dates: transportDates.rows,
+        bathroom_comments: comments.rows,
       },
       counts: {
         users: users.rows.length,
@@ -609,6 +653,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         report_lines: lines.rows.length,
         map_layouts: mapLayouts.rows.length,
         transport_dates: transportDates.rows.length,
+        bathroom_comments: comments.rows.length,
       }
     };
 
@@ -684,9 +729,26 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
         mapsRestored++;
       }
     }
+
+    let commentsRestored = 0;
+    if (Array.isArray(data.bathroom_comments)) {
+      await ensureBathroomCommentsTable();
+      for (const c of data.bathroom_comments) {
+        const exists = await client.query('SELECT id FROM bathroom_comments WHERE id=$1', [c.id]);
+        if (exists.rows.length === 0) {
+          await client.query(
+            `INSERT INTO bathroom_comments (id, project, product, comment, author_code, author_name, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))`,
+            [c.id, c.project, c.product, c.comment, c.author_code || c.authorCode || null, c.author_name || c.authorName || null, c.created_at || c.createdAt || null]
+          );
+          commentsRestored++;
+        }
+      }
+      await client.query("SELECT setval(pg_get_serial_sequence('bathroom_comments','id'), COALESCE((SELECT MAX(id) FROM bathroom_comments), 1), true)");
+    }
     
     await client.query('COMMIT');
-    res.json({ success: true, message: `Przywrócono ${added} raportów, ${linesAdded} wpisów` });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${mapsRestored} map, ${commentsRestored} komentarzy` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
