@@ -59,7 +59,7 @@ const MAP_HALLS = {
 function canManageMaps(req, res, next) {
   const role = req.user.role;
   const code = String(req.user.code || '').toUpperCase();
-  if (role !== 'manager' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056' && code !== 'POM80' && code !== 'POM82') {
+  if (role !== 'worker+' && role !== 'manager' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056' && code !== 'POM80' && code !== 'POM82') {
     return res.status(403).json({ error: 'Brak uprawnień do modyfikacji map' });
   }
   next();
@@ -175,6 +175,7 @@ async function ensureProjectsTables() {
       project TEXT NOT NULL REFERENCES projects(project) ON DELETE CASCADE,
       product INTEGER NOT NULL,
       external_id TEXT,
+      rbr_type TEXT,
       ventilation_variant TEXT,
       visible_high_walls TEXT,
       requested_delivery TEXT,
@@ -182,6 +183,7 @@ async function ensureProjectsTables() {
       PRIMARY KEY (project, product)
     )
   `);
+  await pool.query("ALTER TABLE project_bathrooms ADD COLUMN IF NOT EXISTS rbr_type TEXT");
 }
 
 async function ensureMaterialUsagesTable() {
@@ -257,7 +259,7 @@ function managerOnly(req, res, next) {
 
 function normalizeUserRole(role) {
   const value = String(role || 'worker').trim().toLowerCase();
-  return ['worker', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
+  return ['worker', 'worker+', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
 }
 
 function assertRoleAllowedForCode(code, role, res) {
@@ -440,7 +442,7 @@ app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => 
     await client.query('BEGIN');
     await client.query('DELETE FROM stage_permissions WHERE stage=$1', [stage]);
     for (const code of normalized) {
-      const exists = await client.query('SELECT code FROM users WHERE code=$1 AND role=$2', [code, 'worker']);
+      const exists = await client.query("SELECT code FROM users WHERE code=$1 AND role IN ('worker','worker+')", [code]);
       if (!exists.rows.length) continue;
       await client.query(
         `INSERT INTO stage_permissions (stage, worker_code, updated_by, updated_at)
@@ -465,7 +467,7 @@ app.get('/api/projects', auth, async (req, res) => {
     await ensureProjectsTables();
     const [projects, bathrooms] = await Promise.all([
       pool.query('SELECT project, count, closed, calculation_enabled AS "calculationEnabled", updated_by AS "updatedBy", updated_at AS "updatedAt", created_at AS "createdAt" FROM projects ORDER BY project'),
-      pool.query(`SELECT project, product, external_id AS "externalId", ventilation_variant AS "ventilationVariant",
+      pool.query(`SELECT project, product, external_id AS "externalId", rbr_type AS "rbrType", ventilation_variant AS "ventilationVariant",
                   visible_high_walls AS "visibleHighWalls", requested_delivery AS "requestedDelivery"
                   FROM project_bathrooms ORDER BY project, product`)
     ]);
@@ -539,6 +541,7 @@ app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
       .map(raw => ({
         product: Number(raw.product),
         externalId: String(raw.externalId || raw.id || '').trim(),
+        rbrType: String(raw.rbrType || raw.rbr_type || '').trim(),
         ventilationVariant: String(raw.ventilationVariant || '').trim(),
         visibleHighWalls: String(raw.visibleHighWalls || '').trim(),
         requestedDelivery: String(raw.requestedDelivery || '').trim()
@@ -554,12 +557,12 @@ app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
     );
     for (const row of normalized) {
       await client.query(
-        `INSERT INTO project_bathrooms (project, product, external_id, ventilation_variant, visible_high_walls, requested_delivery, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,NOW())
-         ON CONFLICT (project, product) DO UPDATE SET external_id=EXCLUDED.external_id,
+        `INSERT INTO project_bathrooms (project, product, external_id, rbr_type, ventilation_variant, visible_high_walls, requested_delivery, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+         ON CONFLICT (project, product) DO UPDATE SET external_id=EXCLUDED.external_id, rbr_type=EXCLUDED.rbr_type,
            ventilation_variant=EXCLUDED.ventilation_variant, visible_high_walls=EXCLUDED.visible_high_walls,
            requested_delivery=EXCLUDED.requested_delivery, updated_at=NOW()`,
-        [project, row.product, row.externalId, row.ventilationVariant, row.visibleHighWalls, row.requestedDelivery]
+        [project, row.product, row.externalId, row.rbrType, row.ventilationVariant, row.visibleHighWalls, row.requestedDelivery]
       );
     }
     await client.query('COMMIT');
@@ -1177,12 +1180,12 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       }
       for (const b of (data.project_bathrooms || [])) {
         await client.query(
-          `INSERT INTO project_bathrooms (project, product, external_id, ventilation_variant, visible_high_walls, requested_delivery, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))
-           ON CONFLICT (project, product) DO UPDATE SET external_id=EXCLUDED.external_id,
+          `INSERT INTO project_bathrooms (project, product, external_id, rbr_type, ventilation_variant, visible_high_walls, requested_delivery, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,NOW()))
+           ON CONFLICT (project, product) DO UPDATE SET external_id=EXCLUDED.external_id, rbr_type=EXCLUDED.rbr_type,
              ventilation_variant=EXCLUDED.ventilation_variant, visible_high_walls=EXCLUDED.visible_high_walls,
              requested_delivery=EXCLUDED.requested_delivery, updated_at=EXCLUDED.updated_at`,
-          [b.project, b.product, b.external_id || b.externalId || null, b.ventilation_variant || b.ventilationVariant || null, b.visible_high_walls || b.visibleHighWalls || null, b.requested_delivery || b.requestedDelivery || null, b.updated_at || b.updatedAt || null]
+          [b.project, b.product, b.external_id || b.externalId || null, b.rbr_type || b.rbrType || null, b.ventilation_variant || b.ventilationVariant || null, b.visible_high_walls || b.visibleHighWalls || null, b.requested_delivery || b.requestedDelivery || null, b.updated_at || b.updatedAt || null]
         );
       }
     }
