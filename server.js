@@ -130,6 +130,18 @@ async function ensureUsersBlockColumn() {
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE");
 }
 
+async function ensureStagePermissionsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stage_permissions (
+      stage TEXT NOT NULL,
+      worker_code TEXT NOT NULL REFERENCES users(code) ON DELETE CASCADE,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (stage, worker_code)
+    )
+  `);
+}
+
 async function ensureTransportDatesTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS transport_dates (
@@ -219,12 +231,14 @@ async function ensureBathroomChecksTable() {
       product INTEGER NOT NULL,
       check_type TEXT NOT NULL DEFAULT 'tiling',
       checked BOOLEAN NOT NULL DEFAULT FALSE,
+      status TEXT NOT NULL DEFAULT 'pending',
       checked_by TEXT,
       checked_at TIMESTAMPTZ,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (project, product, check_type)
     )
   `);
+  await pool.query("ALTER TABLE bathroom_checks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'");
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -252,6 +266,23 @@ function assertRoleAllowedForCode(code, role, res) {
     return false;
   }
   return true;
+}
+
+async function forbiddenStagesForWorker(client, workerCode, lines) {
+  const code = String(workerCode || '').trim().toUpperCase();
+  const stages = [...new Set((lines || []).map(line => String(line.stage || '').trim()).filter(Boolean))];
+  if (!code || !stages.length) return [];
+  await ensureStagePermissionsTable();
+  const r = await client.query(
+    `SELECT stage, array_agg(UPPER(worker_code)) AS workers
+     FROM stage_permissions
+     WHERE stage = ANY($1)
+     GROUP BY stage`,
+    [stages]
+  );
+  return r.rows
+    .filter(row => Array.isArray(row.workers) && row.workers.length && !row.workers.includes(code))
+    .map(row => row.stage);
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
@@ -382,6 +413,50 @@ app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
   }
   await pool.query('DELETE FROM users WHERE code=$1', [code]);
   res.json({ success: true });
+});
+
+app.get('/api/stage-permissions', auth, async (req, res) => {
+  try {
+    await ensureStagePermissionsTable();
+    const r = await pool.query(
+      `SELECT stage, worker_code AS "workerCode", updated_by AS "updatedBy", updated_at AS "updatedAt"
+       FROM stage_permissions
+       ORDER BY stage, worker_code`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu przypisan etapow' });
+  }
+});
+
+app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => {
+  const stage = String(req.params.stage || '').trim();
+  const workerCodes = Array.isArray(req.body.workerCodes) ? req.body.workerCodes : [];
+  const normalized = [...new Set(workerCodes.map(code => String(code || '').trim().toUpperCase()).filter(Boolean))];
+  if (!stage) return res.status(400).json({ error: 'Brak etapu' });
+  const client = await pool.connect();
+  try {
+    await ensureStagePermissionsTable();
+    await client.query('BEGIN');
+    await client.query('DELETE FROM stage_permissions WHERE stage=$1', [stage]);
+    for (const code of normalized) {
+      const exists = await client.query('SELECT code FROM users WHERE code=$1 AND role=$2', [code, 'worker']);
+      if (!exists.rows.length) continue;
+      await client.query(
+        `INSERT INTO stage_permissions (stage, worker_code, updated_by, updated_at)
+         VALUES ($1,$2,$3,NOW())
+         ON CONFLICT (stage, worker_code) DO UPDATE SET updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+        [stage, code, req.user.code]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ success: true, stage, workerCodes: normalized });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message || 'Blad zapisu przypisan etapow' });
+  } finally {
+    client.release();
+  }
 });
 
 // PROJECTS
@@ -541,7 +616,7 @@ app.post('/api/material-usages', auth, async (req, res) => {
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
 app.get('/api/reports', auth, async (req, res) => {
   try {
-    const isManager = req.user.role === 'manager' || req.user.role === 'supervisor';
+    const isManager = true;
     const q = `
       SELECT r.id, r.worker_code, u.name as worker_name, r.report_date::text as date, r.created_at,
         json_agg(json_build_object('id',rl.id,'project',rl.project,'product',rl.product,
@@ -562,6 +637,11 @@ app.post('/api/reports', auth, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const forbidden = await forbiddenStagesForWorker(client, req.user.code, lines);
+    if (forbidden.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: `Nie masz uprawnien do raportowania etapow: ${forbidden.join(', ')}` });
+    }
     const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [req.user.code, date]);
     const reportId = r.rows[0].id;
 
@@ -649,6 +729,11 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const forbidden = await forbiddenStagesForWorker(client, workerCode, lines);
+    if (forbidden.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: `Pracownik nie ma uprawnien do raportowania etapow: ${forbidden.join(', ')}` });
+    }
     const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [workerCode, date]);
     const reportId = r.rows[0].id;
     const skipped = [], saved = [];
@@ -792,7 +877,7 @@ app.get('/api/bathroom-checks', auth, async (req, res) => {
   try {
     await ensureBathroomChecksTable();
     const r = await pool.query(
-      `SELECT project, product, check_type AS "checkType", checked,
+      `SELECT project, product, check_type AS "checkType", checked, status,
               checked_by AS "checkedBy", checked_at AS "checkedAt", updated_at AS "updatedAt"
        FROM bathroom_checks
        ORDER BY updated_at DESC, project, product`
@@ -807,19 +892,21 @@ app.put('/api/bathroom-checks', auth, managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
   const checkType = String(req.body.checkType || 'tiling').trim() || 'tiling';
-  const checked = !!req.body.checked;
+  const requestedStatus = String(req.body.status || '').trim().toLowerCase();
+  const status = ['pending', 'checked', 'rework'].includes(requestedStatus) ? requestedStatus : (req.body.checked ? 'checked' : 'pending');
+  const checked = status === 'checked';
   if (!project || !Number.isInteger(product) || product < 1) return res.status(400).json({ error: 'Brak projektu lub numeru lazienki' });
   try {
     await ensureBathroomChecksTable();
     await pool.query(
-      `INSERT INTO bathroom_checks (project, product, check_type, checked, checked_by, checked_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,CASE WHEN $4 THEN NOW() ELSE NULL END,NOW())
+      `INSERT INTO bathroom_checks (project, product, check_type, checked, status, checked_by, checked_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $4 THEN NOW() ELSE NULL END,NOW())
        ON CONFLICT (project, product, check_type)
-       DO UPDATE SET checked=EXCLUDED.checked, checked_by=EXCLUDED.checked_by,
+       DO UPDATE SET checked=EXCLUDED.checked, status=EXCLUDED.status, checked_by=EXCLUDED.checked_by,
          checked_at=EXCLUDED.checked_at, updated_at=NOW()`,
-      [project, product, checkType, checked, checked ? req.user.code : null]
+      [project, product, checkType, checked, status, checked ? req.user.code : null]
     );
-    res.json({ success: true, project, product, checkType, checked });
+    res.json({ success: true, project, product, checkType, checked, status });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad zapisu kontroli' });
   }
@@ -967,9 +1054,10 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     await ensureTransportDatesTable();
     await ensureBathroomCommentsTable();
     await ensureBathroomChecksTable();
+    await ensureStagePermissionsTable();
     await ensureProjectsTables();
     await ensureMaterialUsagesTable();
-    const [users, reports, lines, recipients, mapLayouts, transportDates, comments, checks, projects, projectBathrooms, materialUsages] = await Promise.all([
+    const [users, reports, lines, recipients, mapLayouts, transportDates, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
@@ -978,6 +1066,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
       pool.query('SELECT * FROM transport_dates ORDER BY load_date, project, product'),
       pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
       pool.query('SELECT * FROM bathroom_checks ORDER BY updated_at'),
+      pool.query('SELECT * FROM stage_permissions ORDER BY stage, worker_code'),
       pool.query('SELECT * FROM projects ORDER BY project'),
       pool.query('SELECT * FROM project_bathrooms ORDER BY project, product'),
       pool.query('SELECT * FROM material_usages ORDER BY created_at'),
@@ -995,6 +1084,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         transport_dates: transportDates.rows,
         bathroom_comments: comments.rows,
         bathroom_checks: checks.rows,
+        stage_permissions: stagePermissions.rows,
         projects: projects.rows,
         project_bathrooms: projectBathrooms.rows,
         material_usages: materialUsages.rows,
@@ -1007,6 +1097,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         transport_dates: transportDates.rows.length,
         bathroom_comments: comments.rows.length,
         bathroom_checks: checks.rows.length,
+        stage_permissions: stagePermissions.rows.length,
         projects: projects.rows.length,
         project_bathrooms: projectBathrooms.rows.length,
         material_usages: materialUsages.rows.length,
@@ -1155,16 +1246,17 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       await ensureBathroomChecksTable();
       for (const c of data.bathroom_checks) {
         await client.query(
-          `INSERT INTO bathroom_checks (project, product, check_type, checked, checked_by, checked_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))
+          `INSERT INTO bathroom_checks (project, product, check_type, checked, status, checked_by, checked_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,NOW()))
            ON CONFLICT (project, product, check_type)
-           DO UPDATE SET checked=EXCLUDED.checked, checked_by=EXCLUDED.checked_by,
+           DO UPDATE SET checked=EXCLUDED.checked, status=EXCLUDED.status, checked_by=EXCLUDED.checked_by,
              checked_at=EXCLUDED.checked_at, updated_at=EXCLUDED.updated_at`,
           [
             c.project,
             c.product,
             c.check_type || c.checkType || 'tiling',
             !!c.checked,
+            c.status || (c.checked ? 'checked' : 'pending'),
             c.checked_by || c.checkedBy || null,
             c.checked_at || c.checkedAt || null,
             c.updated_at || c.updatedAt || null
@@ -1173,9 +1265,26 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
         checksRestored++;
       }
     }
+
+    let stagePermissionsRestored = 0;
+    if (Array.isArray(data.stage_permissions)) {
+      await ensureStagePermissionsTable();
+      for (const p of data.stage_permissions) {
+        const stage = String(p.stage || '').trim();
+        const workerCode = String(p.worker_code || p.workerCode || '').trim().toUpperCase();
+        if (!stage || !workerCode) continue;
+        await client.query(
+          `INSERT INTO stage_permissions (stage, worker_code, updated_by, updated_at)
+           VALUES ($1,$2,$3,COALESCE($4,NOW()))
+           ON CONFLICT (stage, worker_code) DO UPDATE SET updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [stage, workerCode, p.updated_by || p.updatedBy || req.user.code, p.updated_at || p.updatedAt || null]
+        );
+        stagePermissionsRestored++;
+      }
+    }
     
     await client.query('COMMIT');
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${materialRestored} kalkulacji` });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
