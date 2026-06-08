@@ -13,6 +13,8 @@ const { sendDailyReport } = require('./mailer');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'raportrbr-dev-secret';
+const LOGIN_LOCK_MAX = Number(process.env.LOGIN_LOCK_MAX || 5);
+const LOGIN_LOCK_MINUTES = Number(process.env.LOGIN_LOCK_MINUTES || 15);
 
 // ─── DATABASE CONNECTION WITH RESILIENCE ─────────────────────────────────────
 const pool = new Pool({
@@ -47,8 +49,48 @@ async function testConnection() {
 }
 testConnection();
 
+app.set('trust proxy', 1);
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  next();
+});
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+const rateBuckets = new Map();
+function rateLimit({ windowMs, max, prefix }) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const key = `${prefix}:${ip}`;
+    const bucket = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
+    if (bucket.resetAt <= now) {
+      bucket.count = 0;
+      bucket.resetAt = now + windowMs;
+    }
+    bucket.count++;
+    rateBuckets.set(key, bucket);
+    res.setHeader('RateLimit-Limit', String(max));
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, max - bucket.count)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+    if (bucket.count > max) {
+      return res.status(429).json({ error: 'Za duzo prob. Sprobuj ponownie pozniej.' });
+    }
+    next();
+  };
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateBuckets.entries()) {
+    if (bucket.resetAt <= now) rateBuckets.delete(key);
+  }
+}, 10 * 60 * 1000).unref();
+app.use('/api/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 20, prefix: 'login' }));
+app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 900, prefix: 'api' }));
 
 const MAP_HALLS = {
   betonowanie: { rows: ['F', 'E'], cols: 23 },
@@ -128,6 +170,56 @@ async function ensureMapLayoutsTable() {
 
 async function ensureUsersBlockColumn() {
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT FALSE");
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_count INTEGER NOT NULL DEFAULT 0");
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS lock_until TIMESTAMPTZ");
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ");
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_failed_login_at TIMESTAMPTZ");
+}
+
+async function ensureAuditLogsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id SERIAL PRIMARY KEY,
+      actor_code TEXT,
+      actor_role TEXT,
+      action TEXT NOT NULL,
+      target TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+async function auditLog(req, action, target, details = {}) {
+  try {
+    await ensureAuditLogsTable();
+    await pool.query(
+      `INSERT INTO audit_logs (actor_code, actor_role, action, target, ip, user_agent, details)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+      [
+        req.user?.code || details.code || null,
+        req.user?.role || null,
+        action,
+        target || null,
+        req.ip || req.socket?.remoteAddress || null,
+        String(req.headers['user-agent'] || '').slice(0, 300),
+        JSON.stringify(details || {})
+      ]
+    );
+  } catch (err) {
+    console.error('Audit log error:', err.message);
+  }
+}
+
+function passwordValidationError(password, { allowDefault = false } = {}) {
+  const value = String(password || '');
+  if (allowDefault && value === 'zmien123') return null;
+  if (value.length < 8) return 'Haslo musi miec minimum 8 znakow.';
+  if (!/[A-Za-z]/.test(value) || !/\d/.test(value)) return 'Haslo musi zawierac litery i cyfry.';
+  if (value === 'zmien123') return 'Domyslne haslo moze byc uzyte tylko do resetu lub pierwszego logowania.';
+  return null;
 }
 
 async function ensureStagePermissionsTable() {
@@ -255,7 +347,7 @@ async function ensureBathroomChecksTable() {
 function auth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Brak tokenu' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
+  try { req.user = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }); next(); }
   catch { res.status(401).json({ error: 'Nieprawidłowy token' }); }
 }
 function managerOnly(req, res, next) {
@@ -298,35 +390,56 @@ async function forbiddenStagesForWorker(client, workerCode, lines) {
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
 app.post('/api/login', async (req, res) => {
   const { code, password } = req.body;
-  if (!code || !password) return res.status(400).json({ error: 'Podaj kod i hasło' });
+  if (!code || !password) return res.status(400).json({ error: 'Podaj kod i haslo' });
+  const loginCode = String(code || '').trim().toUpperCase();
   try {
-    const r = await pool.query('SELECT * FROM users WHERE UPPER(code) = UPPER($1)', [code.trim()]);
+    await ensureUsersBlockColumn();
+    const r = await pool.query('SELECT * FROM users WHERE UPPER(code) = UPPER($1)', [loginCode]);
     const user = r.rows[0];
-    if (!user) return res.status(401).json({ error: 'Nie znaleziono konta dla tego kodu' });
-    if (user.is_blocked) return res.status(403).json({ error: 'Konto jest zablokowane. Skontaktuj się z przełożonym.' });
+    if (!user) {
+      await auditLog(req, 'login_failed', loginCode, { code: loginCode, reason: 'unknown_code' });
+      return res.status(401).json({ error: 'Nie znaleziono konta dla tego kodu' });
+    }
+    if (user.is_blocked) {
+      await auditLog(req, 'login_blocked', user.code, { reason: 'account_blocked' });
+      return res.status(403).json({ error: 'Konto jest zablokowane. Skontaktuj sie z przelozonym.' });
+    }
+    if (user.lock_until && new Date(user.lock_until).getTime() > Date.now()) {
+      await auditLog(req, 'login_blocked', user.code, { reason: 'temporary_lock', lockUntil: user.lock_until });
+      return res.status(423).json({ error: 'Za duzo blednych prob. Konto chwilowo zablokowane.' });
+    }
     const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) return res.status(401).json({ error: 'Nieprawidłowe hasło' });
+    if (!valid) {
+      const failedCount = Number(user.failed_login_count || 0) + 1;
+      const lockUntil = failedCount >= LOGIN_LOCK_MAX ? new Date(Date.now() + LOGIN_LOCK_MINUTES * 60 * 1000) : null;
+      await pool.query('UPDATE users SET failed_login_count=$1, lock_until=$2, last_failed_login_at=NOW() WHERE code=$3', [failedCount, lockUntil, user.code]);
+      await auditLog(req, 'login_failed', user.code, { reason: 'bad_password', failedCount, locked: !!lockUntil });
+      return res.status(lockUntil ? 423 : 401).json({ error: lockUntil ? 'Za duzo blednych prob. Konto chwilowo zablokowane.' : 'Nieprawidlowe haslo' });
+    }
+    await pool.query('UPDATE users SET failed_login_count=0, lock_until=NULL, last_login_at=NOW() WHERE code=$1', [user.code]);
     const token = jwt.sign({ code: user.code, name: user.name, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
+    await auditLog(req, 'login_success', user.code);
     res.json({ token, user: { code: user.code, name: user.name, role: user.role, mustChangePassword: user.must_change_password } });
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Błąd serwera' }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Blad serwera' }); }
 });
 
 app.post('/api/change-password', auth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
-  if (!newPassword || newPassword.length < 4) return res.status(400).json({ error: 'Hasło min. 4 znaki' });
+  const passwordError = passwordValidationError(newPassword);
+  if (passwordError) return res.status(400).json({ error: passwordError });
   try {
     const r = await pool.query('SELECT * FROM users WHERE code = $1', [req.user.code]);
     const user = r.rows[0];
     if (!user.must_change_password) {
       const valid = await bcrypt.compare(currentPassword || '', user.password_hash);
-      if (!valid) return res.status(401).json({ error: 'Aktualne hasło nieprawidłowe' });
+      if (!valid) return res.status(401).json({ error: 'Aktualne haslo nieprawidlowe' });
     }
     const hash = await bcrypt.hash(newPassword, 10);
     await pool.query('UPDATE users SET password_hash=$1, must_change_password=FALSE WHERE code=$2', [hash, req.user.code]);
+    await auditLog(req, 'password_changed', req.user.code);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Błąd serwera' }); }
+  } catch (err) { res.status(500).json({ error: 'Blad serwera' }); }
 });
-
 // ─── USERS ────────────────────────────────────────────────────────────────────
 app.get('/api/users', auth, managerOnly, async (req, res) => {
   try {
@@ -341,13 +454,16 @@ app.post('/api/users', auth, managerOnly, async (req, res) => {
   const userCode = String(code || '').trim().toUpperCase();
   const role = normalizeUserRole(req.body.role);
   const requesterCode = String(req.user.code || '').toUpperCase();
-  if (!userCode || !name || !password || password.length < 4) return res.status(400).json({ error: 'Nieprawidlowe dane' });
+  if (!userCode || !name || !password) return res.status(400).json({ error: 'Nieprawidlowe dane' });
+  const passwordError = passwordValidationError(password, { allowDefault: true });
+  if (passwordError) return res.status(400).json({ error: passwordError });
   if (!assertRoleAllowedForCode(userCode, role, res)) return;
   if (role === 'admin' && requesterCode !== 'ADMIN' && requesterCode !== 'RBR056') return res.status(403).json({ error: 'Tylko admin moze tworzyc konta admin' });
   try {
     const hash = await bcrypt.hash(password, 10);
-    const mustChange = role === 'manager' || role === 'supervisor' || role === 'admin' ? false : true;
+    const mustChange = password === 'zmien123' ? true : !(role === 'manager' || role === 'supervisor' || role === 'admin');
     await pool.query('INSERT INTO users (code, name, password_hash, must_change_password, role) VALUES ($1,$2,$3,$4,$5)', [userCode, name, hash, mustChange, role]);
+    await auditLog(req, 'user_created', userCode, { role });
     res.json({ success: true });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Konto już istnieje' });
@@ -371,6 +487,7 @@ app.put('/api/users/:code/role', auth, managerOnly, async (req, res) => {
       return res.status(403).json({ error: 'Tylko supervisor lub admin moze zmieniac konta uprzywilejowane' });
     }
     await pool.query('UPDATE users SET role=$1 WHERE code=$2', [role, code]);
+    await auditLog(req, 'user_role_changed', code, { from: targetRole, to: role });
     res.json({ success: true, code, role });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad serwera' });
@@ -378,6 +495,7 @@ app.put('/api/users/:code/role', auth, managerOnly, async (req, res) => {
 });
 
 app.put('/api/users/:code/reset-password', auth, managerOnly, async (req, res) => {
+  await ensureUsersBlockColumn();
   // Check if target user is a manager - only supervisor/admin can reset managers
   const target = await pool.query('SELECT role FROM users WHERE code=$1', [req.params.code]);
   if (target.rows.length > 0 && target.rows[0].role === 'manager') {
@@ -386,7 +504,8 @@ app.put('/api/users/:code/reset-password', auth, managerOnly, async (req, res) =
     }
   }
   const hash = await bcrypt.hash('zmien123', 10);
-  await pool.query('UPDATE users SET password_hash=$1, must_change_password=TRUE WHERE code=$2', [hash, req.params.code]);
+  await pool.query('UPDATE users SET password_hash=$1, must_change_password=TRUE, failed_login_count=0, lock_until=NULL WHERE code=$2', [hash, req.params.code]);
+  await auditLog(req, 'password_reset', String(req.params.code || '').toUpperCase());
   res.json({ success: true });
 });
 
@@ -403,6 +522,7 @@ app.put('/api/users/:code/block', auth, managerOnly, async (req, res) => {
       return res.status(403).json({ error: 'Tylko supervisor lub admin może blokować menedżerów.' });
     }
     await pool.query('UPDATE users SET is_blocked=$1 WHERE code=$2', [blocked, code]);
+    await auditLog(req, blocked ? 'user_blocked' : 'user_unblocked', code);
     res.json({ success: true, code, blocked });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd serwera' });
@@ -422,7 +542,25 @@ app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
     }
   }
   await pool.query('DELETE FROM users WHERE code=$1', [code]);
+  await auditLog(req, 'user_deleted', code, { role: target.rows[0].role });
   res.json({ success: true });
+});
+
+app.get('/api/audit-logs', auth, managerOnly, async (req, res) => {
+  try {
+    await ensureAuditLogsTable();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const r = await pool.query(
+      `SELECT id, actor_code AS "actorCode", actor_role AS "actorRole", action, target, ip, user_agent AS "userAgent", details, created_at AS "createdAt"
+       FROM audit_logs
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu audytu' });
+  }
 });
 
 app.get('/api/stage-permissions', auth, async (req, res) => {
@@ -460,6 +598,7 @@ app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => 
       );
     }
     await client.query('COMMIT');
+    await auditLog(req, 'stage_permissions_changed', stage, { workerCodes: normalized });
     res.json({ success: true, stage, workerCodes: normalized });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -502,6 +641,7 @@ app.post('/api/projects', auth, managerOnly, async (req, res) => {
        ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=FALSE, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
       [project, count, req.user.code]
     );
+    await auditLog(req, 'project_saved', project, { count });
     res.json({ success: true, project, count });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad zapisu projektu' });
@@ -531,6 +671,7 @@ app.put('/api/projects/:project', auth, managerOnly, async (req, res) => {
     } else {
       return res.status(400).json({ error: 'Brak danych do zmiany' });
     }
+    await auditLog(req, 'project_updated', project, { count: Number.isInteger(count) && count > 0 ? count : null, closed, calculationEnabled });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad edycji projektu' });
@@ -574,6 +715,7 @@ app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
       );
     }
     await client.query('COMMIT');
+    await auditLog(req, 'project_imported', project, { count, imported: normalized.length });
     res.json({ success: true, project, count, imported: normalized.length });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -709,7 +851,8 @@ app.post('/api/reports', auth, async (req, res) => {
 app.delete('/api/report-lines/:id', auth, async (req, res) => {
   try {
     // Worker can only delete their own lines, manager can delete any
-    const isManager = req.user.role === 'manager' || req.user.role === 'supervisor';
+    const actorCode = String(req.user.code || '').toUpperCase();
+    const isManager = req.user.role === 'manager' || req.user.role === 'supervisor' || req.user.role === 'admin' || actorCode === 'ADMIN' || actorCode === 'RBR056';
     if (isManager) {
       await pool.query('DELETE FROM report_lines WHERE id=$1', [req.params.id]);
     } else {
@@ -723,6 +866,7 @@ app.delete('/api/report-lines/:id', auth, async (req, res) => {
       if (r.rows.length === 0) return res.status(403).json({ error: 'Brak dostępu do tego wpisu' });
       await pool.query('DELETE FROM report_lines WHERE id=$1', [req.params.id]);
     }
+    await auditLog(req, 'report_line_deleted', String(req.params.id));
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -730,6 +874,7 @@ app.delete('/api/report-lines/:id', auth, async (req, res) => {
 
 app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
   await pool.query('DELETE FROM reports WHERE id=$1', [req.params.id]);
+  await auditLog(req, 'report_deleted', String(req.params.id));
   res.json({ success: true });
 });
 
@@ -803,6 +948,7 @@ app.put('/api/maps-layouts', auth, canManageMaps, async (req, res) => {
        ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
       [JSON.stringify(layouts), req.user.code]
     );
+    await auditLog(req, 'maps_layout_changed', 'main');
     res.json({ success: true, layouts });
   } catch (err) {
     console.error('Maps layouts PUT error:', err);
@@ -820,6 +966,7 @@ app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
        ON CONFLICT (id) DO UPDATE SET photos=EXCLUDED.photos, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
       [JSON.stringify(photos), req.user.code]
     );
+    await auditLog(req, 'maps_photos_changed', 'main');
     res.json({ success: true, photos });
   } catch (err) {
     console.error('Maps photos PUT error:', err);
@@ -949,6 +1096,7 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
     await ensureTransportDatesTable();
     if (!loadDate) {
       await pool.query('DELETE FROM transport_dates WHERE project=$1 AND product=$2', [project, product]);
+      await auditLog(req, 'transport_deleted', `${project}#${product}`, { project, product });
       return res.json({ success: true, deleted: true });
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(loadDate)) return res.status(400).json({ error: 'Nieprawidłowa data załadunku' });
@@ -979,6 +1127,7 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
          delay_note=EXCLUDED.delay_note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
       [project, product, loadDate, lkwNumber, orderName, trailer, direction, sizeLabel, unloadDate || null, carrier, note, delayNote, req.user.code]
     );
+    await auditLog(req, 'transport_saved', `${project}#${product}`, { project, product, loadDate, lkwNumber });
     res.json({ success: true, project, product, loadDate, lkwNumber, orderName, trailer, direction, sizeLabel, unloadDate, carrier, note, delayNote });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd zapisu transportu' });
@@ -1141,6 +1290,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="raportrbr_backup_${new Date().toISOString().slice(0,10)}.json"`);
+    await auditLog(req, 'backup_exported', 'database', backup.counts);
     res.json(backup);
     console.log(`Backup exported: ${lines.rows.length} report lines`);
   } catch (err) {
@@ -1331,6 +1481,7 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
     }
     
     await client.query('COMMIT');
+    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored });
     res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji` });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -1342,23 +1493,6 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
 // index.html is in the same directory as server.js
 const publicPath = path.join(__dirname);
 app.use(express.static(publicPath));
-
-// PWA files
-app.get('/manifest.json', (req, res) => res.sendFile(path.join(publicPath, 'manifest.json')));
-app.get('/sw.js', (req, res) => {
-  res.setHeader('Service-Worker-Allowed', '/');
-  res.sendFile(path.join(publicPath, 'sw.js'));
-});
-app.get('/icon-192.png', (req, res) => res.sendFile(path.join(publicPath, 'icon-192.png')));
-app.get('/icon-512.png', (req, res) => res.sendFile(path.join(publicPath, 'icon-512.png')));
-
-app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api')) {
-    res.sendFile(path.join(publicPath, 'index.html'));
-  } else {
-    res.status(404).json({ error: 'Not found' });
-  }
-});
 
 app.get('/api/health', async (req, res) => {
   try {
@@ -1377,6 +1511,29 @@ app.get('/api/health', async (req, res) => {
   } catch (err) {
     res.status(503).json({ status: 'error', db: { connected: false, error: err.message } });
   }
+});
+
+// PWA files
+app.get('/manifest.json', (req, res) => res.sendFile(path.join(publicPath, 'manifest.json')));
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.sendFile(path.join(publicPath, 'sw.js'));
+});
+app.get('/icon-192.png', (req, res) => res.sendFile(path.join(publicPath, 'icon-192.png')));
+app.get('/icon-512.png', (req, res) => res.sendFile(path.join(publicPath, 'icon-512.png')));
+
+app.get('*', (req, res) => {
+  if (!req.path.startsWith('/api')) {
+    res.sendFile(path.join(publicPath, 'index.html'));
+  } else {
+    res.status(404).json({ error: 'Not found' });
+  }
+});
+
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  console.error('Request error:', err.message);
+  res.status(err.message && err.message.includes('CORS') ? 403 : 500).json({ error: err.message || 'Blad serwera' });
 });
 
 app.listen(PORT, () => console.log(`RaportRBR v1.2 running on port ${PORT}`));

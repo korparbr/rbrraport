@@ -2326,7 +2326,7 @@
         try { return JSON.parse(localStorage.getItem(CLOSED_KEY) || "[]"); } catch (_) { return []; }
       });
       const [selectedProject, setSelectedProject] = useState("");
-      const [selectedType, setSelectedType] = useState("all");
+      const [projectFilters, setProjectFilters] = useState({ type: "all", ventilation: "all", walls: "all" });
       const [newProject, setNewProject] = useState("");
       const [newCount, setNewCount] = useState("");
       const [editCount, setEditCount] = useState("");
@@ -2364,26 +2364,51 @@
       const selectedCount = selectedProject
         ? Number((allProjects.find(p => p.project === selectedProject) || {}).count || customProjects[selectedProject] || PROJECTS[selectedProject]) || 0
         : 0;
+      const emptyProjectFilters = { type: "all", ventilation: "all", walls: "all" };
+      const rbrTypeOnly = value => {
+        const text = String(value || "").trim();
+        return text.includes("-") ? text.split("-").slice(1).join("-").trim() : text;
+      };
       const selectProject = project => {
         setSelectedProject(project);
-        setSelectedType("all");
+        setProjectFilters(emptyProjectFilters);
       };
-      const selectedTypeOptions = useMemo(() => {
-        if (!selectedProject || !selectedCount) return [];
-        const byKey = {};
+      const selectedFilterOptions = useMemo(() => {
+        const result = { type: {}, ventilation: {}, walls: {} };
+        if (!selectedProject || !selectedCount) return result;
         for (let product = 1; product <= selectedCount; product++) {
-          const type = bathroomTypeInfo(serverProjects, selectedProject, product);
-          if (!type.hasExcelMeta) continue;
-          if (!byKey[type.key]) byKey[type.key] = { key: type.key, label: type.label, count: 0 };
-          byKey[type.key].count++;
+          const meta = bathroomMetaMap(serverProjects)[transportKey(selectedProject, product)] || {};
+          const values = {
+            type: rbrTypeOnly(meta.rbrType),
+            ventilation: String(meta.ventilationVariant || "").trim(),
+            walls: String(meta.visibleHighWalls || "").trim()
+          };
+          Object.entries(values).forEach(([field, value]) => {
+            if (!value) return;
+            if (!result[field][value]) result[field][value] = { value, count: 0 };
+            result[field][value].count++;
+          });
         }
-        return Object.values(byKey).sort((a, b) => a.label.localeCompare(b.label, "pl", { numeric: true }));
+        return Object.fromEntries(Object.entries(result).map(([field, values]) => [
+          field,
+          Object.values(values).sort((a, b) => a.value.localeCompare(b.value, "pl", { numeric: true }))
+        ]));
       }, [serverProjects, selectedProject, selectedCount]);
+      const hasProjectFilterOptions = selectedFilterOptions.type.length || selectedFilterOptions.ventilation.length || selectedFilterOptions.walls.length;
       const visibleProducts = useMemo(() => {
         const products = Array.from({ length: selectedCount }, (_, i) => i + 1);
-        if (selectedType === "all") return products;
-        return products.filter(product => bathroomTypeInfo(serverProjects, selectedProject, product).key === selectedType);
-      }, [serverProjects, selectedProject, selectedCount, selectedType]);
+        return products.filter(product => {
+          const meta = bathroomMetaMap(serverProjects)[transportKey(selectedProject, product)] || {};
+          const values = {
+            type: rbrTypeOnly(meta.rbrType),
+            ventilation: String(meta.ventilationVariant || "").trim(),
+            walls: String(meta.visibleHighWalls || "").trim()
+          };
+          return (projectFilters.type === "all" || values.type === projectFilters.type)
+            && (projectFilters.ventilation === "all" || values.ventilation === projectFilters.ventilation)
+            && (projectFilters.walls === "all" || values.walls === projectFilters.walls);
+        });
+      }, [serverProjects, selectedProject, selectedCount, projectFilters]);
       const bathroomStates = useMemo(() => {
         const states = {};
         if (!selectedProject) return states;
@@ -2447,7 +2472,7 @@
           await reloadProjects();
           if (selectedProject === project) {
             setSelectedProject("");
-            setSelectedType("all");
+            setProjectFilters(emptyProjectFilters);
           }
           setMsg({ type: "success", text: "Projekt " + project + " zamkniety." });
         } catch (e) {
@@ -2633,24 +2658,43 @@
                 </div>
               `)}
             </div>
-            ${selectedTypeOptions.length ? html`
-              <div style=${{ display: "grid", gridTemplateColumns: "minmax(220px, 420px) 1fr", gap: "10px", alignItems: "end", marginBottom: "14px" }}>
+            ${hasProjectFilterOptions ? html`
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "10px", alignItems: "end", marginBottom: "14px" }}>
                 <div>
-                  <label style=${S.label}>Filtr typu</label>
-                  <select style=${S.input} value=${selectedType} onChange=${e => setSelectedType(e.target.value)}>
-                    <option value="all">Wszystkie typy (${selectedCount})</option>
-                    ${selectedTypeOptions.map(type => html`
-                      <option key=${type.key} value=${type.key}>${type.label} (${type.count})</option>
+                  <label style=${S.label}>Typ</label>
+                  <select style=${S.input} value=${projectFilters.type} onChange=${e => setProjectFilters({ ...projectFilters, type: e.target.value })}>
+                    <option value="all">Wszystkie typy</option>
+                    ${selectedFilterOptions.type.map(option => html`
+                      <option key=${option.value} value=${option.value}>${option.value} (${option.count})</option>
                     `)}
                   </select>
                 </div>
-                <div style=${{ color: COLORS.muted, fontSize: "13px", paddingBottom: "10px" }}>
-                  Widoczne lazienki: ${visibleProducts.length} / ${selectedCount}
+                <div>
+                  <label style=${S.label}>Wariant wentylacji</label>
+                  <select style=${S.input} value=${projectFilters.ventilation} onChange=${e => setProjectFilters({ ...projectFilters, ventilation: e.target.value })}>
+                    <option value="all">Wszystkie wentylacje</option>
+                    ${selectedFilterOptions.ventilation.map(option => html`
+                      <option key=${option.value} value=${option.value}>${option.value} (${option.count})</option>
+                    `)}
+                  </select>
+                </div>
+                <div>
+                  <label style=${S.label}>Wariant scian</label>
+                  <select style=${S.input} value=${projectFilters.walls} onChange=${e => setProjectFilters({ ...projectFilters, walls: e.target.value })}>
+                    <option value="all">Wszystkie sciany</option>
+                    ${selectedFilterOptions.walls.map(option => html`
+                      <option key=${option.value} value=${option.value}>${option.value} (${option.count})</option>
+                    `)}
+                  </select>
+                </div>
+                <div style=${{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", paddingBottom: "2px" }}>
+                  <button style=${S.ghost} onClick=${() => setProjectFilters(emptyProjectFilters)}>Wyczysc filtry</button>
+                  <span style=${{ color: COLORS.muted, fontSize: "13px" }}>Widoczne: ${visibleProducts.length} / ${selectedCount}</span>
                 </div>
               </div>
             ` : html`
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
-                Ten projekt nie ma danych typow z importu Excela.
+                Ten projekt nie ma danych typu, wentylacji lub scian z importu Excela.
               </div>
             `}
             <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "8px" }}>
