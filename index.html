@@ -3,11 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.1</title>
+  <title>FlowRBR 1.2</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
   <meta name="theme-color" content="#f7f8fb" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://unpkg.com/htm@3.1.1/dist/htm.js"></script>
   <style>
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -61,14 +65,22 @@
       setUserBlocked: (token, code, blocked) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/block", { blocked }, token),
       updateUserRole: (token, code, role) => apiRequest("PUT", "/api/users/" + encodeURIComponent(code) + "/role", { role }, token),
       deleteUser: (token, code) => apiRequest("DELETE", "/api/users/" + encodeURIComponent(code), null, token),
+      getProjects: token => apiRequest("GET", "/api/projects", null, token),
+      addProject: (token, project, count) => apiRequest("POST", "/api/projects", { project, count }, token),
+      updateProject: (token, project, data) => apiRequest("PUT", "/api/projects/" + encodeURIComponent(project), data, token),
+      importProject: (token, project, bathrooms, count) => apiRequest("POST", "/api/projects/import", { project, bathrooms, count }, token),
+      getMaterialUsages: token => apiRequest("GET", "/api/material-usages", null, token),
+      addMaterialUsage: (token, payload) => apiRequest("POST", "/api/material-usages", payload, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
       getTransportDates: token => apiRequest("GET", "/api/transport-dates", null, token),
-      saveTransportDate: (token, project, product, loadDate) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate }, token),
+      saveTransportDate: (token, project, product, loadDate, lkwNumber) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate, lkwNumber }, token),
       getBathroomComments: token => apiRequest("GET", "/api/bathroom-comments", null, token),
       addBathroomComment: (token, project, product, comment) => apiRequest("POST", "/api/bathroom-comments", { project, product, comment }, token),
       setBathroomCommentDone: (token, id, done) => apiRequest("PUT", "/api/bathroom-comments/" + id + "/done", { done }, token),
+      getBathroomChecks: token => apiRequest("GET", "/api/bathroom-checks", null, token),
+      setBathroomCheck: (token, project, product, checkType, checked) => apiRequest("PUT", "/api/bathroom-checks", { project, product, checkType, checked }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
       saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
@@ -102,7 +114,7 @@
     const STAGES = [
       ["2.1", "2.1 - Wyprodukowanie profilow scian i sufitu"],
       ["4", "4 - Skrecanie"],
-      ["5", "5 - Nawozenie"],
+      ["5", "5 - Izolacja 2"],
       ["6.1", "6.1 - Szlifowanie"],
       ["6.2", "6.2 - Osadzanie rurek"],
       ["7", "7 - Kosmetyka Grob"],
@@ -168,6 +180,96 @@
       const map = {};
       (items || []).forEach(item => { map[transportKey(item.project, item.product)] = item.loadDate; });
       return map;
+    };
+    const transportInfoMap = items => {
+      const map = {};
+      (items || []).forEach(item => { map[transportKey(item.project, item.product)] = item; });
+      return map;
+    };
+    const projectCountMap = serverProjects => {
+      const counts = { ...PROJECTS };
+      (serverProjects || []).forEach(project => {
+        counts[String(project.project)] = Number(project.count) || 0;
+      });
+      return counts;
+    };
+    const activeProjectItems = serverProjects => {
+      const serverByProject = {};
+      (serverProjects || []).forEach(p => { serverByProject[String(p.project)] = p; });
+      const keys = new Set([...Object.keys(PROJECTS), ...Object.keys(serverByProject)]);
+      return [...keys]
+        .filter(project => !(serverByProject[project] && serverByProject[project].closed))
+        .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
+        .map(project => ({ project, count: Number((serverByProject[project] && serverByProject[project].count) || PROJECTS[project]) || 0, data: serverByProject[project] || null }));
+    };
+    const bathroomMetaMap = serverProjects => {
+      const map = {};
+      (serverProjects || []).forEach(project => (project.bathrooms || []).forEach(b => {
+        map[transportKey(project.project, b.product)] = b;
+      }));
+      return map;
+    };
+    const layoutProductionKeys = layouts => {
+      const set = new Set();
+      Object.values(layouts || {}).forEach(cells => (cells || []).forEach(cell => {
+        if (cell && cell.project && cell.product) set.add(transportKey(cell.project, cell.product));
+      }));
+      return set;
+    };
+    const MATERIAL_STAGES = {
+      "7.1": [
+        ["tapeMb", "Ilosc tasmy (mb)", "number"],
+        ["insideCorners", "Narozniki wew. (szt)", "number"],
+        ["outsideCorners", "Narozniki zew. (szt)", "number"],
+        ["isolationSystem", "System izolowania", "text"],
+        ["singleCuffs", "Manszety pojedyncze", "number"],
+        ["doubleCuffs", "Manszety podwojne", "number"],
+        ["other", "Inne", "text"]
+      ],
+      "11.1": [
+        ["tileSize", "Rozmiar plytki (mm)", "text"],
+        ["tileCount", "Ilosc plytek (szt.)", "number"],
+        ["glue", "Ilosc i rodzaj kleju (kg)", "text"],
+        ["stripType", "Rodzaj listwy", "text"],
+        ["stripCount", "Ilosc listew", "number"],
+        ["other", "Inne", "text"]
+      ],
+      "11.2": [
+        ["tileSize", "Rozmiar plytki (mm)", "text"],
+        ["tileCount", "Ilosc plytek (szt.)", "number"],
+        ["glue", "Ilosc i rodzaj kleju (kg)", "text"],
+        ["stripType", "Rodzaj listwy", "text"],
+        ["stripCount", "Ilosc listew", "number"],
+        ["other", "Inne", "text"]
+      ],
+      "13.1": [
+        ["color", "Kolor", "text"],
+        ["amountKg", "Ilosc (kg)", "number"]
+      ],
+      "13.2": [
+        ["color", "Kolor", "text"],
+        ["amountPcs", "Ilosc (szt)", "number"]
+      ],
+      "8.2": []
+    };
+    const materialStageIds = Object.keys(MATERIAL_STAGES);
+    const bathroomTypeInfo = (serverProjects, project, product) => {
+      const meta = bathroomMetaMap(serverProjects)[transportKey(project, product)] || {};
+      const parts = [
+        meta.externalId || "",
+        meta.ventilationVariant || "",
+        meta.visibleHighWalls || "",
+        meta.requestedDelivery || ""
+      ].map(v => String(v || "").trim());
+      const key = parts.filter(Boolean).join("|") || "typ-brak-danych";
+      const label = [
+        meta.externalId ? "ID: " + meta.externalId : "",
+        meta.ventilationVariant ? "Vent: " + meta.ventilationVariant : "",
+        meta.visibleHighWalls ? "Walls: " + meta.visibleHighWalls : "",
+        meta.requestedDelivery ? "Delivery: " + meta.requestedDelivery : ""
+      ].filter(Boolean).join(" / ") || "Typ bez danych z Excela";
+      const hasExcelMeta = parts.some(Boolean);
+      return { key, label, meta, hasExcelMeta };
     };
     const getReportLines = r => r.lines || r.report_lines || r.reportLines || r.items || r.entries || [];
     const normalizeReport = r => ({
@@ -239,7 +341,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.1</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.2</span>` : null}
         </div>
       `;
     }
@@ -285,7 +387,7 @@
       `;
     }
 
-    function LineEditor({ reports, lines, onChange }) {
+    function LineEditor({ reports, lines, onChange, serverProjects }) {
       const [stages, setStages] = useState([]);
       const [project, setProject] = useState("");
       const [selectedProducts, setSelectedProducts] = useState([]);
@@ -293,12 +395,15 @@
       const [note, setNote] = useState("");
       const [msg, setMsg] = useState(null);
 
-      const max = project ? PROJECTS[project] || 0 : 0;
+      const reportProjects = useMemo(() => activeProjectItems(serverProjects).filter(item => item.count > 0), [serverProjects]);
+      const reportCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
+      const max = project ? reportCounts[project] || 0 : 0;
       const products = useMemo(() => Array.from({ length: max }, (_, i) => i + 1), [max]);
       const usedInCurrentReport = useMemo(() => new Set(
         lines.filter(l => sameProject(l.project, project) && stages.includes(String(l.stage))).map(l => String(l.stage) + "#" + productNo(l.product))
       ), [lines, project, stages]);
       const isUsedProduct = product => stages.length > 0 && stages.every(stage => usedInCurrentReport.has(stage + "#" + product));
+      const requiresHall = false;
       const toggleStage = id => {
         setStages(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
         if (id === "5" && stages.includes("5")) setHall("");
@@ -322,12 +427,12 @@
         if (!stages.length) return setMsg({ type: "error", text: "Wybierz co najmniej jeden etap." });
         if (!project) return setMsg({ type: "error", text: "Wybierz projekt." });
         if (!selectedProducts.length) return setMsg({ type: "error", text: "Zaznacz co najmniej jedna lazienke." });
-        if (stages.includes("5") && !hall) return setMsg({ type: "error", text: "Dla etapu 5 wybierz hale." });
+        if (requiresHall && !hall) return setMsg({ type: "error", text: "Dla tego etapu wybierz hale." });
         const next = selectedProducts
           .sort((a, b) => a - b)
           .flatMap(product => stages
             .filter(stage => !usedInCurrentReport.has(stage + "#" + product))
-            .map(stage => ({ project, product, stage, note, hall: stage === "5" ? hall : undefined })));
+            .map(stage => ({ project, product, stage, note, hall: requiresHall ? hall : undefined })));
         if (!next.length) return setMsg({ type: "warning", text: "Ten etap jest juz zapisany dla wybranych lazienek." });
         onChange([...lines, ...next]);
         setSelectedProducts([]); setNote(""); setMsg({ type: "success", text: "Dodano " + next.length + " pozycji." });
@@ -362,11 +467,11 @@
               <label style=${S.label}>Projekt</label>
               <select style=${S.input} value=${project} onChange=${e => { setProject(e.target.value); resetSelection(); }}>
                 <option value="">- wybierz projekt -</option>
-                ${Object.keys(PROJECTS).map(p => html`<option key=${p} value=${p}>${p} (${PROJECTS[p]} szt.)</option>`)}
+                ${reportProjects.map(item => html`<option key=${item.project} value=${item.project}>${item.project} (${item.count} szt.)</option>`)}
               </select>
             </div>
           </div>
-          ${stages.includes("5") ? html`
+          ${requiresHall ? html`
             <div>
               <label style=${{ ...S.label, marginTop: "12px" }}>Hala</label>
               <select style=${{ ...S.input, maxWidth: "360px" }} value=${hall} onChange=${e => setHall(e.target.value)}>
@@ -650,7 +755,7 @@
       `;
     }
 
-    function ManagerAddReport({ token, reports, users, reloadReports }) {
+    function ManagerAddReport({ token, reports, users, serverProjects, reloadReports }) {
       const [open, setOpen] = useState(false);
       const [workerCode, setWorkerCode] = useState("");
       const [date, setDate] = useState(today());
@@ -709,7 +814,7 @@
               </div>
             </div>
             ${workerCode ? html`
-              <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} />
+              <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} />
               <section style=${{ ...S.card, marginBottom: 0 }}>
                 <h3 style=${{ ...S.title, fontSize: "17px" }}>Raport do zapisania (${lines.length})</h3>
                 <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} />
@@ -722,7 +827,7 @@
       `;
     }
 
-    function ManagerReports({ reports, users, onDelete, token, reloadReports }) {
+    function ManagerReports({ reports, users, onDelete, token, serverProjects, reloadReports }) {
       const [dateFrom, setDateFrom] = useState("");
       const [dateTo, setDateTo] = useState("");
       const [worker, setWorker] = useState("all");
@@ -806,7 +911,7 @@
       };
 
       return html`
-        <${ManagerAddReport} token=${token} reports=${reports} users=${users} reloadReports=${reloadReports} />
+        <${ManagerAddReport} token=${token} reports=${reports} users=${users} serverProjects=${serverProjects} reloadReports=${reloadReports} />
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
             <h2 style=${{ ...S.title, margin: 0 }}>Raporty</h2>
@@ -948,26 +1053,96 @@
       `;
     }
 
-    function WorkerView({ user, token, reports, transportDates, bathroomComments, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, serverProjects, materialUsages, reloadMaterialUsages, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
       const [msg, setMsg] = useState(null);
       const [tab, setTab] = useState("add");
+      const [materialPrompt, setMaterialPrompt] = useState(null);
+      const [materialForm, setMaterialForm] = useState({});
+      const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
       const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
       const workerCode = String(user.code || user.login || "").toUpperCase();
       const canEditWorkerMaps = workerCode === "POM80" || workerCode === "POM82";
+      const calcProjectMap = useMemo(() => {
+        const map = {};
+        (serverProjects || []).forEach(p => { map[String(p.project)] = !!p.calculationEnabled; });
+        return map;
+      }, [serverProjects]);
+      const materialKeys = useMemo(() => {
+        const set = new Set();
+        (materialUsages || []).forEach(u => set.add(String(u.project) + "#" + String(u.stage) + "#" + String(u.typeKey)));
+        return set;
+      }, [materialUsages]);
+      const findMaterialPrompt = (extraKeys = materialSessionKeys) => {
+        for (const line of lines) {
+          const stage = String(line.stage || "");
+          if (!materialStageIds.includes(stage)) continue;
+          if (!calcProjectMap[String(line.project)]) continue;
+          const type = bathroomTypeInfo(serverProjects, line.project, line.product);
+          if (!type.hasExcelMeta) continue;
+          const key = String(line.project) + "#" + stage + "#" + type.key;
+          if (!materialKeys.has(key) && !extraKeys.has(key)) return { line, stage, type, usageKey: key };
+        }
+        return null;
+      };
+      const saveReportNow = async () => {
+        const result = await api.addReport(token, today(), lines);
+        setLines([]);
+        await reload();
+        setMsg(saveReportMessage(result, lines.length));
+      };
 
       const save = async () => {
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        const prompt = findMaterialPrompt();
+        if (prompt) {
+          setMaterialSessionKeys(new Set());
+          setMaterialPrompt(prompt);
+          setMaterialForm({});
+          return;
+        }
         setSaving(true); setMsg(null);
         try {
-          const result = await api.addReport(token, today(), lines);
-          setLines([]);
-          await reload();
-          setMsg(saveReportMessage(result, lines.length));
+          await saveReportNow();
         } catch (e) {
           setMsg(saveReportErrorMessage(e));
+        } finally {
+          setSaving(false);
+        }
+      };
+      const confirmMaterialAndSave = async () => {
+        if (!materialPrompt) return;
+        if (materialPrompt.stage === "8.2" && !materialForm.wireUsageSent) return setMsg({ type: "error", text: "Potwierdz wyslanie zuzycia przewodow." });
+        setSaving(true); setMsg(null);
+        try {
+          await api.addMaterialUsage(token, {
+            project: materialPrompt.line.project,
+            product: materialPrompt.line.product,
+            stage: materialPrompt.stage,
+            typeKey: materialPrompt.type.key,
+            typeLabel: materialPrompt.type.label,
+            data: materialPrompt.stage === "8.2" ? { wireUsageSent: true } : materialForm,
+            reportDate: today()
+          });
+          await reloadMaterialUsages();
+          const nextKeys = new Set(materialSessionKeys);
+          nextKeys.add(materialPrompt.usageKey);
+          setMaterialSessionKeys(nextKeys);
+          const nextPrompt = findMaterialPrompt(nextKeys);
+          if (nextPrompt) {
+            setMaterialPrompt(nextPrompt);
+            setMaterialForm({});
+            setSaving(false);
+            return;
+          }
+          setMaterialPrompt(null);
+          setMaterialForm({});
+          setMaterialSessionKeys(new Set());
+          await saveReportNow();
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
         } finally {
           setSaving(false);
         }
@@ -1007,7 +1182,7 @@
               <label style=${S.label}>Data raportu</label>
               <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
             </section>
-            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} />
+            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} />
             <section style=${S.card}>
               <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
               <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} />
@@ -1017,7 +1192,7 @@
           ` : tab === "history" ? html`
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} canAddComments=${false} transportDates=${transportDates} bathroomComments=${bathroomComments} reloadBathroomComments=${async () => {}} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} canAddComments=${false} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} reloadBathroomComments=${async () => {}} reloadBathroomChecks=${async () => {}} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
@@ -1030,11 +1205,42 @@
               <button style=${{ ...S.ghost, marginTop: "14px" }} onClick=${logout}>Wyloguj</button>
             </section>
           `}
+          ${materialPrompt ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 50, display: "grid", placeItems: "center", padding: "16px" }}>
+              <section style=${{ ...S.card, width: "min(720px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
+                <h2 style=${S.title}>Zuzycie materialu</h2>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px", lineHeight: 1.6 }}>
+                  Projekt ${materialPrompt.line.project} / Laz. ${materialPrompt.line.product}<br />
+                  Etap: ${stageLabel(materialPrompt.stage)}<br />
+                  Typ: ${materialPrompt.type.label}
+                </div>
+                ${materialPrompt.stage === "8.2" ? html`
+                  <label style=${{ ...S.ghost, display: "flex", gap: "8px", alignItems: "center", justifyContent: "flex-start", marginBottom: "12px" }}>
+                    <input type="checkbox" checked=${!!materialForm.wireUsageSent} onChange=${e => setMaterialForm({ ...materialForm, wireUsageSent: e.target.checked })} />
+                    Wyslales zuzycie przewodow?
+                  </label>
+                ` : html`
+                  <div className="grid-2" style=${S.row2}>
+                    ${(MATERIAL_STAGES[materialPrompt.stage] || []).map(field => html`
+                      <div key=${field[0]}>
+                        <label style=${S.label}>${field[1]}</label>
+                        <input style=${S.input} type=${field[2]} value=${materialForm[field[0]] || ""} onInput=${e => setMaterialForm({ ...materialForm, [field[0]]: e.target.value })} />
+                      </div>
+                    `)}
+                  </div>
+                `}
+                <div style=${{ display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "14px", flexWrap: "wrap" }}>
+                  <button style=${S.ghost} disabled=${saving} onClick=${() => { setMaterialPrompt(null); setMaterialForm({}); setMaterialSessionKeys(new Set()); }}>Anuluj</button>
+                  <button style=${S.btn} disabled=${saving} onClick=${confirmMaterialAndSave}>${saving ? "Zapisywanie..." : "Zapisz zuzycie i raport"}</button>
+                </div>
+              </section>
+            </div>
+          ` : null}
         </main>
       `;
     }
 
-    function MapsTab({ reports, token, canEditMaps, canAddComments, transportDates, bathroomComments, reloadBathroomComments }) {
+    function MapsTab({ reports, token, canEditMaps, canAddComments, transportDates, bathroomComments, bathroomChecks, serverProjects, reloadBathroomComments, reloadBathroomChecks }) {
       const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const [hall, setHall] = useState("betonowanie");
@@ -1079,6 +1285,8 @@
       const stageOrder = { "4": 1, "6.1": 2, "7.1": 3, "9": 4, "10": 5, "11.2": 6, "13.1": 7, "13.2": 8, "15.1": 9, "17": 10 };
       const selectedHall = halls.find(h => h.id === hall) || halls[0];
       const loadDateByBathroom = useMemo(() => transportMap(transportDates), [transportDates]);
+      const projectCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
+      const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
       const saveLayouts = next => {
         if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik moze ogladac mapy i generowac PDF, ale nie moze ich modyfikowac." });
         setLayouts(next);
@@ -1135,13 +1343,15 @@
       const bathroomKey = (project, product) => String(project || "").trim() + "#" + productNo(product);
       const currentLayout = layouts[hall] || [];
       const mapProjectOptions = useMemo(() => {
-        const projects = new Set(Object.keys(PROJECTS));
+        const projects = new Set(activeProjectItems(serverProjects).map(item => item.project));
         currentLayout.forEach(cell => { if (cell && cell.project) projects.add(String(cell.project)); });
         (reports || []).forEach(report => (report.lines || []).forEach(line => {
           if (line.project) projects.add(String(line.project));
         }));
         return [...projects].sort((a, b) => a.localeCompare(b, "pl", { numeric: true }));
-      }, [currentLayout, reports]);
+      }, [currentLayout, reports, serverProjects]);
+      const manualProjectCount = Number(projectCounts[manual.project]) || 0;
+      const manualProducts = useMemo(() => Array.from({ length: manualProjectCount }, (_, i) => i + 1), [manualProjectCount]);
       const layoutByCell = useMemo(() => {
         const map = {};
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
@@ -1190,6 +1400,21 @@
         });
         return map;
       }, [bathroomComments]);
+      const tilingByBathroom = useMemo(() => {
+        const set = new Set();
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          const stage = String(line.stage || "");
+          if (stage === "11.1" || stage === "11.2") set.add(bathroomKey(line.project, line.product));
+        }));
+        return set;
+      }, [reports]);
+      const bathroomChecksByKey = useMemo(() => {
+        const map = {};
+        (bathroomChecks || []).forEach(c => {
+          map[bathroomKey(c.project, c.product) + "#" + String(c.checkType || "tiling")] = c;
+        });
+        return map;
+      }, [bathroomChecks]);
       const addComment = async () => {
         if (!selectedCell || !newComment.trim()) return;
         setMsg(null);
@@ -1209,6 +1434,17 @@
           await api.setBathroomCommentDone(token, comment.id, done);
           await reloadBathroomComments();
           setMsg({ type: "success", text: done ? "Komentarz oznaczony jako zrobiony." : "Komentarz oznaczony jako do zrobienia." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const setTilingCheck = async checked => {
+        if (!selectedCell || !canAddComments) return;
+        setMsg(null);
+        try {
+          await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "tiling", checked);
+          await reloadBathroomChecks();
+          setMsg({ type: "success", text: checked ? "Kontrola oznaczona jako sprawdzona." : "Kontrola oznaczona jako do sprawdzenia." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -1246,6 +1482,7 @@
           const { jsPDF } = window.jspdf;
           const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
           const pageW = doc.internal.pageSize.getWidth();
+          const pageH = doc.internal.pageSize.getHeight();
           const margin = 8;
           let y = 10;
           doc.setFont("helvetica", "bold");
@@ -1271,23 +1508,27 @@
 
           const rowHeader = 8;
           const gap = 1;
-          const cellW = Math.min(12, (pageW - margin * 2 - rowHeader - (selectedHall.cols - 1) * gap) / selectedHall.cols);
-          const cellH = selectedHall.rows.length <= 2 ? 22 : 19;
-          const infoFont = selectedHall.rows.length <= 2 ? 6.2 : 7;
-          const stageFont = selectedHall.rows.length <= 2 ? 5.1 : 5.7;
+          const availableW = pageW - margin * 2 - rowHeader - (selectedHall.cols - 1) * gap;
+          const availableH = pageH - y - margin - (selectedHall.rows.length - 1) * gap;
+          const cellW = Math.min(12.2, availableW / selectedHall.cols);
+          const cellH = Math.min(selectedHall.rows.length <= 2 ? 28 : 21, availableH / Math.max(1, selectedHall.rows.length));
+          const infoFont = selectedHall.rows.length <= 2 ? 7.2 : 6.8;
+          const stageFont = selectedHall.rows.length <= 2 ? 5.8 : 5.4;
           const colorH = Math.max(14, cellH * 0.72);
+          const gridW = rowHeader + selectedHall.cols * cellW + (selectedHall.cols - 1) * gap;
+          const startX = Math.max(margin, (pageW - gridW) / 2);
           doc.setFontSize(7);
           doc.setTextColor(65, 75, 90);
           selectedHall.rows.forEach((row, rowIndex) => {
             const cy = y + rowIndex * (cellH + gap);
             doc.setFont("helvetica", "bold");
-            doc.text(row, margin + 2, cy + cellH / 2);
+            doc.text(row, startX + 2, cy + cellH / 2);
             for (let col = 1; col <= selectedHall.cols; col++) {
               const cell = layoutByCell[row + "-" + col];
               const st = styleForCell(cell);
               const bg = hexToRgb(st.background);
               const tx = hexToRgb(st.color);
-              const x = margin + rowHeader + (col - 1) * (cellW + gap);
+              const x = startX + rowHeader + (col - 1) * (cellW + gap);
               doc.setDrawColor(150, 160, 175);
               if (cell) {
                 doc.setFillColor(bg[0], bg[1], bg[2]);
@@ -1480,6 +1721,11 @@
       };
       const selectedLoadDate = selectedCell ? loadDateByBathroom[transportKey(selectedCell.project, selectedCell.product)] : "";
       const selectedLoadAlert = transportAlert(selectedLoadDate);
+      const selectedMeta = selectedCell ? bathroomMeta[transportKey(selectedCell.project, selectedCell.product)] : null;
+      const selectedBathroomKey = selectedCell ? bathroomKey(selectedCell.project, selectedCell.product) : "";
+      const selectedNeedsTilingCheck = selectedCell ? tilingByBathroom.has(selectedBathroomKey) : false;
+      const selectedTilingCheck = selectedNeedsTilingCheck ? bathroomChecksByKey[selectedBathroomKey + "#tiling"] : null;
+      const selectedTilingChecked = !!(selectedTilingCheck && selectedTilingCheck.checked);
       const transportLegend = [
         { label: "dzisiaj", color: "#111827", text: "#fff" },
         { label: "jutro", color: "#dc2626", text: "#fff" },
@@ -1562,8 +1808,14 @@
                 ${selectedHall.rows.map(row => html`<option key=${row} value=${row}>Wiersz ${row}</option>`)}
               </select>
               <input style=${S.input} type="number" min="1" max=${selectedHall.cols} placeholder="Kolumna" value=${manual.col} onInput=${e => setManual({ ...manual, col: e.target.value })} />
-              <input style=${S.input} placeholder="Projekt" value=${manual.project} onInput=${e => setManual({ ...manual, project: e.target.value })} />
-              <input style=${S.input} type="number" min="1" placeholder="Nr lazienki" value=${manual.product} onInput=${e => setManual({ ...manual, product: e.target.value })} />
+              <select style=${S.input} value=${manual.project} onChange=${e => setManual({ ...manual, project: e.target.value, product: "" })}>
+                <option value="">- wybierz projekt -</option>
+                ${mapProjectOptions.map(project => html`<option key=${project} value=${project}>${project} (${projectCounts[project] || "?"})</option>`)}
+              </select>
+              <select style=${S.input} value=${manual.product} onChange=${e => setManual({ ...manual, product: e.target.value })} disabled=${!manualProjectCount}>
+                <option value="">- wybierz lazienke -</option>
+                ${manualProducts.map(product => html`<option key=${product} value=${product}>Laz. ${product}</option>`)}
+              </select>
               <button style=${S.btn} onClick=${addManual}>Zapisz pozycje</button>
               <button style=${S.danger} onClick=${removeManual}>Usun z pola</button>
             </div>
@@ -1634,7 +1886,12 @@
                     const loadDate = cell ? loadDateByBathroom[transportKey(cell.project, cell.product)] : "";
                     const alert = transportAlert(loadDate);
                     const commentStatus = cell ? commentStatusByBathroom[bathroomKey(cell.project, cell.product)] : null;
+                    const checkKey = cell ? bathroomKey(cell.project, cell.product) : "";
+                    const needsTilingCheck = cell ? tilingByBathroom.has(checkKey) : false;
+                    const tilingCheck = needsTilingCheck ? bathroomChecksByKey[checkKey + "#tiling"] : null;
+                    const tilingChecked = !!(tilingCheck && tilingCheck.checked);
                     const matchesFilter = matchesMapFilters(cell, alert);
+                    const isManualCell = edit && manual.row === row && Number(manual.col) === col;
                     return html`
                       <button
                         key=${row + "-" + col}
@@ -1649,7 +1906,7 @@
                         title=${cell ? st.label + " / projekt " + cell.project + " / lazienka " + cell.product : "Puste pole"}
                         style=${{
                           minHeight: selectedHall.rows.length <= 2 ? "136px" : "148px",
-                          border: (isDragging || isSelected ? "2px solid " + COLORS.accent : "1px solid " + st.border),
+                          border: (isDragging || isSelected || isManualCell ? "2px solid " + (isManualCell ? COLORS.orange : COLORS.accent) : "1px solid " + st.border),
                           borderRadius: "8px",
                           background: "#fff",
                           color: COLORS.text,
@@ -1663,7 +1920,7 @@
                           fontWeight: 900,
                           touchAction: edit ? "none" : "auto",
                           opacity: isDragging ? 0.72 : matchesFilter ? 1 : 0.18,
-                          boxShadow: isSelected ? "0 0 0 3px rgba(39,94,254,0.18)" : "none"
+                          boxShadow: isManualCell ? "0 0 0 4px rgba(201,120,16,0.22)" : isSelected ? "0 0 0 3px rgba(39,94,254,0.18)" : "none"
                         }}
                       >
                         ${cell ? html`
@@ -1699,6 +1956,26 @@
                               boxShadow: "0 0 0 1px " + COLORS.border,
                               zIndex: 2
                             }}></span>
+                          ` : null}
+                          ${needsTilingCheck ? html`
+                            <span title=${tilingChecked ? "Kontrola po plytkowaniu sprawdzona" : "Kontrola po plytkowaniu do sprawdzenia"} style=${{
+                              position: "absolute",
+                              left: "8px",
+                              bottom: "7px",
+                              width: "17px",
+                              height: "17px",
+                              borderRadius: "3px",
+                              background: tilingChecked ? "#dcfce7" : "#fff",
+                              border: "2px solid " + (tilingChecked ? "#16a34a" : "#f97316"),
+                              color: "#166534",
+                              display: "grid",
+                              placeItems: "center",
+                              fontWeight: 900,
+                              fontSize: "13px",
+                              lineHeight: 1,
+                              boxShadow: "0 0 0 1px rgba(255,255,255,0.9)",
+                              zIndex: 2
+                            }}>${tilingChecked ? String.fromCharCode(10003) : ""}</span>
                           ` : null}
                           <div style=${{
                             background: st.background,
@@ -1738,6 +2015,56 @@
               </div>
               <button style=${S.ghost} onClick=${() => setSelectedCell(null)}>Zamknij</button>
             </div>
+            ${selectedMeta ? html`
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "8px", marginBottom: "12px" }}>
+                ${[
+                  ["ID", selectedMeta.externalId],
+                  ["Ventilation Variant", selectedMeta.ventilationVariant],
+                  ["Visible High Walls", selectedMeta.visibleHighWalls],
+                  ["Requested Delivery", selectedMeta.requestedDelivery]
+                ].map(item => html`
+                  <div key=${item[0]} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                    <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800 }}>${item[0]}</div>
+                    <div style=${{ fontWeight: 900, marginTop: "4px" }}>${item[1] || "-"}</div>
+                  </div>
+                `)}
+              </div>
+            ` : null}
+            ${selectedNeedsTilingCheck ? html`
+              <div style=${{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "10px",
+                background: selectedTilingChecked ? "#dcfce7" : "#fff7ed",
+                border: "1px solid " + (selectedTilingChecked ? "#86efac" : "#fed7aa"),
+                borderRadius: "8px",
+                padding: "10px 12px",
+                marginBottom: "12px"
+              }}>
+                <div>
+                  <div style=${{ fontWeight: 900 }}>Kontrola po plytkowaniu</div>
+                  <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "2px" }}>${selectedTilingChecked ? "Sprawdzona" : "Do sprawdzenia"}</div>
+                </div>
+                ${canAddComments ? html`
+                  <button style=${selectedTilingChecked ? S.ghost : S.btn} onClick=${() => setTilingCheck(!selectedTilingChecked)}>
+                    ${selectedTilingChecked ? "Cofnij kontrole" : "Oznacz sprawdzona"}
+                  </button>
+                ` : html`
+                  <span style=${{
+                    width: "20px",
+                    height: "20px",
+                    borderRadius: "4px",
+                    border: "2px solid " + (selectedTilingChecked ? "#16a34a" : "#f97316"),
+                    background: selectedTilingChecked ? "#dcfce7" : "#fff",
+                    color: "#166534",
+                    display: "grid",
+                    placeItems: "center",
+                    fontWeight: 900
+                  }}>${selectedTilingChecked ? String.fromCharCode(10003) : ""}</span>
+                `}
+              </div>
+            ` : null}
             ${selectedHistory.length ? html`
               <div style=${{ display: "grid", gap: "8px" }}>
                 ${selectedHistory.map((line, i) => {
@@ -1806,7 +2133,7 @@
       `;
     }
 
-    function ProjectsTab({ reports }) {
+    function ProjectsTab({ reports, token, serverProjects, reloadProjects }) {
       const STORAGE_KEY = "flowrbr_projects_1_01";
       const CLOSED_KEY = "flowrbr_closed_projects_1_01";
       const [customProjects, setCustomProjects] = useState(() => {
@@ -1818,16 +2145,24 @@
       const [selectedProject, setSelectedProject] = useState("");
       const [newProject, setNewProject] = useState("");
       const [newCount, setNewCount] = useState("");
+      const [editCount, setEditCount] = useState("");
+      const [importProjectNo, setImportProjectNo] = useState("");
+      const [importing, setImporting] = useState(false);
+      const [mapLayouts, setMapLayouts] = useState({});
       const [msg, setMsg] = useState(null);
+      useEffect(() => {
+        if (!token) return;
+        api.getMapLayouts(token).then(data => setMapLayouts((data && (data.layouts || data)) || {})).catch(() => setMapLayouts({}));
+      }, [token]);
 
       const warehouses = [
         { id: "projekt", label: "Projekt", stage: "brak raportu", color: "#e5eaf3", text: COLORS.text },
         { id: "rolling", label: "Rolling", stage: "4. Skrecanie", color: "#dbeafe", text: "#1d4ed8" },
-        { id: "produkcja", label: "Produkcja", stage: "5. Nawozenie", color: "#dcfce7", text: "#166534" },
+        { id: "produkcja", label: "Produkcja", stage: "na szachownicy", color: "#dcfce7", text: "#166534" },
         { id: "magazyn", label: "Magazyn", stage: "19. Pakowanie", color: "#fef3c7", text: "#92400e" },
         { id: "wyslane", label: "Wyslane", stage: "21. Zaladunek", color: "#fee2e2", text: "#991b1b" }
       ];
-      const stageToWarehouse = { "4": "rolling", "5": "produkcja", "19": "magazyn", "21": "wyslane" };
+      const stageToWarehouse = { "4": "rolling", "19": "magazyn", "21": "wyslane" };
       const warehouseById = id => warehouses.find(w => w.id === id) || warehouses[0];
       const saveCustom = next => {
         setCustomProjects(next);
@@ -1838,20 +2173,20 @@
         localStorage.setItem(CLOSED_KEY, JSON.stringify(next));
       };
 
-      const allProjects = useMemo(() => {
-        const merged = { ...PROJECTS, ...customProjects };
-        return Object.keys(merged)
-          .filter(project => !closedProjects.includes(project))
-          .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
-          .map(project => ({ project, count: Number(merged[project]) || 0 }));
-      }, [customProjects, closedProjects]);
+      const allProjects = useMemo(() => activeProjectItems(serverProjects)
+        .filter(item => !closedProjects.includes(item.project))
+        .map(item => ({ ...item, count: Number(item.count || customProjects[item.project] || PROJECTS[item.project]) || 0 })), [serverProjects, customProjects, closedProjects]);
 
       const selectedCount = selectedProject
-        ? Number(({ ...PROJECTS, ...customProjects })[selectedProject]) || 0
+        ? Number((allProjects.find(p => p.project === selectedProject) || {}).count || customProjects[selectedProject] || PROJECTS[selectedProject]) || 0
         : 0;
       const bathroomStates = useMemo(() => {
         const states = {};
         if (!selectedProject) return states;
+        layoutProductionKeys(mapLayouts).forEach(key => {
+          const [project, product] = key.split("#");
+          if (sameProject(project, selectedProject)) states[productNo(product)] = { id: "produkcja", date: "", stage: "mapa" };
+        });
         reports.forEach(report => {
           (report.lines || []).forEach(line => {
             if (!sameProject(line.project, selectedProject)) return;
@@ -1867,7 +2202,7 @@
           });
         });
         return states;
-      }, [reports, selectedProject]);
+      }, [reports, selectedProject, mapLayouts]);
       const warehouseSummary = useMemo(() => {
         const summary = Object.fromEntries(warehouses.map(w => [w.id, 0]));
         if (!selectedProject || !selectedCount) return summary;
@@ -1878,28 +2213,115 @@
         return summary;
       }, [bathroomStates, selectedProject, selectedCount]);
 
-      const addProject = () => {
+      const addProject = async () => {
         const project = newProject.trim();
         const count = Number(newCount);
         if (!project) return setMsg({ type: "error", text: "Wpisz nr zlecenia/projektu." });
         if (!count || count < 1) return setMsg({ type: "error", text: "Wpisz ilosc lazienek wieksza od 0." });
-        if (PROJECTS[project] || customProjects[project]) return setMsg({ type: "error", text: "Taki projekt juz istnieje." });
-        const next = { ...customProjects, [project]: count };
-        saveCustom(next);
-        setClosedProjects(closedProjects.filter(p => p !== project));
-        localStorage.setItem(CLOSED_KEY, JSON.stringify(closedProjects.filter(p => p !== project)));
-        setSelectedProject(project);
-        setNewProject("");
-        setNewCount("");
-        setMsg({ type: "success", text: "Projekt dodany." });
+        try {
+          await api.addProject(token, project, count);
+          const next = { ...customProjects, [project]: count };
+          saveCustom(next);
+          setClosedProjects(closedProjects.filter(p => p !== project));
+          localStorage.setItem(CLOSED_KEY, JSON.stringify(closedProjects.filter(p => p !== project)));
+          await reloadProjects();
+          setSelectedProject(project);
+          setNewProject("");
+          setNewCount("");
+          setMsg({ type: "success", text: "Projekt dodany." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
       };
-      const closeProject = project => {
+      const closeProject = async project => {
         if (!project) return;
         if (!confirm("Zamknac projekt " + project + "? Projekt zniknie z widoku aplikacji.")) return;
-        const next = [...new Set([...closedProjects, project])];
-        saveClosed(next);
-        if (selectedProject === project) setSelectedProject("");
-        setMsg({ type: "success", text: "Projekt " + project + " zamkniety." });
+        try {
+          await api.updateProject(token, project, { closed: true });
+          const next = [...new Set([...closedProjects, project])];
+          saveClosed(next);
+          await reloadProjects();
+          if (selectedProject === project) setSelectedProject("");
+          setMsg({ type: "success", text: "Projekt " + project + " zamkniety." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const updateProjectCount = async () => {
+        const count = Number(editCount);
+        if (!selectedProject) return;
+        if (!Number.isInteger(count) || count < 1) return setMsg({ type: "error", text: "Podaj poprawna ilosc lazienek." });
+        try {
+          await api.updateProject(token, selectedProject, { count });
+          saveCustom({ ...customProjects, [selectedProject]: count });
+          await reloadProjects();
+          setEditCount("");
+          setMsg({ type: "success", text: "Ilosc lazienek zmieniona." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const toggleProjectCalculations = async () => {
+        if (!selectedProject) return;
+        const current = !!((serverProjects || []).find(p => sameProject(p.project, selectedProject)) || {}).calculationEnabled;
+        try {
+          await api.updateProject(token, selectedProject, { calculationEnabled: !current });
+          await reloadProjects();
+          setMsg({ type: "success", text: !current ? "Projekt objety kalkulacjami." : "Kalkulacje wylaczone dla projektu." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const normalizeHeader = value => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const pickValue = (row, names) => {
+        const lookup = {};
+        Object.keys(row || {}).forEach(key => { lookup[normalizeHeader(key)] = row[key]; });
+        for (const name of names) {
+          const hit = lookup[normalizeHeader(name)];
+          if (hit != null && String(hit).trim() !== "") return hit;
+        }
+        return "";
+      };
+      const productFromRow = row => {
+        const direct = pickValue(row, ["Nr lazienki", "Lazienka", "Bathroom", "Bathroom No", "Product", "No"]);
+        const fromDirect = Number(String(direct || "").replace(/\D/g, ""));
+        if (Number.isInteger(fromDirect) && fromDirect > 0) return fromDirect;
+        const id = String(pickValue(row, ["ID"]) || "");
+        const parts = id.match(/\d+/g) || [];
+        return Number(parts[parts.length - 1]) || 0;
+      };
+      const importExcel = async e => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = "";
+        const project = importProjectNo.trim();
+        if (!file) return;
+        if (!project) return setMsg({ type: "error", text: "Wpisz numer projektu przed importem." });
+        if (!window.XLSX) return setMsg({ type: "error", text: "Biblioteka Excel nie zaladowala sie. Sprawdz internet i odswiez strone." });
+        setImporting(true); setMsg(null);
+        try {
+          const buffer = await file.arrayBuffer();
+          const workbook = XLSX.read(buffer, { type: "array" });
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+          const bathrooms = rows.map(row => ({
+            product: productFromRow(row),
+            externalId: String(pickValue(row, ["ID"]) || ""),
+            ventilationVariant: String(pickValue(row, ["Ventilation Variant", "Ventylation Variant"]) || ""),
+            visibleHighWalls: String(pickValue(row, ["Visible High Walls"]) || ""),
+            requestedDelivery: String(pickValue(row, ["Requested Delivery"]) || "")
+          })).filter(row => row.product > 0);
+          if (!bathrooms.length) throw new Error("Nie znaleziono numerow lazienek w pliku.");
+          const count = Math.max(...bathrooms.map(row => row.product));
+          const result = await api.importProject(token, project, bathrooms, count);
+          await reloadProjects();
+          setSelectedProject(project);
+          setImportProjectNo("");
+          setMsg({ type: "success", text: "Zaimportowano " + result.imported + " lazienek dla projektu " + project + "." });
+        } catch (err) {
+          setMsg({ type: "error", text: err.message });
+        } finally {
+          setImporting(false);
+        }
       };
 
       return html`
@@ -1918,6 +2340,16 @@
             <input style=${S.input} placeholder="Nr zlecenia / projektu" value=${newProject} onInput=${e => setNewProject(e.target.value)} />
             <input style=${S.input} type="number" min="1" placeholder="Ilosc lazienek" value=${newCount} onInput=${e => setNewCount(e.target.value)} />
             <button style=${S.btn} onClick=${addProject}>Dodaj projekt</button>
+          </div>
+          <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "14px", paddingTop: "12px" }}>
+            <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "8px" }}>Import projektu z Excela</h3>
+            <div className="grid-3" style=${S.row3}>
+              <input style=${S.input} placeholder="Nr projektu do importu" value=${importProjectNo} onInput=${e => setImportProjectNo(e.target.value)} />
+              <input style=${S.input} type="file" accept=".xlsx,.xls,.csv" onChange=${importExcel} disabled=${importing} />
+              <div style=${{ color: COLORS.muted, fontSize: "12px", display: "flex", alignItems: "center" }}>
+                Wymagane kolumny: ID, Ventilation Variant, Visible High Walls, Requested Delivery.
+              </div>
+            </div>
           </div>
           <${Message} msg=${msg} />
         </section>
@@ -1952,8 +2384,16 @@
               <div>
                 <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Projekt ${selectedProject}</h3>
                 <div style=${{ color: COLORS.muted, fontSize: "13px" }}>${selectedCount} lazienek</div>
+                <div style=${{ color: ((serverProjects || []).find(p => sameProject(p.project, selectedProject)) || {}).calculationEnabled ? COLORS.green : COLORS.muted, fontSize: "13px", fontWeight: 900, marginTop: "4px" }}>
+                  ${((serverProjects || []).find(p => sameProject(p.project, selectedProject)) || {}).calculationEnabled ? "Kalkulacje wlaczone" : "Kalkulacje wylaczone"}
+                </div>
               </div>
-              <button style=${S.danger} onClick=${() => closeProject(selectedProject)}>Zamknij projekt</button>
+              <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <input style=${{ ...S.input, width: "150px" }} type="number" min="1" placeholder="Nowa ilosc" value=${editCount} onInput=${e => setEditCount(e.target.value)} />
+                <button style=${S.ghost} onClick=${updateProjectCount}>Zmien ilosc</button>
+                <button style=${S.ghost} onClick=${toggleProjectCalculations}>${((serverProjects || []).find(p => sameProject(p.project, selectedProject)) || {}).calculationEnabled ? "Wylacz kalkulacje" : "Wlacz kalkulacje"}</button>
+                <button style=${S.danger} onClick=${() => closeProject(selectedProject)}>Zamknij projekt</button>
+              </div>
             </div>
             <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))", gap: "10px", marginBottom: "14px" }}>
               ${warehouses.map(w => html`
@@ -1989,10 +2429,11 @@
       `;
     }
 
-    function ProductionTab({ reports }) {
+    function ProductionTab({ reports, token, serverProjects }) {
       const STORAGE_KEY = "flowrbr_projects_1_01";
       const CLOSED_KEY = "flowrbr_closed_projects_1_01";
       const [filterProject, setFilterProject] = useState("all");
+      const [mapLayouts, setMapLayouts] = useState({});
       const customProjects = useMemo(() => {
         try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { return {}; }
       }, []);
@@ -2002,23 +2443,36 @@
       const warehouses = [
         { id: "projekt", label: "Projekt", stage: "brak raportu", color: "#e5eaf3", text: COLORS.text },
         { id: "rolling", label: "Rolling", stage: "4. Skrecanie", color: "#dbeafe", text: "#1d4ed8" },
-        { id: "produkcja", label: "Produkcja", stage: "5. Nawozenie", color: "#dcfce7", text: "#166534" },
+        { id: "produkcja", label: "Produkcja", stage: "na szachownicy", color: "#dcfce7", text: "#166534" },
         { id: "magazyn", label: "Magazyn", stage: "19. Pakowanie", color: "#fef3c7", text: "#92400e" },
         { id: "wyslane", label: "Wyslane", stage: "21. Zaladunek", color: "#fee2e2", text: "#991b1b" }
       ];
-      const stageToWarehouse = { "4": "rolling", "5": "produkcja", "19": "magazyn", "21": "wyslane" };
+      useEffect(() => {
+        if (!token) return;
+        api.getMapLayouts(token).then(data => setMapLayouts((data && (data.layouts || data)) || {})).catch(() => setMapLayouts({}));
+      }, [token]);
+      const stageToWarehouse = { "4": "rolling", "19": "magazyn", "21": "wyslane" };
       const priority = { rolling: 1, produkcja: 2, magazyn: 3, wyslane: 4 };
       const allProjects = useMemo(() => {
-        const merged = { ...PROJECTS, ...customProjects };
-        return Object.keys(merged)
-          .filter(project => !closedProjects.includes(project))
-          .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
-          .map(project => ({ project, count: Number(merged[project]) || 0 }));
-      }, [customProjects, closedProjects]);
+        const serverItems = activeProjectItems(serverProjects);
+        const serverKeys = new Set(serverItems.map(item => item.project));
+        const localItems = Object.keys({ ...PROJECTS, ...customProjects })
+          .filter(project => !serverKeys.has(project))
+          .map(project => ({ project, count: Number(customProjects[project] || PROJECTS[project]) || 0 }));
+        return [...serverItems, ...localItems]
+          .filter(item => !closedProjects.includes(item.project))
+          .sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true }));
+      }, [serverProjects, customProjects, closedProjects]);
+      const productionKeys = useMemo(() => layoutProductionKeys(mapLayouts), [mapLayouts]);
+      const metaByBathroom = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
       const visibleProjects = useMemo(() => allProjects.filter(item => filterProject === "all" || item.project === filterProject), [allProjects, filterProject]);
 
       const projectRows = useMemo(() => visibleProjects.map(item => {
         const states = {};
+        productionKeys.forEach(key => {
+          const [project, product] = key.split("#");
+          if (sameProject(project, item.project)) states[productNo(product)] = "produkcja";
+        });
         reports.forEach(report => {
           (report.lines || []).forEach(line => {
             if (!sameProject(line.project, item.project)) return;
@@ -2037,7 +2491,7 @@
           counts[warehouse] = (counts[warehouse] || 0) + 1;
         }
         return { ...item, counts };
-      }), [visibleProjects, reports]);
+      }), [visibleProjects, reports, productionKeys]);
 
       const totals = useMemo(() => {
         const sum = Object.fromEntries(warehouses.map(w => [w.id, 0]));
@@ -2104,6 +2558,34 @@
             </div>
           ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "18px" }}>Brak projektow do wyswietlenia.</div>`}
         </section>
+        ${filterProject !== "all" ? html`
+          <section style=${S.card}>
+            <h3 style=${{ ...S.title, fontSize: "18px" }}>Szczegoly lazienek projektu ${filterProject}</h3>
+            <div style=${{ overflowX: "auto" }}>
+              <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "820px" }}>
+                <thead>
+                  <tr>
+                    ${["Laz.", "ID", "Ventilation Variant", "Visible High Walls", "Requested Delivery"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${h}</th>`)}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${Array.from({ length: (allProjects.find(p => p.project === filterProject) || {}).count || 0 }, (_, i) => i + 1).map(product => {
+                    const meta = metaByBathroom[transportKey(filterProject, product)] || {};
+                    return html`
+                      <tr key=${product}>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900 }}>${product}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${meta.externalId || "-"}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${meta.ventilationVariant || "-"}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${meta.visibleHighWalls || "-"}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${meta.requestedDelivery || "-"}</td>
+                      </tr>
+                    `;
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ` : null}
       `;
     }
 
@@ -2127,9 +2609,8 @@
       return Object.values(map).sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
     }
 
-    function transportProjectItems(reports) {
-      const counts = {};
-      Object.entries(PROJECTS).forEach(([project, count]) => { counts[project] = Number(count) || 0; });
+    function transportProjectItems(reports, serverProjects) {
+      const counts = projectCountMap(serverProjects);
       const stagePriority = { "19": 3, "21": 4 };
       const states = {};
       (reports || []).forEach(report => {
@@ -2188,19 +2669,87 @@
       `;
     }
 
-    function TransportTab({ reports, transportDates, token, reloadTransportDates }) {
+    function CalculationsTab({ materialUsages, serverProjects }) {
+      const [filters, setFilters] = useState({ project: "all", stage: "all" });
+      const projects = useMemo(() => activeProjectItems(serverProjects).map(p => p.project), [serverProjects]);
+      const visible = useMemo(() => (materialUsages || []).filter(item => {
+        if (filters.project !== "all" && !sameProject(item.project, filters.project)) return false;
+        if (filters.stage !== "all" && String(item.stage) !== filters.stage) return false;
+        return true;
+      }), [materialUsages, filters]);
+      const fields = item => Object.entries(item.data || {}).filter(([, value]) => value != null && String(value) !== "");
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
+            <div>
+              <h2 style=${S.title}>Kalkulacje</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Zuzycia materialow zapisane przy pierwszej lazienke danego typu.</div>
+            </div>
+          </div>
+          <div className="grid-3" style=${{ ...S.row3, marginBottom: "12px" }}>
+            <div>
+              <label style=${S.label}>Projekt</label>
+              <select style=${S.input} value=${filters.project} onChange=${e => setFilters({ ...filters, project: e.target.value })}>
+                <option value="all">Wszystkie projekty</option>
+                ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+              </select>
+            </div>
+            <div>
+              <label style=${S.label}>Etap</label>
+              <select style=${S.input} value=${filters.stage} onChange=${e => setFilters({ ...filters, stage: e.target.value })}>
+                <option value="all">Wszystkie etapy</option>
+                ${materialStageIds.map(stage => html`<option key=${stage} value=${stage}>${stageLabel(stage)}</option>`)}
+              </select>
+            </div>
+            <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
+          </div>
+          <div style=${{ display: "grid", gap: "10px" }}>
+            ${visible.map(item => html`
+              <div key=${item.id} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
+                <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
+                  <strong>Projekt ${item.project} / Laz. ${item.product} / ${stageLabel(item.stage)}</strong>
+                  <span style=${{ color: COLORS.muted, fontSize: "12px" }}>${(item.createdAt || "").slice(0, 10)} / ${item.workerName || item.workerCode || "-"}</span>
+                </div>
+                <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${item.typeLabel || item.typeKey}</div>
+                <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px", marginTop: "10px" }}>
+                  ${fields(item).map(([key, value]) => html`
+                    <div key=${key} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "8px" }}>
+                      <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 800 }}>${key}</div>
+                      <div style=${{ fontWeight: 900 }}>${String(value)}</div>
+                    </div>
+                  `)}
+                </div>
+              </div>
+            `)}
+            ${visible.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "22px" }}>Brak zapisanych kalkulacji.</div>`}
+          </div>
+        </section>
+      `;
+    }
+
+    function TransportTab({ reports, transportDates, token, serverProjects, reloadTransportDates }) {
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
-      const transportItems = useMemo(() => transportProjectItems(reports), [reports]);
+      const transportItems = useMemo(() => transportProjectItems(reports, serverProjects), [reports, serverProjects]);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
-      const [filter, setFilter] = useState("");
+      const transportInfo = useMemo(() => transportInfoMap(transportDates), [transportDates]);
+      const [filters, setFilters] = useState({ project: "all", status: "all", date: "", lkw: "" });
       const [batchDate, setBatchDate] = useState(today());
+      const [batchLkw, setBatchLkw] = useState("");
       const [batchProject, setBatchProject] = useState("");
       const [selectedProducts, setSelectedProducts] = useState([]);
       const [savingKey, setSavingKey] = useState("");
       const [msg, setMsg] = useState(null);
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
       const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
-      const visible = transportItems.filter(item => loads[transportKey(item.project, item.product)]).filter(item => !filter || String(item.project).includes(filter.trim()));
+      const visible = transportItems.filter(item => {
+        const info = transportInfo[transportKey(item.project, item.product)];
+        if (!info) return false;
+        if (filters.project !== "all" && !sameProject(item.project, filters.project)) return false;
+        if (filters.status !== "all" && item.status !== filters.status) return false;
+        if (filters.date && info.loadDate !== filters.date) return false;
+        if (filters.lkw && String(info.lkwNumber || "") !== filters.lkw.trim()) return false;
+        return true;
+      });
       const selectBatchProject = project => {
         setBatchProject(project);
         setSelectedProducts([]);
@@ -2209,11 +2758,11 @@
         setSelectedProducts(prev => prev.includes(product) ? prev.filter(p => p !== product) : [...prev, product].sort((a, b) => a - b));
       };
       const selectAllBatch = () => setSelectedProducts(batchItems.map(item => item.product));
-      const saveLoadDate = async (item, loadDate) => {
+      const saveLoadDate = async (item, loadDate, lkwNumber) => {
         const key = transportKey(item.project, item.product);
         setSavingKey(key); setMsg(null);
         try {
-          await api.saveTransportDate(token, item.project, item.product, loadDate);
+          await api.saveTransportDate(token, item.project, item.product, loadDate, lkwNumber);
           await reloadTransportDates();
           setMsg({ type: "success", text: loadDate ? "Data zaladunku zapisana." : "Data zaladunku usunieta." });
         } catch (e) {
@@ -2229,10 +2778,11 @@
         setSavingKey("batch"); setMsg(null);
         try {
           for (const product of selectedProducts) {
-            await api.saveTransportDate(token, batchProject, product, batchDate);
+            await api.saveTransportDate(token, batchProject, product, batchDate, batchLkw);
           }
           await reloadTransportDates();
           setSelectedProducts([]);
+          setBatchLkw("");
           setMsg({ type: "success", text: "Transport zapisany dla " + selectedProducts.length + " lazienek." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
@@ -2247,9 +2797,29 @@
               <h2 style=${S.title}>Transport</h2>
               <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Ustawianie i edycja dat zaladunku dla spakowanych lazienek.</div>
             </div>
-            <div style=${{ minWidth: "220px" }}>
+          </div>
+          <div className="grid-3" style=${{ ...S.row3, marginBottom: "12px" }}>
+            <div>
               <label style=${S.label}>Filtr projektu</label>
-              <input style=${S.input} value=${filter} onInput=${e => setFilter(e.target.value)} placeholder="Nr projektu" />
+              <select style=${S.input} value=${filters.project} onChange=${e => setFilters({ ...filters, project: e.target.value })}>
+                <option value="all">Wszystkie projekty</option>
+                ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+              </select>
+            </div>
+            <div>
+              <label style=${S.label}>Status</label>
+              <select style=${S.input} value=${filters.status} onChange=${e => setFilters({ ...filters, status: e.target.value })}>
+                <option value="all">Wszystkie</option>
+                <option value="magazyn">Magazyn</option>
+                <option value="produkcja">Produkcja</option>
+              </select>
+            </div>
+            <div>
+              <label style=${S.label}>Data / LKW</label>
+              <div style=${{ display: "grid", gridTemplateColumns: "1fr 90px", gap: "8px" }}>
+                <input style=${S.input} type="date" value=${filters.date} onInput=${e => setFilters({ ...filters, date: e.target.value })} />
+                <input style=${S.input} placeholder="LKW" value=${filters.lkw} onInput=${e => setFilters({ ...filters, lkw: e.target.value.replace(/\D/g, "") })} />
+              </div>
             </div>
           </div>
           <${Message} msg=${msg} />
@@ -2263,6 +2833,10 @@
               <div>
                 <label style=${S.label}>Data zaladunku</label>
                 <input style=${S.input} type="date" value=${batchDate} onInput=${e => setBatchDate(e.target.value)} />
+              </div>
+              <div>
+                <label style=${S.label}>LKW</label>
+                <input style=${S.input} type="number" min="1" placeholder="auto" value=${batchLkw} onInput=${e => setBatchLkw(e.target.value)} />
               </div>
               <div>
                 <label style=${S.label}>Projekt</label>
@@ -2281,6 +2855,7 @@
                 ${batchItems.map(item => {
                   const selected = selectedProducts.includes(item.product);
                   const loadDate = loads[transportKey(item.project, item.product)];
+                  const info = transportInfo[transportKey(item.project, item.product)];
                   const isWarehouse = item.status === "magazyn";
                   const bg = selected ? COLORS.accent : (isWarehouse ? "#dcfce7" : "#fee2e2");
                   const fg = selected ? "#fff" : (isWarehouse ? "#166534" : "#991b1b");
@@ -2297,6 +2872,7 @@
                       ${item.product}
                       <div style=${{ fontSize: "10px", opacity: 0.85 }}>${isWarehouse ? "magazyn" : "produkcja"}</div>
                       ${loadDate ? html`<div style=${{ fontSize: "10px", opacity: 0.8 }}>${loadDate}</div>` : null}
+                      ${info && info.lkwNumber ? html`<div style=${{ fontSize: "10px", opacity: 0.8 }}>LKW${info.lkwNumber}</div>` : null}
                     </button>
                   `;
                 })}
@@ -2308,6 +2884,7 @@
             ${visible.map(item => {
               const key = transportKey(item.project, item.product);
               const loadDate = loads[key] || "";
+              const info = transportInfo[key] || {};
               const alert = transportAlert(loadDate);
               const isWarehouse = item.status === "magazyn";
               return html`
@@ -2315,9 +2892,13 @@
                   ${alert ? html`<div style=${{ position: "absolute", top: "10px", right: "10px", width: "24px", height: "24px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900 }}>!</div>` : null}
                   <div style=${{ fontWeight: 900, fontSize: "17px" }}>Projekt ${item.project}</div>
                   <div style=${{ color: COLORS.orange, fontWeight: 900 }}>Laz. ${item.product}</div>
+                  <div style=${{ fontSize: "13px", marginTop: "4px", fontWeight: 900 }}>LKW${info.lkwNumber || "-"}</div>
                   <div style=${{ fontSize: "12px", margin: "5px 0 3px", fontWeight: 900 }}>${isWarehouse ? "Magazyn" : "Produkcja"}</div>
                   <div style=${{ color: isWarehouse ? "#166534" : "#991b1b", opacity: 0.8, fontSize: "12px", margin: "0 0 8px" }}>Pakowanie: ${item.packDate || "-"}</div>
-                  <input style=${S.input} type="date" value=${loadDate} onInput=${e => saveLoadDate(item, e.target.value)} disabled=${savingKey === key} />
+                  <div style=${{ display: "grid", gridTemplateColumns: "1fr 90px", gap: "8px" }}>
+                    <input style=${S.input} type="date" value=${loadDate} onInput=${e => saveLoadDate(item, e.target.value, info.lkwNumber || "")} disabled=${savingKey === key} />
+                    <input style=${S.input} type="number" min="1" placeholder="LKW" value=${info.lkwNumber || ""} onInput=${e => saveLoadDate(item, loadDate, e.target.value)} disabled=${savingKey === key || !loadDate} />
+                  </div>
                   ${loadDate ? html`<button style=${{ ...S.ghost, marginTop: "8px" }} disabled=${savingKey === key} onClick=${() => saveLoadDate(item, "")}>Wyczysc date</button>` : null}
                 </div>
               `;
@@ -2327,7 +2908,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, bathroomComments, reloadBathroomComments, reloadTransportDates, reloadReports, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, bathroomComments, bathroomChecks, serverProjects, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadTransportDates, reloadReports, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -2435,23 +3016,25 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px" }}>
-            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport"] : []), "projects", "maps", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "projects" ? "Projekty" : t === "maps" ? "Mapy" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
+            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "calculations"] : []), "projects", "maps", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Mapy" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
-          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} reloadReports=${reloadReports} />` : tab === "account" ? html`
+          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} reloadReports=${reloadReports} />` : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} />
           ` : tab === "database" ? html`
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
           ` : tab === "projects" ? html`
-            <${ProjectsTab} reports=${reports} />
+            <${ProjectsTab} reports=${reports} token=${token} serverProjects=${serverProjects} reloadProjects=${reloadProjects} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} canAddComments=${true} transportDates=${transportDates} bathroomComments=${bathroomComments} reloadBathroomComments=${reloadBathroomComments} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} canAddComments=${true} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} reloadBathroomComments=${reloadBathroomComments} reloadBathroomChecks=${reloadBathroomChecks} />
           ` : tab === "production" ? html`
-            <${ProductionTab} reports=${reports} />
+            <${ProductionTab} reports=${reports} token=${token} serverProjects=${serverProjects} />
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} />
           ` : tab === "transport" ? html`
-            <${TransportTab} reports=${reports} transportDates=${transportDates} token=${token} reloadTransportDates=${reloadTransportDates} />
+            <${TransportTab} reports=${reports} transportDates=${transportDates} token=${token} serverProjects=${serverProjects} reloadTransportDates=${reloadTransportDates} />
+          ` : tab === "calculations" ? html`
+            <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Dodaj uzytkownika</h2>
@@ -2525,11 +3108,14 @@
       const [users, setUsers] = useState([]);
       const [transportDates, setTransportDates] = useState([]);
       const [bathroomComments, setBathroomComments] = useState([]);
+      const [bathroomChecks, setBathroomChecks] = useState([]);
+      const [serverProjects, setServerProjects] = useState([]);
+      const [materialUsages, setMaterialUsages] = useState([]);
       const [loaded, setLoaded] = useState(false);
 
       const logout = () => {
         localStorage.removeItem("rrbr_token");
-        setToken(""); setUser(null); setReports([]); setUsers([]);
+        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setMaterialUsages([]); setBathroomChecks([]);
       };
       const decodeToken = t => {
         try {
@@ -2549,6 +3135,22 @@
         setReports(serverReports);
       };
       const reloadUsers = async (t = token) => setUsers(await api.getUsers(t));
+      const reloadProjects = async (t = token) => {
+        try {
+          const rows = await api.getProjects(t);
+          setServerProjects(rows || []);
+        } catch (_) {
+          setServerProjects([]);
+        }
+      };
+      const reloadMaterialUsages = async (t = token) => {
+        try {
+          const rows = await api.getMaterialUsages(t);
+          setMaterialUsages(rows || []);
+        } catch (_) {
+          setMaterialUsages([]);
+        }
+      };
       const reloadTransportDates = async (t = token) => {
         const rows = await api.getTransportDates(t);
         setTransportDates(rows || []);
@@ -2556,6 +3158,14 @@
       const reloadBathroomComments = async (t = token) => {
         const rows = await api.getBathroomComments(t);
         setBathroomComments(rows || []);
+      };
+      const reloadBathroomChecks = async (t = token) => {
+        try {
+          const rows = await api.getBathroomChecks(t);
+          setBathroomChecks(rows || []);
+        } catch (_) {
+          setBathroomChecks([]);
+        }
       };
 
       useEffect(() => {
@@ -2566,8 +3176,11 @@
               setUser(restored);
               try {
                 await reloadReports(token);
+                await reloadProjects(token);
                 await reloadTransportDates(token);
                 await reloadBathroomComments(token);
+                await reloadBathroomChecks(token);
+                await reloadMaterialUsages(token);
                 if (isManagerLike(restored)) await reloadUsers(token);
               } catch (_) {}
             } else {
@@ -2583,8 +3196,11 @@
         setToken(newToken);
         setUser(userData);
         await reloadReports(newToken);
+        await reloadProjects(newToken);
         await reloadTransportDates(newToken);
         await reloadBathroomComments(newToken);
+        await reloadBathroomChecks(newToken);
+        await reloadMaterialUsages(newToken);
         if (isManagerLike(userData)) await reloadUsers(newToken);
       };
 
@@ -2598,8 +3214,8 @@
             ${user ? html`<div style=${{ color: COLORS.muted, fontSize: "14px" }}>${user.role || "worker"} / ${user.code || user.login}</div>` : null}
           </header>
           ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} bathroomComments=${bathroomComments} reloadBathroomComments=${() => reloadBathroomComments()} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }

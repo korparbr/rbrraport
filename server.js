@@ -1,4 +1,4 @@
-// RaportRBR v1.0 — Backend
+// RaportRBR v1.2 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -136,9 +136,58 @@ async function ensureTransportDatesTable() {
       project TEXT NOT NULL,
       product INTEGER NOT NULL,
       load_date DATE NOT NULL,
+      lkw_number INTEGER,
       updated_by TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (project, product)
+    )
+  `);
+  await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS lkw_number INTEGER");
+}
+
+async function ensureProjectsTables() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS projects (
+      project TEXT PRIMARY KEY,
+      count INTEGER NOT NULL DEFAULT 0,
+      closed BOOLEAN NOT NULL DEFAULT FALSE,
+      calculation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS calculation_enabled BOOLEAN NOT NULL DEFAULT FALSE");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS project_bathrooms (
+      project TEXT NOT NULL REFERENCES projects(project) ON DELETE CASCADE,
+      product INTEGER NOT NULL,
+      external_id TEXT,
+      ventilation_variant TEXT,
+      visible_high_walls TEXT,
+      requested_delivery TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project, product)
+    )
+  `);
+}
+
+async function ensureMaterialUsagesTable() {
+  await ensureProjectsTables();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS material_usages (
+      id SERIAL PRIMARY KEY,
+      project TEXT NOT NULL,
+      product INTEGER NOT NULL,
+      stage TEXT NOT NULL,
+      type_key TEXT NOT NULL,
+      type_label TEXT,
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      worker_code TEXT,
+      worker_name TEXT,
+      report_date DATE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (project, stage, type_key)
     )
   `);
 }
@@ -161,6 +210,21 @@ async function ensureBathroomCommentsTable() {
   await pool.query("ALTER TABLE bathroom_comments ADD COLUMN IF NOT EXISTS done BOOLEAN NOT NULL DEFAULT FALSE");
   await pool.query("ALTER TABLE bathroom_comments ADD COLUMN IF NOT EXISTS done_by TEXT");
   await pool.query("ALTER TABLE bathroom_comments ADD COLUMN IF NOT EXISTS done_at TIMESTAMPTZ");
+}
+
+async function ensureBathroomChecksTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bathroom_checks (
+      project TEXT NOT NULL,
+      product INTEGER NOT NULL,
+      check_type TEXT NOT NULL DEFAULT 'tiling',
+      checked BOOLEAN NOT NULL DEFAULT FALSE,
+      checked_by TEXT,
+      checked_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project, product, check_type)
+    )
+  `);
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -318,6 +382,160 @@ app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
   }
   await pool.query('DELETE FROM users WHERE code=$1', [code]);
   res.json({ success: true });
+});
+
+// PROJECTS
+app.get('/api/projects', auth, async (req, res) => {
+  try {
+    await ensureProjectsTables();
+    const [projects, bathrooms] = await Promise.all([
+      pool.query('SELECT project, count, closed, calculation_enabled AS "calculationEnabled", updated_by AS "updatedBy", updated_at AS "updatedAt", created_at AS "createdAt" FROM projects ORDER BY project'),
+      pool.query(`SELECT project, product, external_id AS "externalId", ventilation_variant AS "ventilationVariant",
+                  visible_high_walls AS "visibleHighWalls", requested_delivery AS "requestedDelivery"
+                  FROM project_bathrooms ORDER BY project, product`)
+    ]);
+    const byProject = {};
+    bathrooms.rows.forEach(row => {
+      if (!byProject[row.project]) byProject[row.project] = [];
+      byProject[row.project].push(row);
+    });
+    res.json(projects.rows.map(p => ({ ...p, bathrooms: byProject[p.project] || [] })));
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu projektow' });
+  }
+});
+
+app.post('/api/projects', auth, managerOnly, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const count = Number(req.body.count);
+  if (!project || !Number.isInteger(count) || count < 1) return res.status(400).json({ error: 'Brak numeru projektu lub ilosci lazienek' });
+  try {
+    await ensureProjectsTables();
+    await pool.query(
+      `INSERT INTO projects (project, count, closed, updated_by, updated_at)
+       VALUES ($1,$2,FALSE,$3,NOW())
+       ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=FALSE, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, count, req.user.code]
+    );
+    res.json({ success: true, project, count });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu projektu' });
+  }
+});
+
+app.put('/api/projects/:project', auth, managerOnly, async (req, res) => {
+  const project = String(req.params.project || '').trim();
+  const count = Number(req.body.count);
+  const closed = req.body.closed == null ? null : !!req.body.closed;
+  const calculationEnabled = req.body.calculationEnabled == null ? null : !!req.body.calculationEnabled;
+  if (!project) return res.status(400).json({ error: 'Brak projektu' });
+  try {
+    await ensureProjectsTables();
+    if (Number.isInteger(count) && count > 0) {
+      await pool.query(
+        `INSERT INTO projects (project, count, closed, calculation_enabled, updated_by, updated_at)
+         VALUES ($1,$2,COALESCE($3,FALSE),COALESCE($4,FALSE),$5,NOW())
+         ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=COALESCE($3, projects.closed), calculation_enabled=COALESCE($4, projects.calculation_enabled), updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+        [project, count, closed, calculationEnabled, req.user.code]
+      );
+    } else if (closed !== null || calculationEnabled !== null) {
+      await pool.query(
+        'UPDATE projects SET closed=COALESCE($1, closed), calculation_enabled=COALESCE($2, calculation_enabled), updated_by=$3, updated_at=NOW() WHERE project=$4',
+        [closed, calculationEnabled, req.user.code, project]
+      );
+    } else {
+      return res.status(400).json({ error: 'Brak danych do zmiany' });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad edycji projektu' });
+  }
+});
+
+app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const bathrooms = Array.isArray(req.body.bathrooms) ? req.body.bathrooms : [];
+  if (!project || !bathrooms.length) return res.status(400).json({ error: 'Brak projektu lub lazienek do importu' });
+  const client = await pool.connect();
+  try {
+    await ensureProjectsTables();
+    await client.query('BEGIN');
+    const normalized = bathrooms
+      .map(raw => ({
+        product: Number(raw.product),
+        externalId: String(raw.externalId || raw.id || '').trim(),
+        ventilationVariant: String(raw.ventilationVariant || '').trim(),
+        visibleHighWalls: String(raw.visibleHighWalls || '').trim(),
+        requestedDelivery: String(raw.requestedDelivery || '').trim()
+      }))
+      .filter(row => Number.isInteger(row.product) && row.product > 0);
+    const count = Math.max(Number(req.body.count) || 0, ...normalized.map(row => row.product));
+    if (!count) return res.status(400).json({ error: 'Nie znaleziono numerow lazienek w pliku' });
+    await client.query(
+      `INSERT INTO projects (project, count, closed, updated_by, updated_at)
+       VALUES ($1,$2,FALSE,$3,NOW())
+       ON CONFLICT (project) DO UPDATE SET count=GREATEST(projects.count, EXCLUDED.count), closed=FALSE, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, count, req.user.code]
+    );
+    for (const row of normalized) {
+      await client.query(
+        `INSERT INTO project_bathrooms (project, product, external_id, ventilation_variant, visible_high_walls, requested_delivery, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,NOW())
+         ON CONFLICT (project, product) DO UPDATE SET external_id=EXCLUDED.external_id,
+           ventilation_variant=EXCLUDED.ventilation_variant, visible_high_walls=EXCLUDED.visible_high_walls,
+           requested_delivery=EXCLUDED.requested_delivery, updated_at=NOW()`,
+        [project, row.product, row.externalId, row.ventilationVariant, row.visibleHighWalls, row.requestedDelivery]
+      );
+    }
+    await client.query('COMMIT');
+    res.json({ success: true, project, count, imported: normalized.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message || 'Blad importu projektu' });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/material-usages', auth, async (req, res) => {
+  try {
+    await ensureMaterialUsagesTable();
+    const r = await pool.query(
+      `SELECT id, project, product, stage, type_key AS "typeKey", type_label AS "typeLabel", data,
+              worker_code AS "workerCode", worker_name AS "workerName", report_date::text AS "reportDate", created_at AS "createdAt"
+       FROM material_usages
+       ORDER BY created_at DESC`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu kalkulacji' });
+  }
+});
+
+app.post('/api/material-usages', auth, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const product = Number(req.body.product);
+  const stage = String(req.body.stage || '').trim();
+  const typeKey = String(req.body.typeKey || '').trim();
+  const typeLabel = String(req.body.typeLabel || '').trim();
+  const data = req.body.data && typeof req.body.data === 'object' ? req.body.data : {};
+  const reportDate = String(req.body.reportDate || '').trim() || null;
+  if (!project || !Number.isInteger(product) || product < 1 || !stage || !typeKey) return res.status(400).json({ error: 'Brak danych zuzycia' });
+  try {
+    await ensureMaterialUsagesTable();
+    const p = await pool.query('SELECT calculation_enabled FROM projects WHERE project=$1', [project]);
+    if (!p.rows.length || !p.rows[0].calculation_enabled) return res.status(400).json({ error: 'Projekt nie jest objety kalkulacjami' });
+    const r = await pool.query(
+      `INSERT INTO material_usages (project, product, stage, type_key, type_label, data, worker_code, worker_name, report_date)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
+       ON CONFLICT (project, stage, type_key) DO NOTHING
+       RETURNING id`,
+      [project, product, stage, typeKey, typeLabel, JSON.stringify(data), req.user.code, req.user.name || req.user.code, reportDate]
+    );
+    res.json({ success: true, inserted: r.rows.length > 0, id: r.rows[0] && r.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu zuzycia' });
+  }
 });
 
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
@@ -516,7 +734,7 @@ app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
 app.get('/api/transport-dates', auth, async (req, res) => {
   try {
     await ensureTransportDatesTable();
-    const r = await pool.query('SELECT project, product, load_date::text AS "loadDate", updated_by AS "updatedBy", updated_at AS "updatedAt" FROM transport_dates ORDER BY load_date, project, product');
+    const r = await pool.query('SELECT project, product, load_date::text AS "loadDate", lkw_number AS "lkwNumber", updated_by AS "updatedBy", updated_at AS "updatedAt" FROM transport_dates ORDER BY load_date, project, COALESCE(lkw_number, 999999), product');
     res.json(r.rows);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd odczytu transportu' });
@@ -570,10 +788,48 @@ app.put('/api/bathroom-comments/:id/done', auth, managerOnly, async (req, res) =
   }
 });
 
+app.get('/api/bathroom-checks', auth, async (req, res) => {
+  try {
+    await ensureBathroomChecksTable();
+    const r = await pool.query(
+      `SELECT project, product, check_type AS "checkType", checked,
+              checked_by AS "checkedBy", checked_at AS "checkedAt", updated_at AS "updatedAt"
+       FROM bathroom_checks
+       ORDER BY updated_at DESC, project, product`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu kontroli' });
+  }
+});
+
+app.put('/api/bathroom-checks', auth, managerOnly, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const product = Number(req.body.product);
+  const checkType = String(req.body.checkType || 'tiling').trim() || 'tiling';
+  const checked = !!req.body.checked;
+  if (!project || !Number.isInteger(product) || product < 1) return res.status(400).json({ error: 'Brak projektu lub numeru lazienki' });
+  try {
+    await ensureBathroomChecksTable();
+    await pool.query(
+      `INSERT INTO bathroom_checks (project, product, check_type, checked, checked_by, checked_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,CASE WHEN $4 THEN NOW() ELSE NULL END,NOW())
+       ON CONFLICT (project, product, check_type)
+       DO UPDATE SET checked=EXCLUDED.checked, checked_by=EXCLUDED.checked_by,
+         checked_at=EXCLUDED.checked_at, updated_at=NOW()`,
+      [project, product, checkType, checked, checked ? req.user.code : null]
+    );
+    res.json({ success: true, project, product, checkType, checked });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu kontroli' });
+  }
+});
+
 app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
   const loadDate = String(req.body.loadDate || '').trim();
+  let lkwNumber = req.body.lkwNumber === '' || req.body.lkwNumber == null ? null : Number(req.body.lkwNumber);
   if (!project || !Number.isInteger(product) || product < 1) return res.status(400).json({ error: 'Brak projektu lub numeru łazienki' });
   try {
     await ensureTransportDatesTable();
@@ -582,13 +838,26 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
       return res.json({ success: true, deleted: true });
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(loadDate)) return res.status(400).json({ error: 'Nieprawidłowa data załadunku' });
+    if (lkwNumber !== null && (!Number.isInteger(lkwNumber) || lkwNumber < 1)) return res.status(400).json({ error: 'Nieprawidlowy numer LKW' });
+    if (lkwNumber === null) {
+      const current = await pool.query(
+        'SELECT lkw_number FROM transport_dates WHERE project=$1 AND load_date=$2 AND lkw_number IS NOT NULL ORDER BY lkw_number LIMIT 1',
+        [project, loadDate]
+      );
+      if (current.rows.length) {
+        lkwNumber = current.rows[0].lkw_number;
+      } else {
+        const next = await pool.query('SELECT COALESCE(MAX(lkw_number), 0) + 1 AS next FROM transport_dates WHERE project=$1', [project]);
+        lkwNumber = Number(next.rows[0].next) || 1;
+      }
+    }
     await pool.query(
-      `INSERT INTO transport_dates (project, product, load_date, updated_by, updated_at)
-       VALUES ($1,$2,$3,$4,NOW())
-       ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
-      [project, product, loadDate, req.user.code]
+      `INSERT INTO transport_dates (project, product, load_date, lkw_number, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,NOW())
+       ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, product, loadDate, lkwNumber, req.user.code]
     );
-    res.json({ success: true, project, product, loadDate });
+    res.json({ success: true, project, product, loadDate, lkwNumber });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd zapisu transportu' });
   }
@@ -673,7 +942,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.1 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.2 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -697,7 +966,10 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     await ensureMapLayoutsTable();
     await ensureTransportDatesTable();
     await ensureBathroomCommentsTable();
-    const [users, reports, lines, recipients, mapLayouts, transportDates, comments] = await Promise.all([
+    await ensureBathroomChecksTable();
+    await ensureProjectsTables();
+    await ensureMaterialUsagesTable();
+    const [users, reports, lines, recipients, mapLayouts, transportDates, comments, checks, projects, projectBathrooms, materialUsages] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
@@ -705,10 +977,14 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
       pool.query('SELECT * FROM map_layouts ORDER BY id'),
       pool.query('SELECT * FROM transport_dates ORDER BY load_date, project, product'),
       pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
+      pool.query('SELECT * FROM bathroom_checks ORDER BY updated_at'),
+      pool.query('SELECT * FROM projects ORDER BY project'),
+      pool.query('SELECT * FROM project_bathrooms ORDER BY project, product'),
+      pool.query('SELECT * FROM material_usages ORDER BY created_at'),
     ]);
 
     const backup = {
-      version: '1.1',
+      version: '1.2',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -718,6 +994,10 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         map_layouts: mapLayouts.rows,
         transport_dates: transportDates.rows,
         bathroom_comments: comments.rows,
+        bathroom_checks: checks.rows,
+        projects: projects.rows,
+        project_bathrooms: projectBathrooms.rows,
+        material_usages: materialUsages.rows,
       },
       counts: {
         users: users.rows.length,
@@ -726,6 +1006,10 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         map_layouts: mapLayouts.rows.length,
         transport_dates: transportDates.rows.length,
         bathroom_comments: comments.rows.length,
+        bathroom_checks: checks.rows.length,
+        projects: projects.rows.length,
+        project_bathrooms: projectBathrooms.rows.length,
+        material_usages: materialUsages.rows.length,
       }
     };
 
@@ -779,13 +1063,52 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       await ensureTransportDatesTable();
       for (const t of data.transport_dates) {
         await client.query(
-          `INSERT INTO transport_dates (project, product, load_date, updated_by, updated_at)
-           VALUES ($1,$2,$3,$4,COALESCE($5,NOW()))
-           ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
-          [t.project, t.product, t.load_date || t.loadDate, t.updated_by || t.updatedBy || req.user.code, t.updated_at || t.updatedAt || null]
+          `INSERT INTO transport_dates (project, product, load_date, lkw_number, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()))
+           ON CONFLICT (project, product) DO UPDATE SET load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [t.project, t.product, t.load_date || t.loadDate, t.lkw_number || t.lkwNumber || null, t.updated_by || t.updatedBy || req.user.code, t.updated_at || t.updatedAt || null]
         );
         transportRestored++;
       }
+    }
+
+    let projectsRestored = 0;
+    if (Array.isArray(data.projects) || Array.isArray(data.project_bathrooms)) {
+      await ensureProjectsTables();
+      for (const p of (data.projects || [])) {
+        await client.query(
+          `INSERT INTO projects (project, count, closed, calculation_enabled, updated_by, updated_at, created_at)
+           VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()),COALESCE($7,NOW()))
+           ON CONFLICT (project) DO UPDATE SET count=EXCLUDED.count, closed=EXCLUDED.closed, calculation_enabled=EXCLUDED.calculation_enabled, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [p.project, p.count || 0, !!p.closed, !!(p.calculation_enabled || p.calculationEnabled), p.updated_by || p.updatedBy || req.user.code, p.updated_at || p.updatedAt || null, p.created_at || p.createdAt || null]
+        );
+        projectsRestored++;
+      }
+      for (const b of (data.project_bathrooms || [])) {
+        await client.query(
+          `INSERT INTO project_bathrooms (project, product, external_id, ventilation_variant, visible_high_walls, requested_delivery, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))
+           ON CONFLICT (project, product) DO UPDATE SET external_id=EXCLUDED.external_id,
+             ventilation_variant=EXCLUDED.ventilation_variant, visible_high_walls=EXCLUDED.visible_high_walls,
+             requested_delivery=EXCLUDED.requested_delivery, updated_at=EXCLUDED.updated_at`,
+          [b.project, b.product, b.external_id || b.externalId || null, b.ventilation_variant || b.ventilationVariant || null, b.visible_high_walls || b.visibleHighWalls || null, b.requested_delivery || b.requestedDelivery || null, b.updated_at || b.updatedAt || null]
+        );
+      }
+    }
+
+    let materialRestored = 0;
+    if (Array.isArray(data.material_usages)) {
+      await ensureMaterialUsagesTable();
+      for (const m of data.material_usages) {
+        await client.query(
+          `INSERT INTO material_usages (id, project, product, stage, type_key, type_label, data, worker_code, worker_name, report_date, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,COALESCE($11,NOW()))
+           ON CONFLICT (project, stage, type_key) DO NOTHING`,
+          [m.id, m.project, m.product, m.stage, m.type_key || m.typeKey, m.type_label || m.typeLabel || null, JSON.stringify(m.data || {}), m.worker_code || m.workerCode || null, m.worker_name || m.workerName || null, m.report_date || m.reportDate || null, m.created_at || m.createdAt || null]
+        );
+        materialRestored++;
+      }
+      await client.query("SELECT setval(pg_get_serial_sequence('material_usages','id'), COALESCE((SELECT MAX(id) FROM material_usages), 1), true)");
     }
 
     let mapsRestored = 0;
@@ -826,9 +1149,33 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       }
       await client.query("SELECT setval(pg_get_serial_sequence('bathroom_comments','id'), COALESCE((SELECT MAX(id) FROM bathroom_comments), 1), true)");
     }
+
+    let checksRestored = 0;
+    if (Array.isArray(data.bathroom_checks)) {
+      await ensureBathroomChecksTable();
+      for (const c of data.bathroom_checks) {
+        await client.query(
+          `INSERT INTO bathroom_checks (project, product, check_type, checked, checked_by, checked_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))
+           ON CONFLICT (project, product, check_type)
+           DO UPDATE SET checked=EXCLUDED.checked, checked_by=EXCLUDED.checked_by,
+             checked_at=EXCLUDED.checked_at, updated_at=EXCLUDED.updated_at`,
+          [
+            c.project,
+            c.product,
+            c.check_type || c.checkType || 'tiling',
+            !!c.checked,
+            c.checked_by || c.checkedBy || null,
+            c.checked_at || c.checkedAt || null,
+            c.updated_at || c.updatedAt || null
+          ]
+        );
+        checksRestored++;
+      }
+    }
     
     await client.query('COMMIT');
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${mapsRestored} map, ${commentsRestored} komentarzy` });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${materialRestored} kalkulacji` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -863,7 +1210,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.1',
+      version: '1.2',
       time: new Date(),
       db: {
         connected: true,
@@ -876,4 +1223,4 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`RaportRBR v1.0 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`RaportRBR v1.2 running on port ${PORT}`));
