@@ -64,6 +64,8 @@
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
       getTransportDates: token => apiRequest("GET", "/api/transport-dates", null, token),
       saveTransportDate: (token, project, product, loadDate) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate }, token),
+      getBathroomComments: token => apiRequest("GET", "/api/bathroom-comments", null, token),
+      addBathroomComment: (token, project, product, comment) => apiRequest("POST", "/api/bathroom-comments", { project, product, comment }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
       saveMapLayouts: (token, layouts) => apiRequest("PUT", "/api/maps-layouts", { layouts }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
@@ -281,7 +283,7 @@
     }
 
     function LineEditor({ reports, lines, onChange }) {
-      const [stage, setStage] = useState("");
+      const [stages, setStages] = useState([]);
       const [project, setProject] = useState("");
       const [selectedProducts, setSelectedProducts] = useState([]);
       const [hall, setHall] = useState("");
@@ -291,9 +293,14 @@
       const max = project ? PROJECTS[project] || 0 : 0;
       const products = useMemo(() => Array.from({ length: max }, (_, i) => i + 1), [max]);
       const usedInCurrentReport = useMemo(() => new Set(
-        lines.filter(l => sameProject(l.project, project) && sameStage(l.stage, stage)).map(l => productNo(l.product))
-      ), [lines, project, stage]);
-      const isUsedProduct = product => usedInCurrentReport.has(product);
+        lines.filter(l => sameProject(l.project, project) && stages.includes(String(l.stage))).map(l => String(l.stage) + "#" + productNo(l.product))
+      ), [lines, project, stages]);
+      const isUsedProduct = product => stages.length > 0 && stages.every(stage => usedInCurrentReport.has(stage + "#" + product));
+      const toggleStage = id => {
+        setStages(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
+        if (id === "5" && stages.includes("5")) setHall("");
+        resetSelection();
+      };
 
       const resetSelection = () => {
         setSelectedProducts([]);
@@ -309,14 +316,15 @@
       };
 
       const add = () => {
-        if (!stage) return setMsg({ type: "error", text: "Wybierz etap." });
+        if (!stages.length) return setMsg({ type: "error", text: "Wybierz co najmniej jeden etap." });
         if (!project) return setMsg({ type: "error", text: "Wybierz projekt." });
         if (!selectedProducts.length) return setMsg({ type: "error", text: "Zaznacz co najmniej jedna lazienke." });
-        if (stage === "5" && !hall) return setMsg({ type: "error", text: "Dla etapu 5 wybierz hale." });
+        if (stages.includes("5") && !hall) return setMsg({ type: "error", text: "Dla etapu 5 wybierz hale." });
         const next = selectedProducts
-          .filter(p => !isUsedProduct(p))
           .sort((a, b) => a - b)
-          .map(product => ({ project, product, stage, note, hall: stage === "5" ? hall : undefined }));
+          .flatMap(product => stages
+            .filter(stage => !usedInCurrentReport.has(stage + "#" + product))
+            .map(stage => ({ project, product, stage, note, hall: stage === "5" ? hall : undefined })));
         if (!next.length) return setMsg({ type: "warning", text: "Ten etap jest juz zapisany dla wybranych lazienek." });
         onChange([...lines, ...next]);
         setSelectedProducts([]); setNote(""); setMsg({ type: "success", text: "Dodano " + next.length + " pozycji." });
@@ -327,11 +335,25 @@
           <h2 style=${S.title}>Dodaj pozycje</h2>
           <div className="grid-2" style=${S.row2}>
             <div>
-              <label style=${S.label}>Etap</label>
-              <select style=${S.input} value=${stage} onChange=${e => { setStage(e.target.value); if (e.target.value !== "5") setHall(""); resetSelection(); }}>
-                <option value="">- wybierz etap -</option>
-                ${STAGES.map(s => html`<option key=${s[0]} value=${s[0]}>${s[1]}</option>`)}
-              </select>
+              <label style=${S.label}>Etapy - mozna wybrac kilka</label>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "7px", maxHeight: "190px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
+                ${STAGES.map(s => {
+                  const selected = stages.includes(s[0]);
+                  return html`
+                    <button key=${s[0]} type="button" onClick=${() => toggleStage(s[0])} style=${{
+                      border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
+                      borderRadius: "8px",
+                      background: selected ? COLORS.accent : COLORS.panel,
+                      color: selected ? "#fff" : COLORS.text,
+                      padding: "8px",
+                      fontSize: "12px",
+                      fontWeight: 800,
+                      textAlign: "left",
+                      cursor: "pointer"
+                    }}>${s[1]}</button>
+                  `;
+                })}
+              </div>
             </div>
             <div>
               <label style=${S.label}>Projekt</label>
@@ -341,7 +363,7 @@
               </select>
             </div>
           </div>
-          ${stage === "5" ? html`
+          ${stages.includes("5") ? html`
             <div>
               <label style=${{ ...S.label, marginTop: "12px" }}>Hala</label>
               <select style=${{ ...S.input, maxWidth: "360px" }} value=${hall} onChange=${e => setHall(e.target.value)}>
@@ -349,7 +371,7 @@
               </select>
             </div>
           ` : null}
-          ${stage && project ? html`
+          ${stages.length && project ? html`
             <div style=${{ marginTop: "14px" }}>
               <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
                 <label style=${{ ...S.label, marginBottom: 0 }}>Lazienki - zaznacz wykonane</label>
@@ -361,7 +383,7 @@
               <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: "7px", maxHeight: "320px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
                 ${products.map(product => {
                   const selected = selectedProducts.includes(product);
-                  const usedCurrent = usedInCurrentReport.has(product);
+                  const usedCurrent = isUsedProduct(product);
                   const used = usedCurrent;
                   const title = usedCurrent ? "Ta lazienka jest juz dodana w tym raporcie" : "Kliknij, aby zaznaczyc";
                   return html`
@@ -923,7 +945,7 @@
       `;
     }
 
-    function WorkerView({ user, token, reports, transportDates, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, bathroomComments, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
@@ -937,7 +959,7 @@
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
         setSaving(true); setMsg(null);
         try {
-          const result = await api.addReport(token, date, lines);
+          const result = await api.addReport(token, today(), lines);
           setLines([]);
           await reload();
           setMsg(saveReportMessage(result, lines.length));
@@ -980,7 +1002,7 @@
           ${tab === "add" ? html`
             <section style=${S.card}>
               <label style=${S.label}>Data raportu</label>
-              <input style=${{ ...S.input, maxWidth: "220px" }} type="date" value=${date} max=${today()} onInput=${e => setDate(e.target.value)} />
+              <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
             </section>
             <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} />
             <section style=${S.card}>
@@ -992,7 +1014,7 @@
           ` : tab === "history" ? html`
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} transportDates=${transportDates} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} canAddComments=${false} transportDates=${transportDates} bathroomComments=${bathroomComments} reloadBathroomComments=${async () => {}} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
@@ -1009,17 +1031,21 @@
       `;
     }
 
-    function MapsTab({ reports, token, canEditMaps, transportDates }) {
+    function MapsTab({ reports, token, canEditMaps, canAddComments, transportDates, bathroomComments, reloadBathroomComments }) {
       const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
+      const [mapFilterProject, setMapFilterProject] = useState("");
+      const [mapFilterStage, setMapFilterStage] = useState("all");
+      const [mapFilterAlerts, setMapFilterAlerts] = useState(false);
       const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "" });
       const [dragCell, setDragCell] = useState(null);
       const [selectedCell, setSelectedCell] = useState(null);
       const [aiDetected, setAiDetected] = useState([]);
       const [aiLoading, setAiLoading] = useState(false);
       const [msg, setMsg] = useState(null);
+      const [newComment, setNewComment] = useState("");
       const [serverAvailable, setServerAvailable] = useState(null);
       const suppressClickRef = useRef(false);
       const [layouts, setLayouts] = useState(() => {
@@ -1081,7 +1107,7 @@
       const photoRotation = Number(typeof photoEntry === "object" && photoEntry ? photoEntry.rotation || 0 : 0);
       useEffect(() => {
         if (!token) return;
-        api.getMapLayouts(token)
+        const loadMaps = () => api.getMapLayouts(token)
           .then(data => {
             const next = data && (data.layouts || data);
             if (next && typeof next === "object" && !Array.isArray(next)) {
@@ -1098,6 +1124,9 @@
           .catch(() => {
             setServerAvailable(false);
           });
+        loadMaps();
+        const timer = setInterval(loadMaps, 30000);
+        return () => clearInterval(timer);
       }, [token]);
       const cellKey = cell => cell.row + "-" + cell.col;
       const bathroomKey = (project, product) => String(project || "").trim() + "#" + productNo(product);
@@ -1136,6 +1165,22 @@
             })))
           .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (stageOrder[a.stage] || 0) - (stageOrder[b.stage] || 0));
       }, [reports, selectedCell]);
+      const selectedComments = useMemo(() => {
+        if (!selectedCell) return [];
+        return (bathroomComments || []).filter(c => sameProject(c.project, selectedCell.project) && productNo(c.product) === productNo(selectedCell.product));
+      }, [bathroomComments, selectedCell]);
+      const addComment = async () => {
+        if (!selectedCell || !newComment.trim()) return;
+        setMsg(null);
+        try {
+          await api.addBathroomComment(token, selectedCell.project, selectedCell.product, newComment.trim());
+          setNewComment("");
+          await reloadBathroomComments();
+          setMsg({ type: "success", text: "Komentarz dodany." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
       const styleForCell = cell => {
         if (!cell) return { background: COLORS.panel, color: COLORS.dim, border: COLORS.border, label: "" };
         const state = stageByBathroom[bathroomKey(cell.project, cell.product)];
@@ -1146,6 +1191,16 @@
           border: color && color.stage === "10" ? "#cbd5e1" : COLORS.border,
           label: color ? color.label : "Brak etapu z legendy"
         };
+      };
+      const matchesMapFilters = (cell, alert) => {
+        if (!cell) return true;
+        if (mapFilterProject.trim() && !String(cell.project || "").includes(mapFilterProject.trim())) return false;
+        if (mapFilterStage !== "all") {
+          const state = stageByBathroom[bathroomKey(cell.project, cell.product)];
+          if (!state || String(state.stage) !== mapFilterStage) return false;
+        }
+        if (mapFilterAlerts && !alert) return false;
+        return true;
       };
       const hexToRgb = hex => {
         const value = String(hex || "#ffffff").replace("#", "");
@@ -1431,6 +1486,25 @@
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             ${stageColors.map(s => html`<span key=${s.stage} style=${{ background: s.color, color: s.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 800 }}>${s.label}</span>`)}
           </div>
+          <div className="grid-3" style=${{ ...S.row3, marginTop: "12px" }}>
+            <div>
+              <label style=${S.label}>Filtr projektu</label>
+              <input style=${S.input} value=${mapFilterProject} onInput=${e => setMapFilterProject(e.target.value)} placeholder="np. 5551" />
+            </div>
+            <div>
+              <label style=${S.label}>Filtr etapu</label>
+              <select style=${S.input} value=${mapFilterStage} onChange=${e => setMapFilterStage(e.target.value)}>
+                <option value="all">Wszystkie</option>
+                ${stageColors.map(s => html`<option key=${s.stage} value=${s.stage}>${s.label}</option>`)}
+              </select>
+            </div>
+            <div style=${{ display: "flex", alignItems: "end" }}>
+              <label style=${{ ...S.ghost, display: "flex", gap: "8px", alignItems: "center" }}>
+                <input type="checkbox" checked=${mapFilterAlerts} onChange=${e => setMapFilterAlerts(e.target.checked)} />
+                Tylko z terminem zaladunku
+              </label>
+            </div>
+          </div>
           <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "12px", paddingTop: "10px" }}>
             <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda zaladunku</div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -1524,6 +1598,7 @@
                     const isSelected = selectedCell && cell && bathroomKey(selectedCell.project, selectedCell.product) === bathroomKey(cell.project, cell.product);
                     const loadDate = cell ? loadDateByBathroom[transportKey(cell.project, cell.product)] : "";
                     const alert = transportAlert(loadDate);
+                    const matchesFilter = matchesMapFilters(cell, alert);
                     return html`
                       <button
                         key=${row + "-" + col}
@@ -1551,7 +1626,7 @@
                           fontSize: "11px",
                           fontWeight: 900,
                           touchAction: edit ? "none" : "auto",
-                          opacity: isDragging ? 0.72 : 1,
+                          opacity: isDragging ? 0.72 : matchesFilter ? 1 : 0.18,
                           boxShadow: isSelected ? "0 0 0 3px rgba(39,94,254,0.18)" : "none"
                         }}
                       >
@@ -1645,6 +1720,25 @@
             ` : html`
               <div style=${{ color: COLORS.dim, textAlign: "center", padding: "20px" }}>Brak raportow dla tej lazienki.</div>
             `}
+            <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "14px", paddingTop: "12px" }}>
+              <h4 style=${{ ...S.title, fontSize: "16px", marginBottom: "8px" }}>Komentarze</h4>
+              ${selectedComments.length ? html`
+                <div style=${{ display: "grid", gap: "8px", marginBottom: "10px" }}>
+                  ${selectedComments.map(c => html`
+                    <div key=${c.id} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                      <div style=${{ fontWeight: 800 }}>${c.comment}</div>
+                      <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${c.authorName || c.authorCode || ""} / ${(c.createdAt || "").slice(0, 10)}</div>
+                    </div>
+                  `)}
+                </div>
+              ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px", marginBottom: "10px" }}>Brak komentarzy.</div>`}
+              ${canAddComments ? html`
+                <div className="grid-2" style=${S.row2}>
+                  <input style=${S.input} value=${newComment} onInput=${e => setNewComment(e.target.value)} placeholder="Dodaj komentarz do lazienki" />
+                  <button style=${S.btn} onClick=${addComment}>Dodaj komentarz</button>
+                </div>
+              ` : null}
+            </div>
           </section>
         ` : null}
       `;
@@ -2171,7 +2265,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, reloadTransportDates, reloadReports, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, bathroomComments, reloadBathroomComments, reloadTransportDates, reloadReports, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -2242,7 +2336,7 @@
           ` : tab === "projects" ? html`
             <${ProjectsTab} reports=${reports} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} transportDates=${transportDates} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} canAddComments=${true} transportDates=${transportDates} bathroomComments=${bathroomComments} reloadBathroomComments=${reloadBathroomComments} />
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} />
           ` : tab === "warehouse" ? html`
@@ -2306,6 +2400,7 @@
       const [reports, setReports] = useState([]);
       const [users, setUsers] = useState([]);
       const [transportDates, setTransportDates] = useState([]);
+      const [bathroomComments, setBathroomComments] = useState([]);
       const [loaded, setLoaded] = useState(false);
 
       const logout = () => {
@@ -2334,6 +2429,10 @@
         const rows = await api.getTransportDates(t);
         setTransportDates(rows || []);
       };
+      const reloadBathroomComments = async (t = token) => {
+        const rows = await api.getBathroomComments(t);
+        setBathroomComments(rows || []);
+      };
 
       useEffect(() => {
         (async () => {
@@ -2344,6 +2443,7 @@
               try {
                 await reloadReports(token);
                 await reloadTransportDates(token);
+                await reloadBathroomComments(token);
                 if (isManagerLike(restored)) await reloadUsers(token);
               } catch (_) {}
             } else {
@@ -2360,6 +2460,7 @@
         setUser(userData);
         await reloadReports(newToken);
         await reloadTransportDates(newToken);
+        await reloadBathroomComments(newToken);
         if (isManagerLike(userData)) await reloadUsers(newToken);
       };
 
@@ -2373,8 +2474,8 @@
             ${user ? html`<div style=${{ color: COLORS.muted, fontSize: "14px" }}>${user.role || "worker"} / ${user.code || user.login}</div>` : null}
           </header>
           ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} bathroomComments=${bathroomComments} reloadBathroomComments=${() => reloadBathroomComments()} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }
