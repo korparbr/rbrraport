@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.7</title>
+  <title>FlowRBR 1.71</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -67,6 +67,8 @@
       deleteUser: (token, code) => apiRequest("DELETE", "/api/users/" + encodeURIComponent(code), null, token),
       getStagePermissions: token => apiRequest("GET", "/api/stage-permissions", null, token),
       setStagePermission: (token, stage, workerCodes) => apiRequest("PUT", "/api/stage-permissions/" + encodeURIComponent(stage), { workerCodes }, token),
+      getReportControls: token => apiRequest("GET", "/api/report-controls", null, token),
+      setReportControl: (token, project, stage, disabled, question) => apiRequest("PUT", "/api/report-controls", { project, stage, disabled, question }, token),
       getProjects: token => apiRequest("GET", "/api/projects", null, token),
       addProject: (token, project, count) => apiRequest("POST", "/api/projects", { project, count }, token),
       updateProject: (token, project, data) => apiRequest("PUT", "/api/projects/" + encodeURIComponent(project), data, token),
@@ -187,6 +189,28 @@
       return !allowed.length || allowed.includes(code);
     };
     const explicitlyAllowedStageWorkers = (stage, permissions) => new Set(stagePermissionMap(permissions)[canonicalStageId(stage)] || []);
+    const reportControlKey = (project, stage) => String(project || "*").trim() + "#" + canonicalStageId(stage);
+    const reportControlMap = controls => {
+      const map = {};
+      (controls || []).forEach(row => {
+        map[reportControlKey(row.project || "*", row.stage)] = {
+          project: String(row.project || "*").trim() || "*",
+          stage: canonicalStageId(row.stage),
+          disabled: !!row.disabled,
+          question: String(row.question || "").trim()
+        };
+      });
+      return map;
+    };
+    const reportControlFor = (controls, project, stage) => {
+      const map = reportControlMap(controls);
+      const global = map[reportControlKey("*", stage)] || {};
+      const specific = map[reportControlKey(project, stage)] || {};
+      return {
+        disabled: !!global.disabled || !!specific.disabled,
+        question: specific.question || global.question || ""
+      };
+    };
     const today = () => new Date().toISOString().slice(0, 10);
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
@@ -435,7 +459,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.7</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.71</span>` : null}
         </div>
       `;
     }
@@ -481,7 +505,7 @@
       `;
     }
 
-    function LineEditor({ reports, lines, onChange, serverProjects, stagePermissions, workerCode, fixedStages, qualityData }) {
+    function LineEditor({ reports, lines, onChange, serverProjects, stagePermissions, reportControls, workerCode, fixedStages, qualityData }) {
       const [stages, setStages] = useState([]);
       const [project, setProject] = useState("");
       const [selectedProducts, setSelectedProducts] = useState([]);
@@ -500,7 +524,7 @@
           setMsg(null);
         }
       }, [JSON.stringify(fixedStages || [])]);
-      const allowedStages = useMemo(() => STAGES.filter(s => isStageAllowedForWorker(s[0], workerCode, stagePermissions)), [stagePermissions, workerCode]);
+      const allowedStages = useMemo(() => STAGES.filter(s => isStageAllowedForWorker(s[0], workerCode, stagePermissions) && !reportControlFor(reportControls, "*", s[0]).disabled), [stagePermissions, reportControls, workerCode]);
       const reportProjects = useMemo(() => activeProjectItems(serverProjects).filter(item => item.count > 0), [serverProjects]);
       const reportCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
       const max = project ? reportCounts[project] || 0 : 0;
@@ -518,6 +542,7 @@
       const requiresHall = false;
       const toggleStage = id => {
         if (!isStageAllowedForWorker(id, workerCode, stagePermissions)) return setMsg({ type: "error", text: "Ten etap nie jest przypisany do tego pracownika." });
+        if (reportControlFor(reportControls, "*", id).disabled) return setMsg({ type: "error", text: "Ten etap jest aktualnie wylaczony z raportowania." });
         setStages(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
         if (id === "5" && stages.includes("5")) setHall("");
         resetSelection();
@@ -550,6 +575,12 @@
         if (!project) return setMsg({ type: "error", text: "Wybierz projekt." });
         if (!selectedProducts.length) return setMsg({ type: "error", text: "Zaznacz co najmniej jedna lazienke." });
         if (requiresHall && !hall) return setMsg({ type: "error", text: "Dla tego etapu wybierz hale." });
+        const blocked = effectiveStages.filter(stage => reportControlFor(reportControls, project, stage).disabled);
+        if (blocked.length) return setMsg({ type: "error", text: "Raportowanie wylaczone dla: " + blocked.map(stageLabel).join(", ") + "." });
+        const questions = [...new Set(effectiveStages.map(stage => reportControlFor(reportControls, project, stage).question).filter(Boolean))];
+        for (const question of questions) {
+          if (!confirm(question)) return setMsg({ type: "warning", text: "Pracownik nie potwierdzil pytania, pozycje nie zostaly dodane." });
+        }
         if (isQualityStage && !qualityGoat && !qualityMissing.length) return setMsg({ type: "error", text: "Dla kontroli jakosci wybierz Koza albo co najmniej jeden brak." });
         const quality = isQualityStage ? { goat: qualityGoat, missingItems: qualityMissing } : null;
         const next = selectedProducts
@@ -1016,7 +1047,7 @@
       `;
     }
 
-    function ManagerAddReport({ token, reports, users, serverProjects, stagePermissions, qualityData, materialUsages, reloadReports, reloadQuality, reloadMaterialUsages }) {
+    function ManagerAddReport({ token, reports, users, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, reloadReports, reloadQuality, reloadMaterialUsages }) {
       const [open, setOpen] = useState(false);
       const [selectedStages, setSelectedStages] = useState([]);
       const [workerCode, setWorkerCode] = useState("");
@@ -1149,7 +1180,7 @@
               <div>
                 <label style=${S.label}>Etapy - wybierz najpierw</label>
                 <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "7px", maxHeight: "190px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
-                  ${STAGES.map(s => {
+                  ${STAGES.filter(s => !reportControlFor(reportControls, "*", s[0]).disabled).map(s => {
                     const selected = selectedStages.includes(s[0]);
                     return html`
                       <button key=${s[0]} type="button" onClick=${() => toggleManagerStage(s[0])} style=${{
@@ -1186,7 +1217,7 @@
               </div>
             </div>
             ${workerCode ? html`
-              <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${workerCode} fixedStages=${selectedStages} qualityData=${qualityData} />
+              <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} workerCode=${workerCode} fixedStages=${selectedStages} qualityData=${qualityData} />
               <section style=${{ ...S.card, marginBottom: 0 }}>
                 <h3 style=${{ ...S.title, fontSize: "17px" }}>Raport do zapisania (${lines.length})</h3>
                 <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
@@ -1230,7 +1261,7 @@
       `;
     }
 
-    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, qualityData, materialUsages, reloadReports, reloadQuality, reloadMaterialUsages }) {
+    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, reloadReports, reloadQuality, reloadMaterialUsages }) {
       const [dateFrom, setDateFrom] = useState("");
       const [dateTo, setDateTo] = useState("");
       const [worker, setWorker] = useState("all");
@@ -1314,7 +1345,7 @@
       };
 
       return html`
-        <${ManagerAddReport} token=${token} reports=${reports} users=${users} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />
+        <${ManagerAddReport} token=${token} reports=${reports} users=${users} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
             <h2 style=${{ ...S.title, margin: 0 }}>Raporty</h2>
@@ -1456,7 +1487,7 @@
       `;
     }
 
-    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, materialUsages, reloadMaterialUsages, reloadQuality, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, reportControls, materialUsages, reloadMaterialUsages, reloadQuality, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
@@ -1594,7 +1625,7 @@
               <label style=${S.label}>Data raportu</label>
               <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
             </section>
-            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${user.code || user.login} qualityData=${qualityData} />
+            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
             <section style=${S.card}>
               <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
               <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
@@ -1654,7 +1685,7 @@
       `;
     }
 
-    function SelfReportTab({ user, token, reports, serverProjects, stagePermissions, qualityData, materialUsages, reloadReports, reloadMaterialUsages, reloadQuality }) {
+    function SelfReportTab({ user, token, reports, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, reloadReports, reloadMaterialUsages, reloadQuality }) {
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
       const [msg, setMsg] = useState(null);
@@ -1748,19 +1779,31 @@
           setSaving(false);
         }
       };
+      const removeReport = async id => {
+        if (!confirm("Usunac ten raport?")) return;
+        setMsg(null);
+        try {
+          await api.deleteReport(token, id);
+          await reloadReports();
+          if (reloadQuality) await reloadQuality();
+          setMsg({ type: "success", text: "Raport zostal usuniety." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
       return html`
         <section style=${S.card}>
           <label style=${S.label}>Data raportu</label>
           <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
         </section>
-        <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${user.code || user.login} qualityData=${qualityData} />
+        <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
         <section style=${S.card}>
           <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
           <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
           <button style=${{ ...S.btn, marginTop: "12px", opacity: saving || !lines.length ? 0.6 : 1 }} disabled=${saving || !lines.length} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz raport"}</button>
           <${Message} msg=${msg} />
         </section>
-        <${WorkerHistory} reports=${mine} user=${user} />
+        <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
         ${materialPrompt ? html`
           <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 50, display: "grid", placeItems: "center", padding: "16px" }}>
             <section style=${{ ...S.card, width: "min(720px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
@@ -3802,9 +3845,10 @@
         }));
     }
 
-    function QualityControlTab({ qualityData, token, reports, transportDates, reloadQuality }) {
+    function QualityControlTab({ qualityData, token, reports, transportDates, serverProjects, reportControls, reloadQuality, reloadReportControls }) {
       const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all" });
       const [itemProject, setItemProject] = useState("all");
+      const [controlEdit, setControlEdit] = useState({ project: "*", stage: "18", disabled: false, question: "" });
       const [itemEdits, setItemEdits] = useState({});
       const [msg, setMsg] = useState(null);
       const [savingKey, setSavingKey] = useState("");
@@ -3820,9 +3864,11 @@
         return set;
       }, [reports]);
       const projects = useMemo(() => [...new Set([
+        ...activeProjectItems(serverProjects).map(item => String(item.project || "")).filter(Boolean),
         ...records.map(r => String(r.project || "")).filter(Boolean),
         ...qualityItems.map(item => String(item.project || "")).filter(Boolean)
-      ])].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [records, qualityItems]);
+      ])].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [records, qualityItems, serverProjects]);
+      const controlRows = useMemo(() => (reportControls || []).slice().sort((a, b) => String(a.project || "*").localeCompare(String(b.project || "*"), "pl", { numeric: true }) || String(a.stage).localeCompare(String(b.stage), "pl", { numeric: true })), [reportControls]);
       const missingOptions = useMemo(() => [...new Set([
         ...qualityItems.map(item => String(item.itemName || "").trim()).filter(Boolean),
         ...records.flatMap(record => Array.isArray(record.missingItems) ? record.missingItems : []).map(item => String(item || "").trim()).filter(Boolean)
@@ -3900,6 +3946,22 @@
           setSavingKey("");
         }
       };
+      const loadControlToEdit = row => {
+        setControlEdit({ project: row.project || "*", stage: row.stage || "18", disabled: !!row.disabled, question: row.question || "" });
+      };
+      const saveReportControl = async () => {
+        if (!controlEdit.stage) return setMsg({ type: "error", text: "Wybierz etap." });
+        setSavingKey("report-control"); setMsg(null);
+        try {
+          await api.setReportControl(token, controlEdit.project || "*", controlEdit.stage, !!controlEdit.disabled, controlEdit.question || "");
+          if (reloadReportControls) await reloadReportControls();
+          setMsg({ type: "success", text: "Ustawienie raportowania zapisane." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
       return html`
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
@@ -3943,6 +4005,47 @@
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
+          <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "14px" }}>
+            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "4px" }}>Ustawienia raportowania</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Mozesz wylaczyc raportowanie etapu albo zadac pytanie potwierdzajace przed dodaniem pozycji.</div>
+              </div>
+            </div>
+            <div className="grid-3" style=${S.row3}>
+              <div>
+                <label style=${S.label}>Projekt</label>
+                <select style=${S.input} value=${controlEdit.project} onChange=${e => setControlEdit({ ...controlEdit, project: e.target.value })}>
+                  <option value="*">Wszystkie projekty</option>
+                  ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+                </select>
+              </div>
+              <div>
+                <label style=${S.label}>Etap</label>
+                <select style=${S.input} value=${controlEdit.stage} onChange=${e => setControlEdit({ ...controlEdit, stage: e.target.value })}>
+                  ${STAGES.map(s => html`<option key=${s[0]} value=${s[0]}>${s[1]}</option>`)}
+                </select>
+              </div>
+              <label style=${{ border: "1px solid " + (controlEdit.disabled ? COLORS.red : COLORS.border), borderRadius: "8px", background: controlEdit.disabled ? "#fef2f2" : COLORS.panel, padding: "10px", fontWeight: 900, display: "flex", gap: "8px", alignItems: "center" }}>
+                <input type="checkbox" checked=${controlEdit.disabled} onChange=${e => setControlEdit({ ...controlEdit, disabled: e.target.checked })} />
+                Wylacz dodawanie raportu
+              </label>
+            </div>
+            <div style=${{ display: "grid", gridTemplateColumns: "1fr auto", gap: "8px", marginTop: "10px" }}>
+              <input style=${S.input} placeholder="Pytanie do potwierdzenia, np. Czy sprawdziles komplet elementow?" value=${controlEdit.question} onInput=${e => setControlEdit({ ...controlEdit, question: e.target.value })} />
+              <button style=${S.btn} disabled=${savingKey === "report-control"} onClick=${saveReportControl}>Zapisz ustawienie</button>
+            </div>
+            <div style=${{ display: "grid", gap: "7px", marginTop: "12px" }}>
+              ${controlRows.map(row => html`
+                <button key=${reportControlKey(row.project || "*", row.stage)} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "9px", textAlign: "left", cursor: "pointer" }} onClick=${() => loadControlToEdit(row)}>
+                  <strong>${row.project === "*" ? "Wszystkie projekty" : "Projekt " + row.project}</strong> / ${stageLabel(row.stage)}
+                  <span style=${{ marginLeft: "8px", color: row.disabled ? COLORS.red : COLORS.green, fontWeight: 900 }}>${row.disabled ? "wylaczone" : "aktywne"}</span>
+                  ${row.question ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>Pytanie: ${row.question}</div>` : null}
+                </button>
+              `)}
+              ${controlRows.length ? null : html`<div style=${{ color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Brak dodatkowych ustawien raportowania.</div>`}
+            </div>
+          </div>
           <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "14px" }}>
             <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
               <div>
@@ -5343,7 +5446,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, reportControls, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -5482,8 +5585,8 @@
           <${Message} msg=${msg} />
           ${tab === "reports" ? (
             isController
-              ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
-              : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
+              ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
+              : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
           ) : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} />
           ` : tab === "sessions" ? html`
@@ -5501,7 +5604,7 @@
           ` : tab === "transport" ? html`
             <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} />
           ` : tab === "quality" ? html`
-            <${QualityControlTab} qualityData=${qualityData} token=${token} reports=${reports} transportDates=${transportDates} reloadQuality=${reloadQuality} />
+            <${QualityControlTab} qualityData=${qualityData} token=${token} reports=${reports} transportDates=${transportDates} serverProjects=${serverProjects} reportControls=${reportControls} reloadQuality=${reloadQuality} reloadReportControls=${reloadReportControls} />
           ` : tab === "calculations" ? html`
             <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} reloadMaterialUsages=${reloadMaterialUsages} />
           ` : html`
@@ -5655,12 +5758,13 @@
       const [qualityData, setQualityData] = useState({ items: [], records: [] });
       const [serverProjects, setServerProjects] = useState([]);
       const [stagePermissions, setStagePermissions] = useState([]);
+      const [reportControls, setReportControls] = useState([]);
       const [materialUsages, setMaterialUsages] = useState([]);
       const [loaded, setLoaded] = useState(false);
 
       const logout = () => {
         localStorage.removeItem("rrbr_token");
-        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
+        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setReportControls([]); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
       };
       const decodeToken = t => {
         try {
@@ -5736,6 +5840,14 @@
           setStagePermissions([]);
         }
       };
+      const reloadReportControls = async (t = token) => {
+        try {
+          const rows = await api.getReportControls(t);
+          setReportControls(rows || []);
+        } catch (_) {
+          setReportControls([]);
+        }
+      };
 
       useEffect(() => {
         (async () => {
@@ -5752,6 +5864,7 @@
                 await reloadBathroomChecks(token);
                 await reloadQuality(token);
                 await reloadStagePermissions(token);
+                await reloadReportControls(token);
                 await reloadMaterialUsages(token);
                 if (isManagerLike(restored)) await reloadUsers(token);
               } catch (_) {}
@@ -5775,6 +5888,7 @@
         await reloadBathroomChecks(newToken);
         await reloadQuality(newToken);
         await reloadStagePermissions(newToken);
+        await reloadReportControls(newToken);
         await reloadMaterialUsages(newToken);
         if (isManagerLike(userData)) await reloadUsers(newToken);
       };
@@ -5798,8 +5912,8 @@
               </section>
             </main>
           ` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadReportControls=${() => reloadReportControls()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }

@@ -1,4 +1,4 @@
-// RaportRBR v1.7 - Backend
+// RaportRBR v1.71 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -284,6 +284,48 @@ async function ensureStagePermissionsTable() {
       PRIMARY KEY (stage, worker_code)
     )
   `);
+}
+
+async function ensureReportControlsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS report_controls (
+      project TEXT NOT NULL DEFAULT '*',
+      stage TEXT NOT NULL,
+      disabled BOOLEAN NOT NULL DEFAULT FALSE,
+      question TEXT NOT NULL DEFAULT '',
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project, stage)
+    )
+  `);
+}
+
+function normalizeReportControlInput(body) {
+  const projectRaw = String(body?.project || '*').trim();
+  const project = !projectRaw || projectRaw === 'all' ? '*' : projectRaw;
+  const stage = String(body?.stage || '').trim();
+  const disabled = !!body?.disabled;
+  const question = String(body?.question || '').trim().slice(0, 500);
+  return { project, stage, disabled, question };
+}
+
+async function disabledReportControlsForLines(client, lines) {
+  await ensureReportControlsTable();
+  const normalized = (lines || []).map(line => ({
+    project: String(line.project || '').trim(),
+    stage: String(line.stage || '').trim(),
+    product: Number(line.product)
+  })).filter(line => line.project && line.stage);
+  if (!normalized.length) return [];
+  const stages = [...new Set(normalized.map(line => line.stage))];
+  const projects = [...new Set(normalized.map(line => line.project))];
+  const r = await client.query(
+    `SELECT project, stage FROM report_controls
+     WHERE disabled=TRUE AND stage=ANY($1) AND (project='*' OR project=ANY($2))`,
+    [stages, projects]
+  );
+  const disabled = new Set(r.rows.map(row => `${row.project}#${row.stage}`));
+  return normalized.filter(line => disabled.has(`*#${line.stage}`) || disabled.has(`${line.project}#${line.stage}`));
 }
 
 async function ensureTransportDatesTable() {
@@ -1185,6 +1227,11 @@ app.post('/api/reports', auth, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: `Nie masz uprawnien do raportowania etapow: ${forbidden.join(', ')}` });
     }
+    const disabled = await disabledReportControlsForLines(client, lines);
+    if (disabled.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: `Raportowanie wylaczone dla: ${disabled.map(line => `${line.project}/laz.${line.product}/${line.stage}`).join(', ')}` });
+    }
     const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [req.user.code, date]);
     const reportId = r.rows[0].id;
 
@@ -1273,6 +1320,10 @@ app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Nie znaleziono raportu' });
     }
+    if (req.user.role === 'kontroler' && String(report.rows[0].worker_code || '').toUpperCase() !== String(req.user.code || '').toUpperCase()) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Kontroler moze usunac tylko swoj raport' });
+    }
     const lines = await client.query('SELECT project, product, stage FROM report_lines WHERE report_id=$1', [req.params.id]);
     let deletedCalculations = 0;
     let deletedQuality = 0;
@@ -1304,6 +1355,9 @@ app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
 app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
   const { workerCode, date, lines } = req.body;
   if (!workerCode || !date || !lines?.length) return res.status(400).json({ error: 'Brak danych' });
+  if (req.user.role === 'kontroler' && String(workerCode || '').toUpperCase() !== String(req.user.code || '').toUpperCase()) {
+    return res.status(403).json({ error: 'Kontroler moze dodac raport tylko za siebie' });
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1311,6 +1365,11 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
     if (forbidden.length) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: `Pracownik nie ma uprawnien do raportowania etapow: ${forbidden.join(', ')}` });
+    }
+    const disabled = await disabledReportControlsForLines(client, lines);
+    if (disabled.length) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: `Raportowanie wylaczone dla: ${disabled.map(line => `${line.project}/laz.${line.product}/${line.stage}`).join(', ')}` });
     }
     const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [workerCode, date]);
     const reportId = r.rows[0].id;
@@ -1399,6 +1458,44 @@ app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
   } catch (err) {
     console.error('Maps photos PUT error:', err);
     res.status(500).json({ error: err.message || 'Błąd zapisu zdjęcia mapy' });
+  }
+});
+
+app.get('/api/report-controls', auth, async (req, res) => {
+  try {
+    await ensureReportControlsTable();
+    const r = await pool.query(
+      `SELECT project, stage, disabled, question, updated_by AS "updatedBy", updated_at AS "updatedAt"
+       FROM report_controls
+       ORDER BY project, stage`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu ustawien raportowania' });
+  }
+});
+
+app.put('/api/report-controls', auth, managerOnly, async (req, res) => {
+  const item = normalizeReportControlInput(req.body || {});
+  if (!item.stage) return res.status(400).json({ error: 'Wybierz etap' });
+  try {
+    await ensureReportControlsTable();
+    if (!item.disabled && !item.question) {
+      await pool.query('DELETE FROM report_controls WHERE project=$1 AND stage=$2', [item.project, item.stage]);
+      await auditLog(req, 'report_control_deleted', item.project + '#' + item.stage);
+      return res.json({ success: true, deleted: true });
+    }
+    const r = await pool.query(
+      `INSERT INTO report_controls (project, stage, disabled, question, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,NOW())
+       ON CONFLICT (project, stage) DO UPDATE SET disabled=EXCLUDED.disabled, question=EXCLUDED.question, updated_by=EXCLUDED.updated_by, updated_at=NOW()
+       RETURNING project, stage, disabled, question, updated_by AS "updatedBy", updated_at AS "updatedAt"`,
+      [item.project, item.stage, item.disabled, item.question, req.user.code]
+    );
+    await auditLog(req, 'report_control_changed', item.project + '#' + item.stage, item);
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu ustawien raportowania' });
   }
 });
 
@@ -1835,7 +1932,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.7 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.71 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -1866,7 +1963,8 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     await ensureTransportReplacementsTable();
     await ensureTransportExtrasTable();
     await ensureQualityTables();
-    const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords] = await Promise.all([
+    await ensureReportControlsTable();
+    const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, reportControls, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
@@ -1878,6 +1976,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
       pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
       pool.query('SELECT * FROM bathroom_checks ORDER BY updated_at'),
       pool.query('SELECT * FROM stage_permissions ORDER BY stage, worker_code'),
+      pool.query('SELECT * FROM report_controls ORDER BY project, stage'),
       pool.query('SELECT * FROM projects ORDER BY project'),
       pool.query('SELECT * FROM project_bathrooms ORDER BY project, product'),
       pool.query('SELECT * FROM material_usages ORDER BY created_at'),
@@ -1886,7 +1985,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     ]);
 
     const backup = {
-      version: '1.7',
+      version: '1.71',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -1900,6 +1999,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         bathroom_comments: comments.rows,
         bathroom_checks: checks.rows,
         stage_permissions: stagePermissions.rows,
+        report_controls: reportControls.rows,
         projects: projects.rows,
         project_bathrooms: projectBathrooms.rows,
         material_usages: materialUsages.rows,
@@ -1917,6 +2017,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         bathroom_comments: comments.rows.length,
         bathroom_checks: checks.rows.length,
         stage_permissions: stagePermissions.rows.length,
+        report_controls: reportControls.rows.length,
         projects: projects.rows.length,
         project_bathrooms: projectBathrooms.rows.length,
         material_usages: materialUsages.rows.length,
@@ -2174,6 +2275,23 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       }
     }
 
+    let reportControlsRestored = 0;
+    if (Array.isArray(data.report_controls)) {
+      await ensureReportControlsTable();
+      for (const c of data.report_controls) {
+        const item = normalizeReportControlInput(c);
+        if (!item.stage) continue;
+        await client.query(
+          `INSERT INTO report_controls (project, stage, disabled, question, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()))
+           ON CONFLICT (project, stage) DO UPDATE SET disabled=EXCLUDED.disabled, question=EXCLUDED.question,
+             updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [item.project, item.stage, item.disabled, item.question, c.updated_by || c.updatedBy || req.user.code, c.updated_at || c.updatedAt || null]
+        );
+        reportControlsRestored++;
+      }
+    }
+
     let qualityItemsRestored = 0;
     let qualityRecordsRestored = 0;
     if (Array.isArray(data.quality_items) || Array.isArray(data.quality_records)) {
@@ -2216,8 +2334,8 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
     }
     
     await client.query('COMMIT');
-    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored, qualityItems: qualityItemsRestored, qualityRecords: qualityRecordsRestored });
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji, ${qualityRecordsRestored} wpisow jakosci` });
+    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, reportControls: reportControlsRestored, materials: materialRestored, qualityItems: qualityItemsRestored, qualityRecords: qualityRecordsRestored });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${reportControlsRestored} ustawien raportowania, ${materialRestored} kalkulacji, ${qualityRecordsRestored} wpisow jakosci` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -2235,7 +2353,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.7',
+      version: '1.71',
       time: new Date(),
       db: {
         connected: true,
@@ -2271,4 +2389,4 @@ app.use((err, req, res, next) => {
   res.status(err.message && err.message.includes('CORS') ? 403 : 500).json({ error: err.message || 'Blad serwera' });
 });
 
-app.listen(PORT, () => console.log(`RaportRBR v1.7 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`RaportRBR v1.71 running on port ${PORT}`));
