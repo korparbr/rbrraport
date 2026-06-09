@@ -81,6 +81,8 @@
       logoutAllSessions: token => apiRequest("POST", "/api/sessions/logout-all", {}, token),
       getTransportDates: token => apiRequest("GET", "/api/transport-dates", null, token),
       saveTransportDate: (token, project, product, loadDate, lkwNumber, details = {}) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate, lkwNumber, ...details }, token),
+      getTransportReplacements: token => apiRequest("GET", "/api/transport-replacements", null, token),
+      saveTransportReplacement: (token, payload) => apiRequest("POST", "/api/transport-replacements", payload, token),
       getBathroomComments: token => apiRequest("GET", "/api/bathroom-comments", null, token),
       addBathroomComment: (token, project, product, comment) => apiRequest("POST", "/api/bathroom-comments", { project, product, comment }, token),
       setBathroomCommentDone: (token, id, done) => apiRequest("PUT", "/api/bathroom-comments/" + id + "/done", { done }, token),
@@ -3348,7 +3350,7 @@
       `;
     }
 
-    function TransportTab({ reports, transportDates, token, serverProjects, users, stagePermissions, reloadTransportDates, reloadReports }) {
+    function TransportTab({ reports, transportDates, transportReplacements, token, serverProjects, users, stagePermissions, reloadTransportDates, reloadTransportReplacements, reloadReports }) {
       const transportPanelStyle = {
         ...S.card,
         background: "#fff",
@@ -3373,7 +3375,18 @@
       const [transportReport, setTransportReport] = useState(null);
       const [transportReportDate, setTransportReportDate] = useState(today());
       const [transportReportWorker, setTransportReportWorker] = useState("");
+      const [transportSubtab, setTransportSubtab] = useState("list");
+      const [replacementModal, setReplacementModal] = useState(null);
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
+      const replacementByTarget = useMemo(() => {
+        const map = {};
+        (transportReplacements || []).forEach(item => {
+          if (item.mode !== "podmiana") return;
+          const key = transportKey(item.project, item.toProduct);
+          if (!map[key]) map[key] = item;
+        });
+        return map;
+      }, [transportReplacements]);
       const reportWorkers = useMemo(() => {
         const allowedLoadWorkers = explicitlyAllowedStageWorkers("21", stagePermissions);
         return (users || [])
@@ -3524,6 +3537,34 @@
           setSavingKey("");
         }
       };
+      const openReplacementModal = (row, item) => {
+        setReplacementModal({ row, item, mode: "", toProduct: "" });
+        setMsg(null);
+      };
+      const replacementOptions = replacementModal
+        ? transportItems.filter(item => sameProject(item.project, replacementModal.item.project) && item.product !== replacementModal.item.product)
+        : [];
+      const saveReplacement = async () => {
+        if (!replacementModal) return;
+        if (!replacementModal.mode) return setMsg({ type: "error", text: "Wybierz: Zamien albo Podmiana." });
+        const toProduct = Number(replacementModal.toProduct);
+        if (!Number.isInteger(toProduct) || toProduct < 1) return setMsg({ type: "error", text: "Wybierz nowa lazienke." });
+        const fromProduct = replacementModal.item.product;
+        const project = replacementModal.item.project;
+        if (!confirm((replacementModal.mode === "podmiana" ? "Zapisac podmiane " : "Zamienic ") + "laz. " + fromProduct + " na laz. " + toProduct + "?")) return;
+        setSavingKey("replacement"); setMsg(null);
+        try {
+          await api.saveTransportReplacement(token, { mode: replacementModal.mode, project, fromProduct, toProduct });
+          await reloadTransportDates();
+          if (reloadTransportReplacements) await reloadTransportReplacements();
+          setReplacementModal(null);
+          setMsg({ type: "success", text: replacementModal.mode === "podmiana" ? "Podmiana zostala zapisana." : "Lazienka zostala zamieniona." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
       const openTransportReport = row => {
         setTransportReport(row);
         setTransportReportDate(row.loadDate || today());
@@ -3580,6 +3621,11 @@
               <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Ustawianie i edycja dat zaladunku dla spakowanych lazienek.</div>
             </div>
           </div>
+          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+            <button style=${transportSubtab === "list" ? S.btn : S.ghost} onClick=${() => setTransportSubtab("list")}>Transport</button>
+            <button style=${transportSubtab === "replacements" ? S.btn : S.ghost} onClick=${() => setTransportSubtab("replacements")}>Podmiany</button>
+          </div>
+          <div style=${{ display: transportSubtab === "list" ? "block" : "none" }}>
           <div className="grid-3" style=${{ ...S.row3, marginBottom: "12px" }}>
             <div>
               <label style=${S.label}>Filtr projektu</label>
@@ -3744,21 +3790,26 @@
                           ${row.items.map(item => {
                             const isWarehouse = item.status === "magazyn";
                             const tilePalette = warehousePalette(isWarehouse ? "magazyn" : "produkcja");
+                            const replacement = replacementByTarget[transportKey(row.project, item.product)];
                             return html`
-                              <span key=${item.product} title=${isWarehouse ? "Magazyn" : "Produkcja"} style=${{
-                                minWidth: "27px",
-                                height: "23px",
-                                padding: "0 5px",
+                              <button key=${item.product} title=${replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openReplacementModal(row, item)} style=${{
+                                minWidth: replacement ? "42px" : "27px",
+                                minHeight: "23px",
+                                padding: "2px 5px",
                                 borderRadius: "5px",
                                 border: "1px solid " + COLORS.border,
                                 background: tilePalette.color,
                                 color: tilePalette.text,
-                                display: "inline-flex",
-                                alignItems: "center",
-                                justifyContent: "center",
+                                display: "inline-grid",
+                                placeItems: "center",
                                 fontSize: "11px",
-                                fontWeight: 900
-                              }}>${item.product}</span>
+                                fontWeight: 900,
+                                cursor: "pointer",
+                                lineHeight: 1.05
+                              }}>
+                                <span>${item.product}</span>
+                                ${replacement ? html`<span style=${{ fontSize: "9px", fontWeight: 900 }}>za ${replacement.fromProduct}</span>` : null}
+                              </button>
                             `;
                           })}
                         </div>
@@ -3804,6 +3855,70 @@
               </tbody>
             </table>
           </div>
+          </div>
+          ${transportSubtab === "replacements" ? html`
+            <section style=${{ background: "#fff", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px" }}>
+              <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Podmiany transportu</h3>
+              <div style=${{ overflowX: "auto" }}>
+                <table style=${{ width: "100%", minWidth: "820px", borderCollapse: "collapse", fontSize: "13px" }}>
+                  <thead>
+                    <tr>
+                      ${["Data", "Tryb", "Projekt", "Z lazienki", "Na lazienke", "Zaladunek", "LKW", "Kto"].map(label => html`
+                        <th key=${label} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${label}</th>
+                      `)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${(transportReplacements || []).map(item => html`
+                      <tr key=${item.id}>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${String(item.createdAt || "").slice(0, 16).replace("T", " ")}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900 }}>${item.mode === "podmiana" ? "Podmiana" : "Zamiana"}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900 }}>${item.project}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${item.fromProduct}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${item.toProduct}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${item.loadDate || "-"}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${item.lkwNumber || "-"}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${item.createdBy || "-"}</td>
+                      </tr>
+                    `)}
+                    ${(transportReplacements || []).length ? null : html`
+                      <tr><td colSpan="8" style=${{ padding: "22px", textAlign: "center", color: COLORS.dim }}>Brak zapisanych podmian.</td></tr>
+                    `}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ` : null}
+          ${replacementModal ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 62, display: "grid", placeItems: "center", padding: "16px" }}>
+              <section style=${{ ...S.card, width: "min(520px, 100%)", margin: 0 }}>
+                <h2 style=${S.title}>Edytuj lazienke w transporcie</h2>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px", lineHeight: 1.6 }}>
+                  Projekt ${replacementModal.item.project} / aktualnie laz. ${replacementModal.item.product} / LKW ${replacementModal.row.lkwNumber || "-"} / zaladunek ${replacementModal.row.loadDate || "-"}
+                </div>
+                <${Message} msg=${msg} />
+                <div style=${{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "12px" }}>
+                  <button style=${replacementModal.mode === "zamien" ? S.btn : S.ghost} onClick=${() => setReplacementModal({ ...replacementModal, mode: "zamien" })}>Zamien</button>
+                  <button style=${replacementModal.mode === "podmiana" ? S.btn : S.ghost} onClick=${() => setReplacementModal({ ...replacementModal, mode: "podmiana" })}>Podmiana</button>
+                </div>
+                <div style=${{ color: COLORS.muted, fontSize: "12px", marginBottom: "10px" }}>
+                  Zamien - korekta numeru w transporcie. Podmiana - nowa lazienka dostaje termin zaladunku, a w tabeli bedzie widoczna informacja za ktora lazienke weszla.
+                </div>
+                <label style=${S.label}>Nowa lazienka</label>
+                <select style=${S.input} value=${replacementModal.toProduct} onChange=${e => setReplacementModal({ ...replacementModal, toProduct: e.target.value })}>
+                  <option value="">- wybierz lazienke -</option>
+                  ${replacementOptions.map(item => {
+                    const info = transportInfo[transportKey(item.project, item.product)];
+                    return html`<option key=${item.product} value=${item.product}>${item.product}${info ? " / ma transport " + (info.loadDate || "") + (info.lkwNumber ? " LKW" + info.lkwNumber : "") : ""}</option>`;
+                  })}
+                </select>
+                <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>
+                  <button style=${S.ghost} disabled=${savingKey === "replacement"} onClick=${() => setReplacementModal(null)}>Anuluj</button>
+                  <button style=${S.btn} disabled=${savingKey === "replacement"} onClick=${saveReplacement}>${savingKey === "replacement" ? "Zapisywanie..." : "Zapisz"}</button>
+                </div>
+              </section>
+            </div>
+          ` : null}
           ${transportReport ? html`
             <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 60, display: "grid", placeItems: "center", padding: "16px" }}>
               <section style=${{ ...S.card, width: "min(560px, 100%)", margin: 0 }}>
@@ -3840,7 +3955,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, bathroomComments, bathroomChecks, serverProjects, stagePermissions, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadStagePermissions, reloadTransportDates, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, serverProjects, stagePermissions, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadStagePermissions, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -3993,7 +4108,7 @@
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} />
           ` : tab === "transport" ? html`
-            <${TransportTab} reports=${reports} transportDates=${transportDates} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} reloadTransportDates=${reloadTransportDates} reloadReports=${reloadReports} />
+            <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} />
           ` : tab === "calculations" ? html`
             <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} reloadMaterialUsages=${reloadMaterialUsages} />
           ` : html`
@@ -4141,6 +4256,7 @@
       const [reports, setReports] = useState([]);
       const [users, setUsers] = useState([]);
       const [transportDates, setTransportDates] = useState([]);
+      const [transportReplacements, setTransportReplacements] = useState([]);
       const [bathroomComments, setBathroomComments] = useState([]);
       const [bathroomChecks, setBathroomChecks] = useState([]);
       const [serverProjects, setServerProjects] = useState([]);
@@ -4150,7 +4266,7 @@
 
       const logout = () => {
         localStorage.removeItem("rrbr_token");
-        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setMaterialUsages([]); setBathroomChecks([]);
+        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setMaterialUsages([]); setBathroomChecks([]); setTransportReplacements([]);
       };
       const decodeToken = t => {
         try {
@@ -4190,6 +4306,14 @@
         const rows = await api.getTransportDates(t);
         setTransportDates(rows || []);
       };
+      const reloadTransportReplacements = async (t = token) => {
+        try {
+          const rows = await api.getTransportReplacements(t);
+          setTransportReplacements(rows || []);
+        } catch (_) {
+          setTransportReplacements([]);
+        }
+      };
       const reloadBathroomComments = async (t = token) => {
         const rows = await api.getBathroomComments(t);
         setBathroomComments(rows || []);
@@ -4221,6 +4345,7 @@
                 await reloadReports(token);
                 await reloadProjects(token);
                 await reloadTransportDates(token);
+                await reloadTransportReplacements(token);
                 await reloadBathroomComments(token);
                 await reloadBathroomChecks(token);
                 await reloadStagePermissions(token);
@@ -4242,6 +4367,7 @@
         await reloadReports(newToken);
         await reloadProjects(newToken);
         await reloadTransportDates(newToken);
+        await reloadTransportReplacements(newToken);
         await reloadBathroomComments(newToken);
         await reloadBathroomChecks(newToken);
         await reloadStagePermissions(newToken);
@@ -4268,7 +4394,7 @@
               </section>
             </main>
           ` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadStagePermissions=${() => reloadStagePermissions()} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadStagePermissions=${() => reloadStagePermissions()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
             html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;

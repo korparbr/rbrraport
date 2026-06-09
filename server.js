@@ -294,6 +294,24 @@ async function ensureTransportDatesTable() {
   await pool.query("ALTER TABLE transport_dates ADD COLUMN IF NOT EXISTS delay_note TEXT");
 }
 
+async function ensureTransportReplacementsTable() {
+  await ensureTransportDatesTable();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS transport_replacements (
+      id SERIAL PRIMARY KEY,
+      mode TEXT NOT NULL,
+      project TEXT NOT NULL,
+      from_product INTEGER NOT NULL,
+      to_product INTEGER NOT NULL,
+      load_date DATE,
+      lkw_number INTEGER,
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
 async function ensureProjectsTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -1156,6 +1174,22 @@ app.get('/api/transport-dates', auth, async (req, res) => {
   }
 });
 
+app.get('/api/transport-replacements', auth, async (req, res) => {
+  try {
+    await ensureTransportReplacementsTable();
+    const r = await pool.query(
+      `SELECT id, mode, project, from_product AS "fromProduct", to_product AS "toProduct",
+              load_date::text AS "loadDate", lkw_number AS "lkwNumber", details,
+              created_by AS "createdBy", created_at AS "createdAt"
+       FROM transport_replacements
+       ORDER BY created_at DESC, id DESC`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu podmian transportu' });
+  }
+});
+
 app.get('/api/bathroom-comments', auth, async (req, res) => {
   try {
     await ensureBathroomCommentsTable();
@@ -1299,6 +1333,67 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
   }
 });
 
+app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
+  const mode = String(req.body.mode || '').trim().toLowerCase();
+  const project = String(req.body.project || '').trim();
+  const fromProduct = Number(req.body.fromProduct);
+  const toProduct = Number(req.body.toProduct);
+  if (!['zamien', 'podmiana'].includes(mode)) return res.status(400).json({ error: 'Wybierz tryb: zamien albo podmiana' });
+  if (!project || !Number.isInteger(fromProduct) || fromProduct < 1 || !Number.isInteger(toProduct) || toProduct < 1) {
+    return res.status(400).json({ error: 'Brak projektu lub numeru lazienki' });
+  }
+  if (fromProduct === toProduct) return res.status(400).json({ error: 'Wybierz inna lazienke' });
+  const client = await pool.connect();
+  try {
+    await ensureTransportReplacementsTable();
+    await client.query('BEGIN');
+    const source = await client.query('SELECT * FROM transport_dates WHERE project=$1 AND product=$2', [project, fromProduct]);
+    if (!source.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ta lazienka nie ma terminu transportu do przeniesienia' });
+    }
+    const t = source.rows[0];
+    const details = {
+      orderName: t.order_name || '',
+      trailer: t.trailer || '',
+      direction: t.direction || '',
+      sizeLabel: t.size_label || '',
+      unloadDate: t.unload_date || '',
+      carrier: t.carrier || '',
+      note: t.note || '',
+      delayNote: t.delay_note || ''
+    };
+    await client.query(
+      `INSERT INTO transport_dates (
+         project, product, load_date, lkw_number, order_name, trailer, direction, size_label,
+         unload_date, carrier, note, delay_note, updated_by, updated_at
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+       ON CONFLICT (project, product) DO UPDATE SET
+         load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, order_name=EXCLUDED.order_name,
+         trailer=EXCLUDED.trailer, direction=EXCLUDED.direction, size_label=EXCLUDED.size_label,
+         unload_date=EXCLUDED.unload_date, carrier=EXCLUDED.carrier, note=EXCLUDED.note,
+         delay_note=EXCLUDED.delay_note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, toProduct, t.load_date, t.lkw_number, t.order_name, t.trailer, t.direction, t.size_label, t.unload_date, t.carrier, t.note, t.delay_note, req.user.code]
+    );
+    await client.query('DELETE FROM transport_dates WHERE project=$1 AND product=$2', [project, fromProduct]);
+    const logged = await client.query(
+      `INSERT INTO transport_replacements (mode, project, from_product, to_product, load_date, lkw_number, details, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+       RETURNING id`,
+      [mode, project, fromProduct, toProduct, t.load_date, t.lkw_number, JSON.stringify(details), req.user.code]
+    );
+    await client.query('COMMIT');
+    await auditLog(req, 'transport_replacement', `${project}#${fromProduct}->${toProduct}`, { mode, project, fromProduct, toProduct });
+    res.json({ success: true, id: logged.rows[0].id, mode, project, fromProduct, toProduct, loadDate: t.load_date, lkwNumber: t.lkw_number });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message || 'Blad zapisu podmiany transportu' });
+  } finally {
+    client.release();
+  }
+});
+
 app.get('/api/email-recipients', auth, managerOnly, async (req, res) => {
   try {
     const r = await pool.query('SELECT email FROM email_recipients ORDER BY email');
@@ -1406,13 +1501,15 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     await ensureStagePermissionsTable();
     await ensureProjectsTables();
     await ensureMaterialUsagesTable();
-    const [users, reports, lines, recipients, mapLayouts, transportDates, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages] = await Promise.all([
+    await ensureTransportReplacementsTable();
+    const [users, reports, lines, recipients, mapLayouts, transportDates, transportReplacements, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
       pool.query('SELECT * FROM email_recipients ORDER BY id'),
       pool.query('SELECT * FROM map_layouts ORDER BY id'),
       pool.query('SELECT * FROM transport_dates ORDER BY load_date, project, product'),
+      pool.query('SELECT * FROM transport_replacements ORDER BY created_at, id'),
       pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
       pool.query('SELECT * FROM bathroom_checks ORDER BY updated_at'),
       pool.query('SELECT * FROM stage_permissions ORDER BY stage, worker_code'),
@@ -1431,6 +1528,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         email_recipients: recipients.rows,
         map_layouts: mapLayouts.rows,
         transport_dates: transportDates.rows,
+        transport_replacements: transportReplacements.rows,
         bathroom_comments: comments.rows,
         bathroom_checks: checks.rows,
         stage_permissions: stagePermissions.rows,
@@ -1444,6 +1542,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         report_lines: lines.rows.length,
         map_layouts: mapLayouts.rows.length,
         transport_dates: transportDates.rows.length,
+        transport_replacements: transportReplacements.rows.length,
         bathroom_comments: comments.rows.length,
         bathroom_checks: checks.rows.length,
         stage_permissions: stagePermissions.rows.length,
@@ -1523,6 +1622,33 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
         );
         transportRestored++;
       }
+    }
+
+    let transportReplacementsRestored = 0;
+    if (Array.isArray(data.transport_replacements)) {
+      await ensureTransportReplacementsTable();
+      for (const item of data.transport_replacements) {
+        const exists = item.id ? await client.query('SELECT id FROM transport_replacements WHERE id=$1', [item.id]) : { rows: [] };
+        if (exists.rows.length) continue;
+        await client.query(
+          `INSERT INTO transport_replacements (id, mode, project, from_product, to_product, load_date, lkw_number, details, created_by, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,COALESCE($10,NOW()))`,
+          [
+            item.id || null,
+            item.mode,
+            item.project,
+            item.from_product || item.fromProduct,
+            item.to_product || item.toProduct,
+            item.load_date || item.loadDate || null,
+            item.lkw_number || item.lkwNumber || null,
+            JSON.stringify(item.details || {}),
+            item.created_by || item.createdBy || req.user.code,
+            item.created_at || item.createdAt || null
+          ]
+        );
+        transportReplacementsRestored++;
+      }
+      await client.query(`SELECT setval(pg_get_serial_sequence('transport_replacements','id'), COALESCE((SELECT MAX(id) FROM transport_replacements), 1), true)`);
     }
 
     let projectsRestored = 0;
@@ -1648,8 +1774,8 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
     }
     
     await client.query('COMMIT');
-    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored });
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji` });
+    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
