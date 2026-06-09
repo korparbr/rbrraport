@@ -178,6 +178,7 @@
       const allowed = stagePermissionMap(permissions)[canonicalStageId(stage)] || [];
       return !allowed.length || allowed.includes(code);
     };
+    const explicitlyAllowedStageWorkers = (stage, permissions) => new Set(stagePermissionMap(permissions)[canonicalStageId(stage)] || []);
     const today = () => new Date().toISOString().slice(0, 10);
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
@@ -3246,17 +3247,17 @@
                   </div>
                   <span style=${{ ...S.badge, background: wh.color, color: wh.text, borderColor: COLORS.border }}>${group.count} szt.</span>
                 </div>
-                <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "10px" }}>
+                <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: "6px" }}>
                   ${group.items.map(item => {
                     const loadDate = loads[transportKey(item.project, item.product)];
                     const alert = transportAlert(loadDate);
                     return html`
-                      <div key=${item.project + "-" + item.product} style=${{ position: "relative", background: wh.color, color: wh.text, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", minHeight: "98px" }}>
-                        ${alert ? html`<div title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{ position: "absolute", top: "8px", right: "8px", width: "24px", height: "24px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900 }}>!</div>` : null}
-                        <div style=${{ fontWeight: 900, fontSize: "18px", paddingRight: "28px" }}>${item.project}</div>
-                        <div style=${{ fontWeight: 900 }}>Laz. ${item.product}</div>
-                        <div style=${{ fontSize: "12px", marginTop: "6px" }}>${stageLabel(item.packStage || "19")}: ${item.packDate || "-"}</div>
-                        ${loadDate ? html`<div style=${{ fontSize: "12px", marginTop: "3px" }}>Plan zaladunku: ${loadDate}</div>` : null}
+                      <div key=${item.project + "-" + item.product} style=${{ position: "relative", background: wh.color, color: wh.text, border: "1px solid " + COLORS.border, borderRadius: "7px", padding: "6px", minHeight: "54px", overflow: "hidden" }}>
+                        ${alert ? html`<div title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{ position: "absolute", top: "4px", right: "4px", width: "16px", height: "16px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900, fontSize: "11px" }}>!</div>` : null}
+                        <div style=${{ fontWeight: 900, fontSize: "12px", lineHeight: 1.1, paddingRight: "18px" }}>${item.project}</div>
+                        <div style=${{ fontWeight: 900, fontSize: "12px", lineHeight: 1.1 }}>Laz. ${item.product}</div>
+                        <div style=${{ fontSize: "10px", marginTop: "3px", lineHeight: 1.15 }}>${item.packStage || "19"} - ${item.packDate || "-"}</div>
+                        ${loadDate ? html`<div style=${{ fontSize: "10px", marginTop: "1px", lineHeight: 1.15 }}>Zalad. - ${loadDate}</div>` : null}
                       </div>
                     `;
                   })}
@@ -3373,10 +3374,13 @@
       const [transportReportDate, setTransportReportDate] = useState(today());
       const [transportReportWorker, setTransportReportWorker] = useState("");
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
-      const reportWorkers = useMemo(() => (users || [])
-        .filter(u => ["worker", "worker+"].includes(u.role || "worker"))
-        .filter(u => isStageAllowedForWorker("transport", u.code || u.login, stagePermissions))
-        .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true })), [users, stagePermissions]);
+      const reportWorkers = useMemo(() => {
+        const allowedTransportWorkers = explicitlyAllowedStageWorkers("transport", stagePermissions);
+        return (users || [])
+          .filter(u => ["worker", "worker+"].includes(u.role || "worker"))
+          .filter(u => allowedTransportWorkers.has(String(u.code || u.login || "").toUpperCase()))
+          .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true }));
+      }, [users, stagePermissions]);
       const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
       const visible = transportItems.filter(item => {
         const info = transportInfo[transportKey(item.project, item.product)];
@@ -3809,7 +3813,7 @@
                 </div>
                 ${reportWorkers.length ? null : html`
                   <div style=${{ border: "1px solid #fecaca", borderRadius: "8px", background: "#fef2f2", color: "#991b1b", padding: "10px 12px", fontWeight: 800, marginBottom: "12px" }}>
-                    Brak pracownikow przypisanych do etapu Transport. Ustaw to w zakladce Uzytkownicy.
+                    Brak wybranych pracownikow dla etapu Transport. Rozwin etap Transport w zakladce Uzytkownicy i zaznacz osoby.
                   </div>
                 `}
                 <div className="grid-2" style=${S.row2}>
