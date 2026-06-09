@@ -550,7 +550,7 @@ function managerOnly(req, res, next) {
 
 function normalizeUserRole(role) {
   const value = String(role || 'worker').trim().toLowerCase();
-  return ['worker', 'worker+', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
+  return ['worker', 'worker+', 'kontroler', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
 }
 
 function normalizeStageId(stage) {
@@ -826,7 +826,7 @@ app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => 
       [stage]
     );
     for (const code of normalized) {
-      const exists = await client.query("SELECT code FROM users WHERE code=$1 AND role IN ('worker','worker+')", [code]);
+      const exists = await client.query("SELECT code FROM users WHERE code=$1 AND role IN ('worker','worker+','kontroler')", [code]);
       if (!exists.rows.length) continue;
       await client.query(
         `INSERT INTO stage_permissions (stage, worker_code, updated_by, updated_at)
@@ -1064,6 +1064,79 @@ app.put('/api/quality-record', auth, managerOnly, async (req, res) => {
     res.json(r.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad zapisu kontroli jakosci' });
+  }
+});
+
+app.put('/api/quality-items', auth, managerOnly, async (req, res) => {
+  const project = String(req.body?.project || '').trim();
+  const oldName = String(req.body?.oldName || '').trim();
+  const newName = String(req.body?.newName || '').trim();
+  if (!project || !oldName || !newName) return res.status(400).json({ error: 'Brak projektu lub nazwy braku' });
+  if (oldName === newName) return res.json({ success: true, project, oldName, newName });
+  const client = await pool.connect();
+  try {
+    await ensureQualityTables();
+    await client.query('BEGIN');
+    const exists = await client.query('SELECT item_name FROM quality_items WHERE project=$1 AND item_name=$2', [project, oldName]);
+    if (!exists.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Nie znaleziono braku do zmiany' });
+    }
+    await client.query(
+      `INSERT INTO quality_items (project, item_name, created_by)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (project, item_name) DO NOTHING`,
+      [project, newName, req.user.code]
+    );
+    await client.query('DELETE FROM quality_items WHERE project=$1 AND item_name=$2', [project, oldName]);
+    const records = await client.query('SELECT project, product, missing_items, resolved_items FROM quality_records WHERE project=$1', [project]);
+    for (const row of records.rows) {
+      const missing = uniqueTextList(row.missing_items).map(item => item === oldName ? newName : item);
+      const resolved = uniqueTextList(row.resolved_items).map(item => item === oldName ? newName : item);
+      await client.query(
+        `UPDATE quality_records SET missing_items=$3::jsonb, resolved_items=$4::jsonb, updated_by=$5, updated_at=NOW()
+         WHERE project=$1 AND product=$2`,
+        [row.project, row.product, JSON.stringify([...new Set(missing)]), JSON.stringify([...new Set(resolved)]), req.user.code]
+      );
+    }
+    await client.query('COMMIT');
+    await auditLog(req, 'quality_item_renamed', project, { oldName, newName });
+    res.json({ success: true, project, oldName, newName });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message || 'Blad zmiany braku' });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/quality-items', auth, managerOnly, async (req, res) => {
+  const project = String(req.query?.project || '').trim();
+  const itemName = String(req.query?.itemName || '').trim();
+  if (!project || !itemName) return res.status(400).json({ error: 'Brak projektu lub nazwy braku' });
+  const client = await pool.connect();
+  try {
+    await ensureQualityTables();
+    await client.query('BEGIN');
+    const del = await client.query('DELETE FROM quality_items WHERE project=$1 AND item_name=$2', [project, itemName]);
+    const records = await client.query('SELECT project, product, missing_items, resolved_items FROM quality_records WHERE project=$1', [project]);
+    for (const row of records.rows) {
+      const missing = uniqueTextList(row.missing_items).filter(item => item !== itemName);
+      const resolved = uniqueTextList(row.resolved_items).filter(item => item !== itemName);
+      await client.query(
+        `UPDATE quality_records SET missing_items=$3::jsonb, resolved_items=$4::jsonb, updated_by=$5, updated_at=NOW()
+         WHERE project=$1 AND product=$2`,
+        [row.project, row.product, JSON.stringify(missing), JSON.stringify(resolved), req.user.code]
+      );
+    }
+    await client.query('COMMIT');
+    await auditLog(req, 'quality_item_deleted', project, { itemName, deleted: del.rowCount || 0 });
+    res.json({ success: true, project, itemName, deleted: del.rowCount || 0 });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message || 'Blad usuwania braku' });
+  } finally {
+    client.release();
   }
 });
 
@@ -1547,6 +1620,7 @@ app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const fromProduct = Number(req.body.fromProduct);
   const toProduct = Number(req.body.toProduct);
+  const logOnly = !!req.body.logOnly;
   if (!['zamien', 'podmiana'].includes(mode)) return res.status(400).json({ error: 'Wybierz tryb: zamien albo podmiana' });
   if (!project || !Number.isInteger(fromProduct) || fromProduct < 1 || !Number.isInteger(toProduct) || toProduct < 1) {
     return res.status(400).json({ error: 'Brak projektu lub numeru lazienki' });
@@ -1557,12 +1631,39 @@ app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
     await ensureTransportReplacementsTable();
     await client.query('BEGIN');
     const source = await client.query('SELECT * FROM transport_dates WHERE project=$1 AND product=$2', [project, fromProduct]);
+    const target = await client.query('SELECT * FROM transport_dates WHERE project=$1 AND product=$2', [project, toProduct]);
+    if (mode === 'podmiana' && logOnly) {
+      const t = target.rows[0];
+      if (!t) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Najpierw zapisz termin transportu dla lazienki jadacej w podmianie' });
+      }
+      const details = {
+        logOnly: true,
+        orderName: t.order_name || '',
+        trailer: t.trailer || '',
+        direction: t.direction || '',
+        sizeLabel: t.size_label || '',
+        unloadDate: t.unload_date || '',
+        carrier: t.carrier || '',
+        note: t.note || '',
+        delayNote: t.delay_note || ''
+      };
+      const logged = await client.query(
+        `INSERT INTO transport_replacements (mode, project, from_product, to_product, load_date, lkw_number, details, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+         RETURNING id`,
+        [mode, project, fromProduct, toProduct, t.load_date, t.lkw_number, JSON.stringify(details), req.user.code]
+      );
+      await client.query('COMMIT');
+      await auditLog(req, 'transport_replacement', `${project}#${fromProduct}->${toProduct}`, { mode, project, fromProduct, toProduct, logOnly: true });
+      return res.json({ success: true, id: logged.rows[0].id, mode, project, fromProduct, toProduct, loadDate: t.load_date, lkwNumber: t.lkw_number });
+    }
     if (!source.rows.length) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Ta lazienka nie ma terminu transportu do przeniesienia' });
     }
     const t = source.rows[0];
-    const target = await client.query('SELECT * FROM transport_dates WHERE project=$1 AND product=$2', [project, toProduct]);
     const returnTransport = target.rows[0] || null;
     const details = {
       orderName: t.order_name || '',

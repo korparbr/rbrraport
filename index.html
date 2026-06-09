@@ -76,6 +76,8 @@
       deleteMaterialUsage: (token, id) => apiRequest("DELETE", "/api/material-usages/" + id, null, token),
       getQuality: token => apiRequest("GET", "/api/quality", null, token),
       updateQualityRecord: (token, payload) => apiRequest("PUT", "/api/quality-record", payload, token),
+      renameQualityItem: (token, project, oldName, newName) => apiRequest("PUT", "/api/quality-items", { project, oldName, newName }, token),
+      deleteQualityItem: (token, project, itemName) => apiRequest("DELETE", "/api/quality-items?project=" + encodeURIComponent(project) + "&itemName=" + encodeURIComponent(itemName), null, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
@@ -596,10 +598,28 @@
             </div>
             <div>
               <label style=${S.label}>Projekt</label>
-              <select style=${S.input} value=${project} onChange=${e => { setProject(e.target.value); resetSelection(); }}>
-                <option value="">- wybierz projekt -</option>
-                ${reportProjects.map(item => html`<option key=${item.project} value=${item.project}>${item.project} (${item.count} szt.)</option>`)}
-              </select>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: "7px", maxHeight: "190px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
+                ${reportProjects.map(item => {
+                  const selected = sameProject(project, item.project);
+                  return html`
+                    <button key=${item.project} type="button" onClick=${() => { setProject(item.project); resetSelection(); }} style=${{
+                      minHeight: "50px",
+                      border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
+                      borderRadius: "8px",
+                      background: selected ? COLORS.accent : COLORS.panel,
+                      color: selected ? "#fff" : COLORS.text,
+                      padding: "8px",
+                      fontSize: "13px",
+                      fontWeight: 900,
+                      cursor: "pointer"
+                    }}>
+                      ${item.project}
+                      <div style=${{ fontSize: "11px", fontWeight: 800, opacity: 0.85 }}>${item.count} szt.</div>
+                    </button>
+                  `;
+                })}
+              </div>
+              ${project ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "6px" }}>Wybrany projekt: <strong style=${{ color: COLORS.text }}>${project}</strong></div>` : null}
             </div>
           </div>
           ${requiresHall ? html`
@@ -3392,10 +3412,19 @@
 
     function QualityControlTab({ qualityData, token, reloadQuality }) {
       const [filters, setFilters] = useState({ project: "all", status: "open" });
+      const [itemProject, setItemProject] = useState("all");
+      const [itemEdits, setItemEdits] = useState({});
       const [msg, setMsg] = useState(null);
       const [savingKey, setSavingKey] = useState("");
       const records = (qualityData && qualityData.records) || [];
-      const projects = useMemo(() => [...new Set(records.map(r => String(r.project || "")).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [records]);
+      const qualityItems = (qualityData && qualityData.items) || [];
+      const projects = useMemo(() => [...new Set([
+        ...records.map(r => String(r.project || "")).filter(Boolean),
+        ...qualityItems.map(item => String(item.project || "")).filter(Boolean)
+      ])].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [records, qualityItems]);
+      const editableItems = useMemo(() => qualityItems
+        .filter(item => itemProject === "all" || sameProject(item.project, itemProject))
+        .sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || String(a.itemName || "").localeCompare(String(b.itemName || ""), "pl", { numeric: true })), [qualityItems, itemProject]);
       const visible = useMemo(() => records.filter(record => {
         const state = qualityStateFor(qualityData, record.project, record.product);
         const isOpen = state.goatActive || state.missingActive;
@@ -3427,6 +3456,40 @@
         if (resolved.has(item)) resolved.delete(item); else resolved.add(item);
         updateRecord(record, { resolvedItems: [...resolved] });
       };
+      const saveQualityItemName = async item => {
+        const key = item.project + "#" + item.itemName;
+        const nextName = String(itemEdits[key] || "").trim();
+        if (!nextName) return setMsg({ type: "error", text: "Wpisz nowa nazwe braku." });
+        setSavingKey("item-" + key); setMsg(null);
+        try {
+          await api.renameQualityItem(token, item.project, item.itemName, nextName);
+          await reloadQuality();
+          setItemEdits(prev => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
+          setMsg({ type: "success", text: "Nazwa braku zostala zmieniona." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
+      const removeQualityItem = async item => {
+        if (!confirm("Usunac brak '" + item.itemName + "' z projektu " + item.project + "? Zniknie tez z zapisanych lazienek.")) return;
+        const key = item.project + "#" + item.itemName;
+        setSavingKey("item-" + key); setMsg(null);
+        try {
+          await api.deleteQualityItem(token, item.project, item.itemName);
+          await reloadQuality();
+          setMsg({ type: "success", text: "Brak zostal usuniety." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
       return html`
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
@@ -3454,6 +3517,37 @@
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
+          <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "14px" }}>
+            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "4px" }}>Lista brakow</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Zmiana nazwy aktualizuje tez zapisane wpisy tego projektu.</div>
+              </div>
+              <div style=${{ minWidth: "220px" }}>
+                <label style=${S.label}>Projekt listy brakow</label>
+                <select style=${S.input} value=${itemProject} onChange=${e => setItemProject(e.target.value)}>
+                  <option value="all">Wszystkie projekty</option>
+                  ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+                </select>
+              </div>
+            </div>
+            <div style=${{ display: "grid", gap: "8px" }}>
+              ${editableItems.map(item => {
+                const key = item.project + "#" + item.itemName;
+                const value = itemEdits[key] != null ? itemEdits[key] : item.itemName;
+                const changed = String(value).trim() && String(value).trim() !== item.itemName;
+                return html`
+                  <div key=${key} style=${{ display: "grid", gridTemplateColumns: "100px 1fr auto auto", gap: "8px", alignItems: "center", background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "8px" }}>
+                    <strong>${item.project}</strong>
+                    <input style=${S.input} value=${value} onInput=${e => setItemEdits({ ...itemEdits, [key]: e.target.value })} />
+                    <button style=${S.btn} disabled=${!changed || savingKey === "item-" + key} onClick=${() => saveQualityItemName(item)}>Zmien</button>
+                    <button style=${S.danger} disabled=${savingKey === "item-" + key} onClick=${() => removeQualityItem(item)}>Usun</button>
+                  </div>
+                `;
+              })}
+              ${editableItems.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "16px" }}>Brak zapisanych nazw brakow.</div>`}
+            </div>
+          </div>
           <div style=${{ display: "grid", gap: "10px" }}>
             ${visible.map(record => {
               const state = qualityStateFor(qualityData, record.project, record.product);
@@ -3989,7 +4083,7 @@
             const toProduct = Number(toProductRaw);
             const fromProduct = Number(fromProductRaw);
             if (!Number.isInteger(toProduct) || !Number.isInteger(fromProduct) || toProduct === fromProduct) continue;
-            await api.saveTransportReplacement(token, { mode: "podmiana", project, fromProduct, toProduct });
+            await api.saveTransportReplacement(token, { mode: "podmiana", project, fromProduct, toProduct, logOnly: true });
           }
           await reloadTransportDates();
           if (reloadTransportReplacements) await reloadTransportReplacements();
@@ -4320,24 +4414,24 @@
                             const tileFg = usedAgain || isReplacement ? "#fff" : tilePalette.text;
                             return html`
                               <button key=${(item.extra ? "x" + item.extraId + "-" : "") + item.product} title=${item.extra ? "Lazienka dodana ponownie do transportu" : usedAgain ? "Lazienka uzyta jako podmiana kolejny raz" : replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openEditTransportModal(row)} style=${{
-                                minWidth: "81px",
-                                minHeight: "69px",
-                                padding: "7px 8px",
+                                minWidth: "57px",
+                                minHeight: "48px",
+                                padding: "5px 6px",
                                 borderRadius: "7px",
                                 border: "1px solid " + COLORS.border,
                                 background: tileBg,
                                 color: tileFg,
                                 display: "inline-grid",
                                 placeItems: "center",
-                                fontSize: "20px",
+                                fontSize: "14px",
                                 fontWeight: 900,
                                 cursor: "pointer",
                                 lineHeight: 1.05
                               }}>
                                 <span>${item.product}</span>
-                                ${replacement ? html`<span style=${{ fontSize: "14px", fontWeight: 900 }}>za ${replacement.fromProduct}</span>` : null}
+                                ${replacement ? html`<span style=${{ fontSize: "10px", fontWeight: 900 }}>za ${replacement.fromProduct}</span>` : null}
                                 ${qState.goatActive || qState.missingActive ? html`
-                                  <span style=${{ fontSize: "15px", display: "flex", gap: "1px" }}>
+                                  <span style=${{ fontSize: "11px", display: "flex", gap: "1px" }}>
                                     ${qState.goatActive ? html`<span title="Koza">${qualityIcon("goat")}</span>` : null}
                                     ${qState.missingActive ? html`<span title=${"Braki: " + qState.openMissing.join(", ")}>${qualityIcon("missing")}</span>` : null}
                                   </span>
@@ -4503,7 +4597,7 @@
                       <button style=${S.ghost} onClick=${() => setTransportModal(prev => ({ ...prev, selectedProducts: [], replacements: {} }))}>Wyczysc wybor</button>
                     </div>
                   </div>
-                  <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(118px, 1fr))", gap: "10px", maxHeight: "46vh", overflowY: "auto", padding: "10px", border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg }}>
+                  <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(83px, 1fr))", gap: "8px", maxHeight: "46vh", overflowY: "auto", padding: "10px", border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg }}>
                     ${modalProducts.map(product => {
                       const state = modalProductState(product);
                       const palette = warehousePalette(state.status === "magazyn" ? "magazyn" : "produkcja");
@@ -4513,8 +4607,8 @@
                       const info = state.baseInfo;
                       return html`
                         <div key=${product} style=${{ border: "2px solid " + (state.selected ? COLORS.accent : COLORS.border), borderRadius: "9px", background: bg, color: fg, overflow: "hidden" }}>
-                          <button type="button" onClick=${() => toggleModalProduct(product)} style=${{ width: "100%", minHeight: "96px", border: 0, background: "transparent", color: "inherit", cursor: "pointer", display: "grid", placeItems: "center", padding: "8px", fontWeight: 900 }}>
-                            <span style=${{ fontSize: "28px", lineHeight: 1 }}>${product}</span>
+                          <button type="button" onClick=${() => toggleModalProduct(product)} style=${{ width: "100%", minHeight: "67px", border: 0, background: "transparent", color: "inherit", cursor: "pointer", display: "grid", placeItems: "center", padding: "6px", fontWeight: 900 }}>
+                            <span style=${{ fontSize: "20px", lineHeight: 1 }}>${product}</span>
                             ${type ? html`<span style=${{ fontSize: "12px", lineHeight: 1.1 }}>typ ${type}</span>` : null}
                             ${state.replaced ? html`<span style=${{ fontSize: "12px", lineHeight: 1.1 }}>za ${state.replaced ? transportModal.replacements[product] : ""}</span>` : null}
                             ${state.duplicate && info ? html`<span style=${{ fontSize: "11px", lineHeight: 1.1 }}>jest: ${info.loadDate || "-"}${info.lkwNumber ? " LKW" + info.lkwNumber : ""}</span>` : null}
@@ -4672,8 +4766,8 @@
       const [expandedPermissionStage, setExpandedPermissionStage] = useState("");
       const [savingPermissionStage, setSavingPermissionStage] = useState("");
       const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
-      const roleOptions = ["worker", "worker+", "manager", "viewer", "supervisor"];
-      const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+"].includes(u.role || "worker")).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
+      const roleOptions = ["worker", "worker+", "kontroler", "manager", "viewer", "supervisor"];
+      const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
       const workersForStage = stage => new Set((permissionMap[String(stage || "")] || []).map(code => String(code).toUpperCase()));
@@ -4930,7 +5024,7 @@
               ${visibleUsers.map(u => {
                 const code = u.code || u.login;
                 const role = u.role || "worker";
-                const isWorker = role === "worker";
+                const isWorker = role === "worker" || role === "worker+" || role === "kontroler";
                 const blocked = !!u.is_blocked;
                 return html`
                   <div key=${code} style=${{ padding: "10px 0", borderTop: "1px solid " + COLORS.border, display: "grid", gridTemplateColumns: "minmax(180px, 1fr) minmax(160px, 220px) minmax(260px, auto)", alignItems: "center", gap: "12px" }}>
