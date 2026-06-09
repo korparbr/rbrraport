@@ -3375,10 +3375,10 @@
       const [transportReportWorker, setTransportReportWorker] = useState("");
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
       const reportWorkers = useMemo(() => {
-        const allowedTransportWorkers = explicitlyAllowedStageWorkers("transport", stagePermissions);
+        const allowedLoadWorkers = explicitlyAllowedStageWorkers("21", stagePermissions);
         return (users || [])
           .filter(u => ["worker", "worker+"].includes(u.role || "worker"))
-          .filter(u => allowedTransportWorkers.has(String(u.code || u.login || "").toUpperCase()))
+          .filter(u => allowedLoadWorkers.has(String(u.code || u.login || "").toUpperCase()))
           .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true }));
       }, [users, stagePermissions]);
       const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
@@ -3532,14 +3532,14 @@
       };
       const saveTransportReport = async () => {
         if (!transportReport) return;
-        if (!transportReportDate) return setMsg({ type: "error", text: "Wpisz date raportu transport." });
+        if (!transportReportDate) return setMsg({ type: "error", text: "Wpisz date raportu zaladunku." });
         if (!transportReportWorker) return setMsg({ type: "error", text: "Wybierz pracownika." });
         setSavingKey("transport-report"); setMsg(null);
         try {
           const lines = transportReport.items.map(item => ({
             project: transportReport.project,
             product: item.product,
-            stage: "transport",
+            stage: "21",
             note: "LKW " + (transportReport.lkwNumber || "-")
           }));
           const result = await api.addReportAsWorker(token, transportReportWorker, transportReportDate, lines);
@@ -3790,7 +3790,7 @@
                         <div style=${{ display: "grid", gridTemplateColumns: "auto auto", gap: "5px", alignItems: "center" }}>
                           <button style=${{ ...S.btn, padding: "7px 9px", fontSize: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${() => saveTransportRow(row)}>${saving ? "..." : "Zapisz"}</button>
                           <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px" }} disabled=${saving} onClick=${() => clearTransportRow(row)}>Wyczysc</button>
-                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-report"} onClick=${() => openTransportReport(row)}>Raport transport</button>
+                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-report"} onClick=${() => openTransportReport(row)}>Raport zaladunek</button>
                         </div>
                       </td>
                     </tr>
@@ -3807,13 +3807,13 @@
           ${transportReport ? html`
             <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 60, display: "grid", placeItems: "center", padding: "16px" }}>
               <section style=${{ ...S.card, width: "min(560px, 100%)", margin: 0 }}>
-                <h2 style=${S.title}>Raport etapu Transport</h2>
+                <h2 style=${S.title}>Raport etapu 21 - Zaladunek</h2>
                 <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px", lineHeight: 1.6 }}>
                   Projekt ${transportReport.project} / LKW ${transportReport.lkwNumber || "-"} / lazienki: ${transportReport.items.map(item => item.product).join(", ")}
                 </div>
                 ${reportWorkers.length ? null : html`
                   <div style=${{ border: "1px solid #fecaca", borderRadius: "8px", background: "#fef2f2", color: "#991b1b", padding: "10px 12px", fontWeight: 800, marginBottom: "12px" }}>
-                    Brak wybranych pracownikow dla etapu Transport. Rozwin etap Transport w zakladce Uzytkownicy i zaznacz osoby.
+                    Brak wybranych pracownikow dla etapu 21 - Zaladunek. Rozwin etap 21 w zakladce Uzytkownicy i zaznacz osoby.
                   </div>
                 `}
                 <div className="grid-2" style=${S.row2}>
@@ -3831,7 +3831,7 @@
                 </div>
                 <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>
                   <button style=${S.ghost} disabled=${savingKey === "transport-report"} onClick=${() => setTransportReport(null)}>Anuluj</button>
-                  <button style=${S.btn} disabled=${savingKey === "transport-report" || !reportWorkers.length} onClick=${saveTransportReport}>${savingKey === "transport-report" ? "Zapisywanie..." : "Zapisz raport transport"}</button>
+                  <button style=${S.btn} disabled=${savingKey === "transport-report" || !reportWorkers.length} onClick=${saveTransportReport}>${savingKey === "transport-report" ? "Zapisywanie..." : "Zapisz raport zaladunek"}</button>
                 </div>
               </section>
             </div>
@@ -3851,7 +3851,7 @@
       const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
       const roleOptions = ["worker", "worker+", "manager", "viewer", "supervisor"];
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+"].includes(u.role || "worker")).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
-      const permissionStages = useMemo(() => [...STAGES, ["transport", "Transport"]], []);
+      const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
       const workersForStage = stage => new Set((permissionMap[String(stage || "")] || []).map(code => String(code).toUpperCase()));
       const visibleUsers = useMemo(() => (users || []).filter(u => {
