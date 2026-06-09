@@ -93,7 +93,7 @@
       addBathroomComment: (token, project, product, comment) => apiRequest("POST", "/api/bathroom-comments", { project, product, comment }, token),
       setBathroomCommentDone: (token, id, done) => apiRequest("PUT", "/api/bathroom-comments/" + id + "/done", { done }, token),
       getBathroomChecks: token => apiRequest("GET", "/api/bathroom-checks", null, token),
-      setBathroomCheck: (token, project, product, checkType, checked, status) => apiRequest("PUT", "/api/bathroom-checks", { project, product, checkType, checked, status }, token),
+      setBathroomCheck: (token, project, product, checkType, checked, status, comment) => apiRequest("PUT", "/api/bathroom-checks", { project, product, checkType, checked, status, comment }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
       saveMapLayouts: (token, layouts, mapDates) => apiRequest("PUT", "/api/maps-layouts", { layouts, mapDates }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
@@ -1708,6 +1708,8 @@
       const [aiLoading, setAiLoading] = useState(false);
       const [msg, setMsg] = useState(null);
       const [newComment, setNewComment] = useState("");
+      const [tilingCheckComment, setTilingCheckComment] = useState("");
+      const [helmetCheckComment, setHelmetCheckComment] = useState("");
       const [serverAvailable, setServerAvailable] = useState(null);
       const suppressClickRef = useRef(false);
       const [layouts, setLayouts] = useState(() => {
@@ -1933,6 +1935,11 @@
         if (status === "rework") return { bg: "#fee2e2", border: "#dc2626", color: "#991b1b", mark: String.fromCharCode(10005) };
         return { bg: "#fff", border: "#f97316", color: "#92400e", mark: "" };
       };
+      const helmetStatusStyle = status => {
+        if (status === "checked") return { bg: "#dcfce7", border: "#16a34a", color: "#166534", label: "Kask sprawdzony" };
+        if (status === "rework") return { bg: "#fef08a", border: "#ca8a04", color: "#713f12", label: "Kask - poprawka" };
+        return { bg: "#fff", border: "#cbd5e1", color: "#334155", label: "Kask do sprawdzenia" };
+      };
       const addComment = async () => {
         if (!selectedCell || !newComment.trim()) return;
         setMsg(null);
@@ -1960,9 +1967,21 @@
         if (!selectedCell || !canAddComments) return;
         setMsg(null);
         try {
-          await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "tiling", status === "checked", status);
+          await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "tiling", status === "checked", status, tilingCheckComment);
           await reloadBathroomChecks();
           setMsg({ type: "success", text: "Kontrola: " + checkStatusLabel(status).toLowerCase() + "." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const setHelmetCheck = async status => {
+        if (!selectedCell || !canAddComments) return;
+        if (status === "rework" && !helmetCheckComment.trim()) return setMsg({ type: "error", text: "Przy poprawce kasku wpisz komentarz." });
+        setMsg(null);
+        try {
+          await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "entry", status === "checked", status, helmetCheckComment);
+          await reloadBathroomChecks();
+          setMsg({ type: "success", text: "Kask: " + checkStatusLabel(status).toLowerCase() + "." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -2350,6 +2369,15 @@
       const selectedTilingCheck = selectedNeedsTilingCheck ? bathroomChecksByKey[selectedBathroomKey + "#tiling"] : null;
       const selectedCheckStatus = checkStatus(selectedTilingCheck);
       const selectedCheckStyle = checkStatusStyle(selectedCheckStatus);
+      const selectedHelmetCheck = selectedCell ? bathroomChecksByKey[selectedBathroomKey + "#entry"] : null;
+      const selectedHelmetStatus = checkStatus(selectedHelmetCheck);
+      const selectedHelmetStyle = helmetStatusStyle(selectedHelmetStatus);
+      useEffect(() => {
+        setTilingCheckComment(selectedTilingCheck && selectedTilingCheck.comment ? selectedTilingCheck.comment : "");
+      }, [selectedBathroomKey, selectedTilingCheck && selectedTilingCheck.comment]);
+      useEffect(() => {
+        setHelmetCheckComment(selectedHelmetCheck && selectedHelmetCheck.comment ? selectedHelmetCheck.comment : "");
+      }, [selectedBathroomKey, selectedHelmetCheck && selectedHelmetCheck.comment]);
       const transportLegend = [
         { label: "dzisiaj", color: "#111827", text: "#fff" },
         { label: "jutro", color: "#dc2626", text: "#fff" },
@@ -2528,6 +2556,9 @@
                     const tilingCheck = needsTilingCheck ? bathroomChecksByKey[checkKey + "#tiling"] : null;
                     const tileCheckStatus = checkStatus(tilingCheck);
                     const tileCheckStyle = checkStatusStyle(tileCheckStatus);
+                    const helmetCheck = cell ? bathroomChecksByKey[checkKey + "#entry"] : null;
+                    const helmetStatus = checkStatus(helmetCheck);
+                    const helmetStyle = helmetStatusStyle(helmetStatus);
                     const sampleEnabled = sampleEnabledForCell(cell);
                     const qState = cell ? qualityStateFor(qualityData, cell.project, cell.product) : { goatActive: false, missingActive: false };
                     const matchesFilter = matchesMapFilters(cell, alert);
@@ -2585,8 +2616,8 @@
                           ${sampleEnabled ? html`
                             <span title="Musztrowka - pierwsza lazienka tego typu" style=${{
                               position: "absolute",
-                              top: "2px",
-                              left: "4px",
+                              top: "-9px",
+                              left: "-8px",
                               width: "33px",
                               height: "33px",
                               color: "#facc15",
@@ -2634,6 +2665,24 @@
                               zIndex: 2
                             }}>${tileCheckStyle.mark}</span>
                           ` : null}
+                          <span title=${helmetStyle.label + (helmetCheck && helmetCheck.comment ? ": " + helmetCheck.comment : "")} style=${{
+                            position: "absolute",
+                            left: needsTilingCheck ? "40px" : "8px",
+                            bottom: "7px",
+                            width: "26px",
+                            height: "26px",
+                            borderRadius: "999px",
+                            background: helmetStyle.bg,
+                            border: "2px solid " + helmetStyle.border,
+                            color: helmetStyle.color,
+                            display: "grid",
+                            placeItems: "center",
+                            fontWeight: 900,
+                            fontSize: "18px",
+                            lineHeight: 1,
+                            boxShadow: "0 0 0 1px rgba(255,255,255,0.9)",
+                            zIndex: 2
+                          }}>${String.fromCodePoint(0x26D1)}</span>
                           ${qState.goatActive || qState.missingActive ? html`
                             <span style=${{
                               position: "absolute",
@@ -2743,12 +2792,42 @@
                 </div>
               ` : null}
             </div>
+            <div style=${{
+              display: "grid",
+              gridTemplateColumns: "1fr auto",
+              gap: "10px",
+              alignItems: "center",
+              background: selectedHelmetStyle.bg,
+              border: "1px solid " + selectedHelmetStyle.border,
+              borderRadius: "8px",
+              padding: "10px 12px",
+              marginBottom: "12px"
+            }}>
+              <div>
+                <div style=${{ fontWeight: 900, display: "flex", gap: "8px", alignItems: "center" }}>
+                  <span style=${{ color: selectedHelmetStyle.color, fontSize: "20px" }}>${String.fromCodePoint(0x26D1)}</span>
+                  Kontrola wejscia na szachownice
+                </div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "2px" }}>${checkStatusLabel(selectedHelmetStatus)}</div>
+                ${selectedHelmetCheck && selectedHelmetCheck.comment ? html`<div style=${{ color: COLORS.text, fontSize: "13px", marginTop: "5px", fontWeight: 800 }}>Komentarz: ${selectedHelmetCheck.comment}</div>` : null}
+              </div>
+              ${canAddComments ? html`
+                <div style=${{ display: "grid", gap: "8px", minWidth: "280px" }}>
+                  <input style=${S.input} placeholder="Komentarz do kasku" value=${helmetCheckComment} onInput=${e => setHelmetCheckComment(e.target.value)} />
+                  <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button style=${selectedHelmetStatus === "pending" ? S.btn : S.ghost} onClick=${() => setHelmetCheck("pending")}>Bialy</button>
+                    <button style=${selectedHelmetStatus === "checked" ? S.btn : S.ghost} onClick=${() => setHelmetCheck("checked")}>Sprawdzona</button>
+                    <button style=${selectedHelmetStatus === "rework" ? S.btn : S.ghost} onClick=${() => setHelmetCheck("rework")}>Poprawka</button>
+                  </div>
+                </div>
+              ` : null}
+            </div>
             ${selectedNeedsTilingCheck ? html`
               <div style=${{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
+                display: "grid",
+                gridTemplateColumns: "1fr auto",
                 gap: "10px",
+                alignItems: "center",
                 background: selectedCheckStatus === "checked" ? "#dcfce7" : selectedCheckStatus === "rework" ? "#fee2e2" : "#fff7ed",
                 border: "1px solid " + selectedCheckStyle.border,
                 borderRadius: "8px",
@@ -2758,12 +2837,16 @@
                 <div>
                   <div style=${{ fontWeight: 900 }}>Kontrola po plytkowaniu</div>
                   <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "2px" }}>${checkStatusLabel(selectedCheckStatus)}</div>
+                  ${selectedTilingCheck && selectedTilingCheck.comment ? html`<div style=${{ color: COLORS.text, fontSize: "13px", marginTop: "5px", fontWeight: 800 }}>Komentarz: ${selectedTilingCheck.comment}</div>` : null}
                 </div>
                 ${canAddComments ? html`
-                  <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    <button style=${selectedCheckStatus === "pending" ? S.btn : S.ghost} onClick=${() => setTilingCheck("pending")}>Do sprawdzenia</button>
-                    <button style=${selectedCheckStatus === "checked" ? S.btn : S.ghost} onClick=${() => setTilingCheck("checked")}>Sprawdzona</button>
-                    <button style=${selectedCheckStatus === "rework" ? S.danger : S.ghost} onClick=${() => setTilingCheck("rework")}>Poprawka</button>
+                  <div style=${{ display: "grid", gap: "8px", minWidth: "280px" }}>
+                    <input style=${S.input} placeholder="Komentarz do kwadracika" value=${tilingCheckComment} onInput=${e => setTilingCheckComment(e.target.value)} />
+                    <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <button style=${selectedCheckStatus === "pending" ? S.btn : S.ghost} onClick=${() => setTilingCheck("pending")}>Do sprawdzenia</button>
+                      <button style=${selectedCheckStatus === "checked" ? S.btn : S.ghost} onClick=${() => setTilingCheck("checked")}>Sprawdzona</button>
+                      <button style=${selectedCheckStatus === "rework" ? S.danger : S.ghost} onClick=${() => setTilingCheck("rework")}>Poprawka</button>
+                    </div>
                   </div>
                 ` : html`
                   <span style=${{
@@ -3914,6 +3997,7 @@
       const [transportReportDate, setTransportReportDate] = useState(today());
       const [transportReportWorker, setTransportReportWorker] = useState("");
       const [transportSubtab, setTransportSubtab] = useState("list");
+      const [replacementFilters, setReplacementFilters] = useState({ project: "all", lkw: "all", date: "", text: "" });
       const [replacementModal, setReplacementModal] = useState(null);
       const [editBathroomsModal, setEditBathroomsModal] = useState(null);
       const [transportModal, setTransportModal] = useState(null);
@@ -3960,6 +4044,28 @@
         });
         return map;
       }, [transportReplacements]);
+      const loadedReplacements = useMemo(() => (transportReplacements || []).filter(item => {
+        if (item.mode !== "podmiana") return false;
+        return loadedBathroomSet.has(transportKey(item.project, item.toProduct)) || loadedBathroomSet.has(transportKey(item.project, item.fromProduct));
+      }), [transportReplacements, loadedBathroomSet]);
+      const replacementProjects = useMemo(() => [...new Set(loadedReplacements.map(item => String(item.project || "")).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [loadedReplacements]);
+      const replacementLkws = useMemo(() => [...new Set(loadedReplacements.map(item => String(item.lkwNumber || "")).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [loadedReplacements]);
+      const filteredReplacements = useMemo(() => {
+        const text = String(replacementFilters.text || "").trim().toLowerCase();
+        return loadedReplacements.filter(item => {
+          if (replacementFilters.project !== "all" && !sameProject(item.project, replacementFilters.project)) return false;
+          if (replacementFilters.lkw !== "all" && String(item.lkwNumber || "") !== replacementFilters.lkw) return false;
+          if (replacementFilters.date && item.loadDate !== replacementFilters.date) return false;
+          if (text) {
+            const haystack = [item.project, item.fromProduct, item.toProduct, item.loadDate, item.lkwNumber, item.createdBy]
+              .map(value => String(value || "").toLowerCase());
+            if (!haystack.some(value => value.includes(text))) return false;
+          }
+          return true;
+        });
+      }, [loadedReplacements, replacementFilters]);
       const reportWorkers = useMemo(() => {
         const allowedLoadWorkers = explicitlyAllowedStageWorkers("21", stagePermissions);
         return (users || [])
@@ -4038,6 +4144,34 @@
         setSelectedProducts([]);
       };
       const emptyTransportDetails = { orderName: "", trailer: "", direction: "", sizeLabel: "", unloadDate: "", carrier: "", note: "", delayNote: "" };
+      const detailsFromTransport = item => ({
+        orderName: item?.orderName || "",
+        trailer: item?.trailer || "",
+        direction: item?.direction || "",
+        sizeLabel: item?.sizeLabel || "",
+        unloadDate: item?.unloadDate || "",
+        carrier: item?.carrier || "",
+        note: item?.note || "",
+        delayNote: item?.delayNote || ""
+      });
+      const lastTransportForProject = project => {
+        if (!project) return null;
+        return [...baseTransportDates]
+          .filter(item => sameProject(item.project, project))
+          .sort((a, b) => (b.loadDate || "").localeCompare(a.loadDate || "") || Number(b.lkwNumber || 0) - Number(a.lkwNumber || 0))[0] || null;
+      };
+      const selectTransportModalProject = project => {
+        const last = lastTransportForProject(project);
+        const nextLkw = last && Number(last.lkwNumber) ? String(Number(last.lkwNumber) + 1) : "";
+        setTransportModal(prev => prev ? ({
+          ...prev,
+          project,
+          lkwNumber: nextLkw,
+          details: last ? detailsFromTransport(last) : { ...emptyTransportDetails },
+          selectedProducts: [],
+          replacements: {}
+        }) : prev);
+      };
       const toggleProduct = product => {
         setSelectedProducts(prev => prev.includes(product) ? prev.filter(p => p !== product) : [...prev, product].sort((a, b) => a - b));
       };
@@ -4550,15 +4684,16 @@
                             const usedAgain = item.extra || (replacementUseCount[transportKey(row.project, item.product)] || 0) > 1;
                             const qState = qualityStateFor(qualityData, row.project, item.product);
                             const isReplacement = !!replacement;
-                            const tileBg = usedAgain ? "#ef4444" : isReplacement ? "#f97316" : tilePalette.color;
-                            const tileFg = usedAgain || isReplacement ? "#fff" : tilePalette.text;
+                            const tileBg = usedAgain ? "#ef4444" : tilePalette.color;
+                            const tileFg = usedAgain ? "#fff" : tilePalette.text;
+                            const tileBorder = isReplacement ? "#f97316" : COLORS.border;
                             return html`
                               <button key=${(item.extra ? "x" + item.extraId + "-" : "") + item.product} title=${item.extra ? "Lazienka dodana ponownie do transportu" : usedAgain ? "Lazienka uzyta jako podmiana kolejny raz" : replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openEditTransportModal(row)} style=${{
                                 minWidth: "57px",
                                 minHeight: "48px",
                                 padding: "5px 6px",
                                 borderRadius: "7px",
-                                border: "1px solid " + COLORS.border,
+                                border: (isReplacement ? "3px solid " : "1px solid ") + tileBorder,
                                 background: tileBg,
                                 color: tileFg,
                                 display: "inline-grid",
@@ -4569,7 +4704,7 @@
                                 lineHeight: 1.05
                               }}>
                                 <span>${item.product}</span>
-                                ${replacement ? html`<span style=${{ fontSize: "10px", fontWeight: 900 }}>za ${replacement.fromProduct}</span>` : null}
+                                ${replacement ? html`<span style=${{ fontSize: "10px", fontWeight: 900, color: usedAgain ? "#fff" : "#c2410c", background: usedAgain ? "transparent" : "rgba(255,247,237,0.95)", borderRadius: "4px", padding: "1px 3px" }}>za ${replacement.fromProduct}</span>` : null}
                                 ${qState.goatActive || qState.missingActive ? html`
                                   <span style=${{ fontSize: "11px", display: "flex", gap: "1px" }}>
                                     ${qState.goatActive ? html`<span title="Koza">${qualityIcon("goat")}</span>` : null}
@@ -4627,6 +4762,31 @@
           ${transportSubtab === "replacements" ? html`
             <section style=${{ background: "#fff", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px" }}>
               <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Podmiany transportu</h3>
+              <div style=${{ color: COLORS.muted, fontSize: "12px", marginBottom: "10px" }}>Lista pokazuje podmiany dopiero po raporcie etapu 21 - Zaladunek.</div>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "8px", marginBottom: "12px" }}>
+                <div>
+                  <label style=${S.label}>Projekt</label>
+                  <select style=${S.input} value=${replacementFilters.project} onChange=${e => setReplacementFilters({ ...replacementFilters, project: e.target.value })}>
+                    <option value="all">Wszystkie</option>
+                    ${replacementProjects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style=${S.label}>LKW</label>
+                  <select style=${S.input} value=${replacementFilters.lkw} onChange=${e => setReplacementFilters({ ...replacementFilters, lkw: e.target.value })}>
+                    <option value="all">Wszystkie</option>
+                    ${replacementLkws.map(lkw => html`<option key=${lkw} value=${lkw}>${lkw}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style=${S.label}>Data zaladunku</label>
+                  <input style=${S.input} type="date" value=${replacementFilters.date} onInput=${e => setReplacementFilters({ ...replacementFilters, date: e.target.value })} />
+                </div>
+                <div>
+                  <label style=${S.label}>Szukaj</label>
+                  <input style=${S.input} placeholder="projekt, lazienka, osoba..." value=${replacementFilters.text} onInput=${e => setReplacementFilters({ ...replacementFilters, text: e.target.value })} />
+                </div>
+              </div>
               <div style=${{ overflowX: "auto" }}>
                 <table style=${{ width: "100%", minWidth: "820px", borderCollapse: "collapse", fontSize: "13px" }}>
                   <thead>
@@ -4637,7 +4797,7 @@
                     </tr>
                   </thead>
                   <tbody>
-                    ${(transportReplacements || []).map(item => html`
+                    ${filteredReplacements.map(item => html`
                       <tr key=${item.id}>
                         <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${String(item.createdAt || "").slice(0, 16).replace("T", " ")}</td>
                         <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900 }}>${item.mode === "podmiana" ? "Podmiana" : "Zamiana"}</td>
@@ -4649,8 +4809,8 @@
                         <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${item.createdBy || "-"}</td>
                       </tr>
                     `)}
-                    ${(transportReplacements || []).length ? null : html`
-                      <tr><td colSpan="8" style=${{ padding: "22px", textAlign: "center", color: COLORS.dim }}>Brak zapisanych podmian.</td></tr>
+                    ${filteredReplacements.length ? null : html`
+                      <tr><td colSpan="8" style=${{ padding: "22px", textAlign: "center", color: COLORS.dim }}>Brak podmian po zaladunku dla wybranych filtrow.</td></tr>
                     `}
                   </tbody>
                 </table>
@@ -4673,7 +4833,7 @@
                 <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px", fontSize: "12px", fontWeight: 900 }}>
                   <span style=${{ background: warehousePalette("magazyn").color, color: warehousePalette("magazyn").text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>zielony - gotowe/magazyn</span>
                   <span style=${{ background: warehousePalette("produkcja").color, color: warehousePalette("produkcja").text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>zolty - produkcja</span>
-                  <span style=${{ background: "#f97316", color: "#fff", border: "1px solid #ea580c", borderRadius: "999px", padding: "5px 9px" }}>pomaranczowy - podmiana</span>
+                  <span style=${{ background: "#fff7ed", color: "#c2410c", border: "2px solid #f97316", borderRadius: "999px", padding: "5px 9px" }}>pomaranczowa obwodka - podmiana</span>
                   <span style=${{ background: "#ef4444", color: "#fff", border: "1px solid #b91c1c", borderRadius: "999px", padding: "5px 9px" }}>czerwony - jedzie drugi raz</span>
                 </div>
                 <div className="grid-3" style=${S.row3}>
@@ -4687,7 +4847,7 @@
                   </div>
                   <div>
                     <label style=${S.label}>Projekt</label>
-                    <select style=${S.input} value=${transportModal.project} disabled=${transportModal.mode === "edit"} onChange=${e => setTransportModal(prev => ({ ...prev, project: e.target.value, selectedProducts: [], replacements: {} }))}>
+                    <select style=${S.input} value=${transportModal.project} disabled=${transportModal.mode === "edit"} onChange=${e => selectTransportModalProject(e.target.value)}>
                       <option value="">- wybierz projekt -</option>
                       ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
                     </select>
