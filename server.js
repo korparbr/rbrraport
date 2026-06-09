@@ -544,7 +544,7 @@ async function auth(req, res, next) {
 function managerOnly(req, res, next) {
   const role = req.user.role;
   const code = String(req.user.code || '').toUpperCase();
-  if (role !== 'manager' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') return res.status(403).json({ error: 'Brak uprawnien' });
+  if (role !== 'manager' && role !== 'kontroler' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') return res.status(403).json({ error: 'Brak uprawnien' });
   next();
 }
 

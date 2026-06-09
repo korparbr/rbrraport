@@ -1025,7 +1025,7 @@
       const [saving, setSaving] = useState(false);
       const [msg, setMsg] = useState(null);
       const workers = useMemo(() => (users || [])
-        .filter(u => ["worker", "worker+"].includes(u.role || "worker"))
+        .filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker"))
         .sort((a, b) => (a.name || "").localeCompare(b.name || "", "pl")), [users]);
       const filteredWorkers = useMemo(() => workers.filter(w => {
         const code = String(w.code || w.login || "").toUpperCase();
@@ -1384,7 +1384,6 @@
           if (!materialStageIds.includes(stage)) continue;
           if (!calcProjectMap[String(line.project)]) continue;
           const type = bathroomTypeInfo(serverProjects, line.project, line.product);
-          if (!type.hasExcelMeta) continue;
           const key = String(line.project) + "#" + stage + "#" + type.calcKey;
           if (!materialKeys.has(key) && !extraKeys.has(key)) return { line, stage, type, usageKey: key };
         }
@@ -1549,6 +1548,147 @@
             </div>
           ` : null}
         </main>
+      `;
+    }
+
+    function SelfReportTab({ user, token, reports, serverProjects, stagePermissions, qualityData, materialUsages, reloadReports, reloadMaterialUsages, reloadQuality }) {
+      const [lines, setLines] = useState([]);
+      const [saving, setSaving] = useState(false);
+      const [msg, setMsg] = useState(null);
+      const [materialPrompt, setMaterialPrompt] = useState(null);
+      const [materialForm, setMaterialForm] = useState({});
+      const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
+      const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
+      const calcProjectMap = useMemo(() => {
+        const map = {};
+        (serverProjects || []).forEach(p => { map[String(p.project)] = !!p.calculationEnabled; });
+        return map;
+      }, [serverProjects]);
+      const materialKeys = useMemo(() => {
+        const set = new Set();
+        (materialUsages || []).forEach(u => {
+          const base = String(u.project) + "#" + String(u.stage) + "#";
+          const typeKey = String(u.typeKey || "");
+          set.add(base + typeKey);
+          set.add(base + normalizeCalculationType(typeKey));
+        });
+        return set;
+      }, [materialUsages]);
+      const findMaterialPrompt = (extraKeys = materialSessionKeys) => {
+        for (const line of lines) {
+          const stage = String(line.stage || "");
+          if (!materialStageIds.includes(stage)) continue;
+          if (!calcProjectMap[String(line.project)]) continue;
+          const type = bathroomTypeInfo(serverProjects, line.project, line.product);
+          const key = String(line.project) + "#" + stage + "#" + type.calcKey;
+          if (!materialKeys.has(key) && !extraKeys.has(key)) return { line, stage, type, usageKey: key };
+        }
+        return null;
+      };
+      const saveReportNow = async () => {
+        const result = await api.addReport(token, today(), lines);
+        setLines([]);
+        await reloadReports();
+        if (reloadQuality) await reloadQuality();
+        setMsg(saveReportMessage(result, lines.length));
+      };
+      const save = async () => {
+        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        const prompt = findMaterialPrompt();
+        if (prompt) {
+          setMaterialSessionKeys(new Set());
+          setMaterialPrompt(prompt);
+          setMaterialForm({});
+          return;
+        }
+        setSaving(true); setMsg(null);
+        try {
+          await saveReportNow();
+        } catch (e) {
+          setMsg(saveReportErrorMessage(e));
+        } finally {
+          setSaving(false);
+        }
+      };
+      const confirmMaterialAndSave = async () => {
+        if (!materialPrompt) return;
+        if (materialPrompt.stage === "8.2" && !materialForm.wireUsageSent) return setMsg({ type: "error", text: "Potwierdz wyslanie zuzycia przewodow." });
+        setSaving(true); setMsg(null);
+        try {
+          await api.addMaterialUsage(token, {
+            project: materialPrompt.line.project,
+            product: materialPrompt.line.product,
+            stage: materialPrompt.stage,
+            typeKey: materialPrompt.type.calcKey,
+            typeLabel: materialPrompt.type.calcLabel,
+            data: materialPrompt.stage === "8.2" ? { wireUsageSent: true } : materialForm,
+            reportDate: today()
+          });
+          await reloadMaterialUsages();
+          const nextKeys = new Set(materialSessionKeys);
+          nextKeys.add(materialPrompt.usageKey);
+          setMaterialSessionKeys(nextKeys);
+          const nextPrompt = findMaterialPrompt(nextKeys);
+          if (nextPrompt) {
+            setMaterialPrompt(nextPrompt);
+            setMaterialForm({});
+            setSaving(false);
+            return;
+          }
+          setMaterialPrompt(null);
+          setMaterialForm({});
+          setMaterialSessionKeys(new Set());
+          await saveReportNow();
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSaving(false);
+        }
+      };
+      return html`
+        <section style=${S.card}>
+          <label style=${S.label}>Data raportu</label>
+          <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
+        </section>
+        <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${user.code || user.login} qualityData=${qualityData} />
+        <section style=${S.card}>
+          <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
+          <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
+          <button style=${{ ...S.btn, marginTop: "12px", opacity: saving || !lines.length ? 0.6 : 1 }} disabled=${saving || !lines.length} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz raport"}</button>
+          <${Message} msg=${msg} />
+        </section>
+        <${WorkerHistory} reports=${mine} user=${user} />
+        ${materialPrompt ? html`
+          <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 50, display: "grid", placeItems: "center", padding: "16px" }}>
+            <section style=${{ ...S.card, width: "min(720px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
+              <h2 style=${S.title}>Zuzycie materialu</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px", lineHeight: 1.6 }}>
+                Projekt ${materialPrompt.line.project} / Laz. ${materialPrompt.line.product}<br />
+                Etap: ${stageLabel(materialPrompt.stage)}<br />
+                Typ: ${materialPrompt.type.label}
+              </div>
+              ${materialPrompt.stage === "8.2" ? html`
+                <label style=${{ ...S.ghost, display: "flex", gap: "8px", alignItems: "center", justifyContent: "flex-start", marginBottom: "12px" }}>
+                  <input type="checkbox" checked=${!!materialForm.wireUsageSent} onChange=${e => setMaterialForm({ ...materialForm, wireUsageSent: e.target.checked })} />
+                  Wyslales zuzycie przewodow?
+                </label>
+              ` : html`
+                <div className="grid-2" style=${S.row2}>
+                  ${(MATERIAL_STAGES[materialPrompt.stage] || []).map(field => html`
+                    <div key=${field[0]}>
+                      <label style=${S.label}>${field[1]}</label>
+                      <input style=${S.input} type=${field[2]} value=${materialForm[field[0]] || ""} onInput=${e => setMaterialForm({ ...materialForm, [field[0]]: e.target.value })} />
+                    </div>
+                  `)}
+                </div>
+              `}
+              <div style=${{ display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "14px", flexWrap: "wrap" }}>
+                <button style=${S.ghost} disabled=${saving} onClick=${() => { setMaterialPrompt(null); setMaterialForm({}); setMaterialSessionKeys(new Set()); }}>Anuluj</button>
+                <button style=${S.btn} disabled=${saving} onClick=${confirmMaterialAndSave}>${saving ? "Zapisywanie..." : "Zapisz zuzycie i raport"}</button>
+              </div>
+            </section>
+          </div>
+        ` : null}
       `;
     }
 
@@ -3823,7 +3963,7 @@
       const reportWorkers = useMemo(() => {
         const allowedLoadWorkers = explicitlyAllowedStageWorkers("21", stagePermissions);
         return (users || [])
-          .filter(u => ["worker", "worker+"].includes(u.role || "worker"))
+          .filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker"))
           .filter(u => allowedLoadWorkers.has(String(u.code || u.login || "").toUpperCase()))
           .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true }));
       }, [users, stagePermissions]);
@@ -4765,7 +4905,8 @@
       const [userFilter, setUserFilter] = useState({ text: "", role: "all", status: "all" });
       const [expandedPermissionStage, setExpandedPermissionStage] = useState("");
       const [savingPermissionStage, setSavingPermissionStage] = useState("");
-      const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
+      const isController = user && user.role === "kontroler";
+      const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "kontroler" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
       const roleOptions = ["worker", "worker+", "kontroler", "manager", "viewer", "supervisor"];
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
@@ -4895,7 +5036,11 @@
             ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "quality", "calculations"] : []), "projects", "maps", "users", "database", "sessions", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "quality" ? "Kontrola jakosci" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Szachownice" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : t === "sessions" ? "Historia sesji" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
-          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadReports=${reloadReports} reloadQuality=${reloadQuality} />` : tab === "account" ? html`
+          ${tab === "reports" ? (
+            isController
+              ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
+              : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadReports=${reloadReports} reloadQuality=${reloadQuality} />`
+          ) : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} />
           ` : tab === "sessions" ? html`
             <${SessionHistoryTab} token=${token} logout=${logout} />
@@ -5084,7 +5229,7 @@
       };
       const isManagerLike = u => {
         const code = (u && (u.code || u.login) || "").toUpperCase();
-        return !!u && (u.role === "admin" || u.role === "manager" || u.role === "supervisor" || code === "RBR056");
+        return !!u && (u.role === "admin" || u.role === "manager" || u.role === "kontroler" || u.role === "supervisor" || code === "RBR056");
       };
       const reloadReports = async (t = token) => {
         const serverReports = (await api.getReports(t)).map(normalizeReport);
