@@ -69,6 +69,7 @@
       setStagePermission: (token, stage, workerCodes) => apiRequest("PUT", "/api/stage-permissions/" + encodeURIComponent(stage), { workerCodes }, token),
       getReportControls: token => apiRequest("GET", "/api/report-controls", null, token),
       setReportControl: (token, project, stage, disabled, question) => apiRequest("PUT", "/api/report-controls", { project, stage, disabled, question }, token),
+      deleteReportControl: (token, project, stage) => apiRequest("DELETE", "/api/report-controls?project=" + encodeURIComponent(project) + "&stage=" + encodeURIComponent(stage), null, token),
       getProjects: token => apiRequest("GET", "/api/projects", null, token),
       addProject: (token, project, count) => apiRequest("POST", "/api/projects", { project, count }, token),
       updateProject: (token, project, data) => apiRequest("PUT", "/api/projects/" + encodeURIComponent(project), data, token),
@@ -97,7 +98,7 @@
       getBathroomChecks: token => apiRequest("GET", "/api/bathroom-checks", null, token),
       setBathroomCheck: (token, project, product, checkType, checked, status, comment) => apiRequest("PUT", "/api/bathroom-checks", { project, product, checkType, checked, status, comment }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
-      saveMapLayouts: (token, layouts, mapDates, mapWidths) => apiRequest("PUT", "/api/maps-layouts", { layouts, mapDates, mapWidths }, token),
+      saveMapLayouts: (token, layouts, mapDates, mapWidths, mapStarts) => apiRequest("PUT", "/api/maps-layouts", { layouts, mapDates, mapWidths, mapStarts }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
       importMapPhoto: (token, hall, file) => {
         const form = new FormData();
@@ -1842,6 +1843,7 @@
       const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const WIDTH_KEY = "flowrbr_maps_widths_1_7";
+      const START_KEY = "flowrbr_maps_starts_1_71";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
       const [mapFilterProject, setMapFilterProject] = useState("all");
@@ -1851,6 +1853,9 @@
       const [mapDates, setMapDates] = useState({});
       const [mapWidths, setMapWidths] = useState(() => {
         try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || "{}"); } catch (_) { return {}; }
+      });
+      const [mapStarts, setMapStarts] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(START_KEY) || "{}"); } catch (_) { return {}; }
       });
       const [dragCell, setDragCell] = useState(null);
       const [selectedCell, setSelectedCell] = useState(null);
@@ -1894,12 +1899,12 @@
       const loadDateByBathroom = useMemo(() => transportMap((transportDates || []).filter(item => !item.extra)), [transportDates]);
       const projectCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
       const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
-      const saveLayouts = (next, nextDates = mapDates, nextWidths = mapWidths) => {
+      const saveLayouts = (next, nextDates = mapDates, nextWidths = mapWidths, nextStarts = mapStarts) => {
         if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik moze ogladac szachownice i generowac PDF, ale nie moze ich modyfikowac." });
         setLayouts(next);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         if (token && canEditMaps) {
-          api.saveMapLayouts(token, next, nextDates, nextWidths)
+          api.saveMapLayouts(token, next, nextDates, nextWidths, nextStarts)
             .then(() => setServerAvailable(true))
             .catch(() => {
               setServerAvailable(false);
@@ -1945,6 +1950,11 @@
             if (data && data.mapWidths && typeof data.mapWidths === "object" && !Array.isArray(data.mapWidths)) {
               setMapWidths(data.mapWidths);
               localStorage.setItem(WIDTH_KEY, JSON.stringify(data.mapWidths));
+              setServerAvailable(true);
+            }
+            if (data && data.mapStarts && typeof data.mapStarts === "object" && !Array.isArray(data.mapStarts)) {
+              setMapStarts(data.mapStarts);
+              localStorage.setItem(START_KEY, JSON.stringify(data.mapStarts));
               setServerAvailable(true);
             }
           })
@@ -2003,32 +2013,38 @@
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
         return map;
       }, [currentLayout]);
-      const maxOccupiedMapCol = useMemo(() => {
+      const minOccupiedMapCol = useMemo(() => {
         if (selectedHall.future) return 0;
-        return currentLayout.reduce((max, cell) => Math.max(max, Number(cell.col || 0)), 0);
+        return currentLayout.reduce((min, cell) => {
+          const col = Number(cell.col || 0);
+          return col > 0 ? Math.min(min, col) : min;
+        }, selectedHall.cols + 1);
       }, [currentLayout, selectedHall.cols, selectedHall.future]);
-      const visibleMapCols = useMemo(() => {
+      const visibleMapStart = useMemo(() => {
         if (selectedHall.future) return 0;
-        const saved = Number(mapWidths[hall]);
-        const desired = Number.isInteger(saved) && saved > 0 ? saved : selectedHall.cols;
-        return Math.min(selectedHall.cols, Math.max(maxOccupiedMapCol || 1, desired));
-      }, [hall, mapWidths, maxOccupiedMapCol, selectedHall.cols, selectedHall.future]);
-      const saveMapWidth = value => {
+        const saved = Number(mapStarts[hall]);
+        const minOccupied = minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : selectedHall.cols;
+        const desired = Number.isInteger(saved) && saved > 0 ? saved : 1;
+        return Math.max(1, Math.min(desired, minOccupied));
+      }, [hall, mapStarts, minOccupiedMapCol, selectedHall.cols, selectedHall.future]);
+      const visibleMapCols = selectedHall.future ? 0 : Math.max(1, selectedHall.cols - visibleMapStart + 1);
+      const visibleMapColumns = useMemo(() => selectedHall.future ? [] : Array.from({ length: visibleMapCols }, (_, i) => visibleMapStart + i), [selectedHall.future, visibleMapCols, visibleMapStart]);
+      const saveMapStart = value => {
         if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik nie moze modyfikowac szachownicy." });
         if (selectedHall.future) return;
-        const width = Number(value);
-        const minWidth = Math.max(1, maxOccupiedMapCol || 0);
-        if (!Number.isInteger(width) || width < 1 || width > selectedHall.cols) {
-          return setMsg({ type: "error", text: "Wybierz szerokosc od 1 do " + selectedHall.cols + "." });
+        const start = Number(value);
+        const maxStart = minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : selectedHall.cols;
+        if (!Number.isInteger(start) || start < 1 || start > selectedHall.cols) {
+          return setMsg({ type: "error", text: "Wybierz poczatek od 1 do " + selectedHall.cols + "." });
         }
-        if (width < minWidth) {
-          return setMsg({ type: "error", text: "Nie mozna skrocic do kolumny " + width + ", bo lazienka stoi w kolumnie " + minWidth + "." });
+        if (start > maxStart) {
+          return setMsg({ type: "error", text: "Nie mozna skrocic od lewej do kolumny " + start + ", bo lazienka stoi w kolumnie " + maxStart + "." });
         }
-        const nextWidths = { ...mapWidths, [hall]: width };
-        setMapWidths(nextWidths);
-        localStorage.setItem(WIDTH_KEY, JSON.stringify(nextWidths));
-        saveLayouts(layouts, mapDates, nextWidths);
-        setMsg({ type: "success", text: "Szerokosc szachownicy zapisana: kolumny 1-" + width + "." });
+        const nextStarts = { ...mapStarts, [hall]: start };
+        setMapStarts(nextStarts);
+        localStorage.setItem(START_KEY, JSON.stringify(nextStarts));
+        saveLayouts(layouts, mapDates, mapWidths, nextStarts);
+        setMsg({ type: "success", text: "Zakres szachownicy zapisany: kolumny " + start + "-" + selectedHall.cols + "." });
       };
       const selectedMapCell = useMemo(() => {
         if (!selectedCell) return null;
@@ -2308,12 +2324,13 @@
             const cy = y + rowIndex * (cellH + gap);
             doc.setFont("helvetica", "bold");
             doc.text(row, startX + 2, cy + cellH / 2);
-            for (let col = 1; col <= pdfMapCols; col++) {
+            for (const col of visibleMapColumns.length ? visibleMapColumns : Array.from({ length: pdfMapCols }, (_, i) => i + 1)) {
               const cell = layoutByCell[row + "-" + col];
               const st = styleForCell(cell);
               const bg = hexToRgb(st.background);
               const tx = hexToRgb(st.color);
-              const x = startX + rowHeader + (col - 1) * (cellW + gap);
+              const visibleIndex = (visibleMapColumns.length ? visibleMapColumns.indexOf(col) : col - 1);
+              const x = startX + rowHeader + visibleIndex * (cellW + gap);
               doc.setDrawColor(150, 160, 175);
               if (cell) {
                 const bKey = bathroomKey(cell.project, cell.product);
@@ -2406,7 +2423,7 @@
         const row = manual.row;
         const col = Number(manual.col);
         if (!selectedHall.rows.includes(row)) return setMsg({ type: "error", text: "Wybierz poprawny wiersz." });
-        if (!col || col < 1 || col > visibleMapCols) return setMsg({ type: "error", text: "Wybierz kolumne widoczna na szachownicy. Rozszerz szachownice, jesli chcesz dodac dalsza kolumne." });
+        if (!col || col < visibleMapStart || col > selectedHall.cols) return setMsg({ type: "error", text: "Wybierz kolumne widoczna na szachownicy. Rozszerz szachownice w lewo, jesli chcesz dodac wczesniejsza kolumne." });
         if (!manual.project.trim()) return setMsg({ type: "error", text: "Wpisz projekt." });
         if (!Number(manual.product)) return setMsg({ type: "error", text: "Wpisz numer lazienki." });
         const placedDate = /^\d{4}-\d{2}-\d{2}$/.test(manual.placedDate || "") ? manual.placedDate : today();
@@ -2610,7 +2627,7 @@
             </div>
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
-            ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: "1", project: "", product: "", placedDate: today() }); }}>${h.label}</button>`)}
+            ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: String(mapStarts[h.id] || 1), project: "", product: "", placedDate: today() }); }}>${h.label}</button>`)}
           </div>
           <div style=${{ display: "grid", gridTemplateColumns: "minmax(180px, 260px) 1fr", gap: "10px", alignItems: "end", marginBottom: "12px" }}>
             <div>
@@ -2665,22 +2682,22 @@
             <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "10px" }}>Kliknij kafelke, aby edytowac. Przytrzymaj zajeta kafelke i pusc na wolnym polu, aby przeniesc lazienke.</div>
             <div style=${{ display: "grid", gridTemplateColumns: "1fr auto", gap: "10px", alignItems: "center", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px", marginBottom: "12px", background: "#f8fafc" }}>
               <div>
-                <div style=${{ fontWeight: 900 }}>Szerokosc szachownicy od lewej</div>
+                <div style=${{ fontWeight: 900 }}>Skracanie szachownicy z lewej strony</div>
                 <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "2px" }}>
-                  Widoczne kolumny 1-${visibleMapCols}. Nie mozna skrocic za kolumne ${Math.max(1, maxOccupiedMapCol || 0)}, jesli stoi tam lazienka.
+                  Widoczne kolumny ${visibleMapStart}-${selectedHall.cols}. Nie mozna ukryc kolumny ${minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : "-"}, jesli stoi tam lazienka.
                 </div>
               </div>
               <div style=${{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                <button style=${visibleMapCols <= Math.max(1, maxOccupiedMapCol || 0) ? S.ghost : S.btn} disabled=${visibleMapCols <= Math.max(1, maxOccupiedMapCol || 0)} onClick=${() => saveMapWidth(visibleMapCols - 1)}>-</button>
-                <input style=${{ ...S.input, width: "96px", textAlign: "center", fontWeight: 900 }} type="number" min=${Math.max(1, maxOccupiedMapCol || 0)} max=${selectedHall.cols} value=${visibleMapCols} onInput=${e => saveMapWidth(Number(e.target.value))} />
-                <button style=${visibleMapCols >= selectedHall.cols ? S.ghost : S.btn} disabled=${visibleMapCols >= selectedHall.cols} onClick=${() => saveMapWidth(visibleMapCols + 1)}>+</button>
+                <button style=${visibleMapStart <= 1 ? S.ghost : S.btn} disabled=${visibleMapStart <= 1} onClick=${() => saveMapStart(visibleMapStart - 1)}>Rozszerz w lewo</button>
+                <input style=${{ ...S.input, width: "96px", textAlign: "center", fontWeight: 900 }} type="number" min="1" max=${minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : selectedHall.cols} value=${visibleMapStart} onInput=${e => saveMapStart(Number(e.target.value))} />
+                <button style=${visibleMapStart >= (minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : selectedHall.cols) ? S.ghost : S.btn} disabled=${visibleMapStart >= (minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : selectedHall.cols)} onClick=${() => saveMapStart(visibleMapStart + 1)}>Skroc z lewej</button>
               </div>
             </div>
             <div className="grid-3" style=${S.row3}>
               <select style=${S.input} value=${manual.row} onChange=${e => setManual({ ...manual, row: e.target.value })}>
                 ${selectedHall.rows.map(row => html`<option key=${row} value=${row}>Wiersz ${row}</option>`)}
               </select>
-              <input style=${S.input} type="number" min="1" max=${visibleMapCols} placeholder="Kolumna" value=${manual.col} onInput=${e => setManual({ ...manual, col: e.target.value })} />
+              <input style=${S.input} type="number" min=${visibleMapStart} max=${selectedHall.cols} placeholder="Kolumna" value=${manual.col} onInput=${e => setManual({ ...manual, col: e.target.value })} />
               <select style=${S.input} value=${manual.project} onChange=${e => setManual({ ...manual, project: e.target.value, product: "" })}>
                 <option value="">- wybierz projekt -</option>
                 ${mapProjectOptions.map(project => html`<option key=${project} value=${project}>${project} (${projectCounts[project] || "?"})</option>`)}
@@ -2740,7 +2757,7 @@
               <div>
                 <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>${selectedHall.label}</h3>
                 <div style=${{ color: COLORS.muted, fontSize: "13px" }}>
-                ${selectedHall.future ? "Do przygotowania w przyszlosci." : "Widoczne kolumny 1-" + visibleMapCols + " z " + selectedHall.cols + ", wiersze " + selectedHall.rows.join("-") + " od gory."}
+                ${selectedHall.future ? "Do przygotowania w przyszlosci." : "Widoczne kolumny " + visibleMapStart + "-" + selectedHall.cols + " z " + selectedHall.cols + ", wiersze " + selectedHall.rows.join("-") + " od gory."}
               </div>
             </div>
             <div style=${{ color: COLORS.muted, fontSize: "13px" }}>W ukladzie: <strong style=${{ color: COLORS.text }}>${currentLayout.length}</strong></div>
@@ -2751,11 +2768,10 @@
             <div style=${{ overflowX: "auto" }}>
               <div style=${{ display: "grid", gridTemplateColumns: "62px repeat(" + visibleMapCols + ", minmax(108px, 1fr))", gap: "8px", minWidth: (84 + visibleMapCols * 116) + "px" }}>
                 <div></div>
-                ${Array.from({ length: visibleMapCols }, (_, i) => i + 1).map(col => html`<div key=${"h" + col} style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "center", fontWeight: 800 }}>${col}</div>`)}
+                ${visibleMapColumns.map(col => html`<div key=${"h" + col} style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "center", fontWeight: 800 }}>${col}</div>`)}
                 ${selectedHall.rows.flatMap(row => [
                   html`<div key=${"r" + row} style=${{ color: COLORS.muted, fontWeight: 900, display: "grid", placeItems: "center" }}>${row}</div>`,
-                  ...Array.from({ length: visibleMapCols }, (_, i) => {
-                    const col = i + 1;
+                  ...visibleMapColumns.map(col => {
                     const cell = layoutByCell[row + "-" + col];
                     const st = styleForCell(cell);
                     const isDragging = dragCell && cell && cellKey(dragCell) === cellKey(cell);
@@ -3143,7 +3159,7 @@
       `;
     }
 
-    function ProjectsTab({ reports, token, serverProjects, reloadProjects }) {
+    function ProjectsTab({ reports, token, serverProjects, reportControls, reloadProjects, reloadReportControls }) {
       const STORAGE_KEY = "flowrbr_projects_1_01";
       const CLOSED_KEY = "flowrbr_closed_projects_1_01";
       const [customProjects, setCustomProjects] = useState(() => {
@@ -3161,6 +3177,8 @@
       const [importing, setImporting] = useState(false);
       const [mapLayouts, setMapLayouts] = useState({});
       const [selectedBathroom, setSelectedBathroom] = useState(null);
+      const [controlEdit, setControlEdit] = useState({ project: "*", stage: "18", disabled: false, question: "" });
+      const [savingControl, setSavingControl] = useState(false);
       const [msg, setMsg] = useState(null);
       useEffect(() => {
         if (!token) return;
@@ -3188,6 +3206,11 @@
       const allProjects = useMemo(() => activeProjectItems(serverProjects)
         .filter(item => !closedProjects.includes(item.project))
         .map(item => ({ ...item, count: Number(item.count || customProjects[item.project] || PROJECTS[item.project]) || 0 })), [serverProjects, customProjects, closedProjects]);
+      const reportControlProjects = useMemo(() => [...new Set(activeProjectItems(serverProjects)
+        .map(item => String(item.project || "").trim())
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [serverProjects]);
+      const controlRows = useMemo(() => (reportControls || []).slice().sort((a, b) => String(a.project || "*").localeCompare(String(b.project || "*"), "pl", { numeric: true }) || String(a.stage).localeCompare(String(b.stage), "pl", { numeric: true })), [reportControls]);
 
       const selectedCount = selectedProject
         ? Number((allProjects.find(p => p.project === selectedProject) || {}).count || customProjects[selectedProject] || PROJECTS[selectedProject]) || 0
@@ -3421,6 +3444,40 @@
           setImporting(false);
         }
       };
+      const loadControlToEdit = row => {
+        setControlEdit({ project: row.project || "*", stage: row.stage || "18", disabled: !!row.disabled, question: row.question || "" });
+      };
+      const saveReportControl = async () => {
+        if (!controlEdit.stage) return setMsg({ type: "error", text: "Wybierz etap." });
+        setSavingControl(true);
+        setMsg(null);
+        try {
+          await api.setReportControl(token, controlEdit.project || "*", controlEdit.stage, !!controlEdit.disabled, controlEdit.question || "");
+          if (reloadReportControls) await reloadReportControls();
+          setMsg({ type: "success", text: "Ustawienie raportowania zapisane." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingControl(false);
+        }
+      };
+      const deleteReportControl = async () => {
+        if (!controlEdit.stage) return setMsg({ type: "error", text: "Wybierz etap do usuniecia." });
+        const projectLabel = controlEdit.project === "*" ? "wszystkich projektow" : "projektu " + controlEdit.project;
+        if (!confirm("Usunac ustawienie raportowania dla " + projectLabel + " / " + stageLabel(controlEdit.stage) + "?")) return;
+        setSavingControl(true);
+        setMsg(null);
+        try {
+          await api.deleteReportControl(token, controlEdit.project || "*", controlEdit.stage);
+          if (reloadReportControls) await reloadReportControls();
+          setControlEdit({ project: "*", stage: "18", disabled: false, question: "" });
+          setMsg({ type: "success", text: "Ustawienie raportowania usuniete." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingControl(false);
+        }
+      };
 
       return html`
         <section style=${S.card}>
@@ -3447,6 +3504,48 @@
               <div style=${{ color: COLORS.muted, fontSize: "12px", display: "flex", alignItems: "center" }}>
                 Wymagane kolumny: ID, Ventilation Variant, Visible High Walls, Requested Delivery.
               </div>
+            </div>
+          </div>
+          <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "14px", paddingTop: "12px" }}>
+            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "4px" }}>Ustawienia raportowania</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Dla projektu albo dla wszystkich projektow mozesz wylaczyc etap lub dodac pytanie potwierdzajace przy raporcie.</div>
+              </div>
+            </div>
+            <div className="grid-3" style=${S.row3}>
+              <div>
+                <label style=${S.label}>Projekt</label>
+                <select style=${S.input} value=${controlEdit.project} onChange=${e => setControlEdit({ ...controlEdit, project: e.target.value })}>
+                  <option value="*">Wszystkie projekty</option>
+                  ${reportControlProjects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+                </select>
+              </div>
+              <div>
+                <label style=${S.label}>Etap</label>
+                <select style=${S.input} value=${controlEdit.stage} onChange=${e => setControlEdit({ ...controlEdit, stage: e.target.value })}>
+                  ${STAGES.map(s => html`<option key=${s[0]} value=${s[0]}>${s[1]}</option>`)}
+                </select>
+              </div>
+              <label style=${{ border: "1px solid " + (controlEdit.disabled ? COLORS.red : COLORS.border), borderRadius: "8px", background: controlEdit.disabled ? "#fef2f2" : COLORS.panel, padding: "10px", fontWeight: 900, display: "flex", gap: "8px", alignItems: "center" }}>
+                <input type="checkbox" checked=${controlEdit.disabled} onChange=${e => setControlEdit({ ...controlEdit, disabled: e.target.checked })} />
+                Wylacz dodawanie raportu
+              </label>
+            </div>
+            <div style=${{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: "8px", marginTop: "10px" }}>
+              <input style=${S.input} placeholder="Pytanie do potwierdzenia, np. Czy sprawdziles komplet elementow?" value=${controlEdit.question} onInput=${e => setControlEdit({ ...controlEdit, question: e.target.value })} />
+              <button style=${S.btn} disabled=${savingControl} onClick=${saveReportControl}>${savingControl ? "Zapisywanie..." : "Zapisz ustawienie"}</button>
+              <button style=${S.danger} disabled=${savingControl} onClick=${deleteReportControl}>Usun ustawienie</button>
+            </div>
+            <div style=${{ display: "grid", gap: "7px", marginTop: "12px" }}>
+              ${controlRows.map(row => html`
+                <button key=${reportControlKey(row.project || "*", row.stage)} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "9px", textAlign: "left", cursor: "pointer" }} onClick=${() => loadControlToEdit(row)}>
+                  <strong>${row.project === "*" ? "Wszystkie projekty" : "Projekt " + row.project}</strong> / ${stageLabel(row.stage)}
+                  <span style=${{ marginLeft: "8px", color: row.disabled ? COLORS.red : COLORS.green, fontWeight: 900 }}>${row.disabled ? "wylaczone" : "aktywne"}</span>
+                  ${row.question ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>Pytanie: ${row.question}</div>` : null}
+                </button>
+              `)}
+              ${controlRows.length ? null : html`<div style=${{ color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Brak dodatkowych ustawien raportowania.</div>`}
             </div>
           </div>
           <${Message} msg=${msg} />
@@ -3845,10 +3944,9 @@
         }));
     }
 
-    function QualityControlTab({ qualityData, token, reports, transportDates, serverProjects, reportControls, reloadQuality, reloadReportControls }) {
+    function QualityControlTab({ qualityData, token, reports, transportDates, serverProjects, reloadQuality }) {
       const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all" });
       const [itemProject, setItemProject] = useState("all");
-      const [controlEdit, setControlEdit] = useState({ project: "*", stage: "18", disabled: false, question: "" });
       const [itemEdits, setItemEdits] = useState({});
       const [msg, setMsg] = useState(null);
       const [savingKey, setSavingKey] = useState("");
@@ -3868,7 +3966,6 @@
         ...records.map(r => String(r.project || "")).filter(Boolean),
         ...qualityItems.map(item => String(item.project || "")).filter(Boolean)
       ])].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [records, qualityItems, serverProjects]);
-      const controlRows = useMemo(() => (reportControls || []).slice().sort((a, b) => String(a.project || "*").localeCompare(String(b.project || "*"), "pl", { numeric: true }) || String(a.stage).localeCompare(String(b.stage), "pl", { numeric: true })), [reportControls]);
       const missingOptions = useMemo(() => [...new Set([
         ...qualityItems.map(item => String(item.itemName || "").trim()).filter(Boolean),
         ...records.flatMap(record => Array.isArray(record.missingItems) ? record.missingItems : []).map(item => String(item || "").trim()).filter(Boolean)
@@ -3934,28 +4031,17 @@
       };
       const removeQualityItem = async item => {
         if (!confirm("Usunac brak '" + item.itemName + "' z projektu " + item.project + "? Zniknie tez z zapisanych lazienek.")) return;
+        const confirmation = prompt("To usunie ten brak takze z zapisanych lazienek. Wpisz USUN, aby potwierdzic.");
+        if (String(confirmation || "").trim().toUpperCase() !== "USUN") {
+          setMsg({ type: "error", text: "Usuwanie braku anulowane." });
+          return;
+        }
         const key = item.project + "#" + item.itemName;
         setSavingKey("item-" + key); setMsg(null);
         try {
           await api.deleteQualityItem(token, item.project, item.itemName);
           await reloadQuality();
           setMsg({ type: "success", text: "Brak zostal usuniety." });
-        } catch (e) {
-          setMsg({ type: "error", text: e.message });
-        } finally {
-          setSavingKey("");
-        }
-      };
-      const loadControlToEdit = row => {
-        setControlEdit({ project: row.project || "*", stage: row.stage || "18", disabled: !!row.disabled, question: row.question || "" });
-      };
-      const saveReportControl = async () => {
-        if (!controlEdit.stage) return setMsg({ type: "error", text: "Wybierz etap." });
-        setSavingKey("report-control"); setMsg(null);
-        try {
-          await api.setReportControl(token, controlEdit.project || "*", controlEdit.stage, !!controlEdit.disabled, controlEdit.question || "");
-          if (reloadReportControls) await reloadReportControls();
-          setMsg({ type: "success", text: "Ustawienie raportowania zapisane." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -4005,47 +4091,6 @@
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
-          <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "14px" }}>
-            <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
-              <div>
-                <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "4px" }}>Ustawienia raportowania</h3>
-                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Mozesz wylaczyc raportowanie etapu albo zadac pytanie potwierdzajace przed dodaniem pozycji.</div>
-              </div>
-            </div>
-            <div className="grid-3" style=${S.row3}>
-              <div>
-                <label style=${S.label}>Projekt</label>
-                <select style=${S.input} value=${controlEdit.project} onChange=${e => setControlEdit({ ...controlEdit, project: e.target.value })}>
-                  <option value="*">Wszystkie projekty</option>
-                  ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
-                </select>
-              </div>
-              <div>
-                <label style=${S.label}>Etap</label>
-                <select style=${S.input} value=${controlEdit.stage} onChange=${e => setControlEdit({ ...controlEdit, stage: e.target.value })}>
-                  ${STAGES.map(s => html`<option key=${s[0]} value=${s[0]}>${s[1]}</option>`)}
-                </select>
-              </div>
-              <label style=${{ border: "1px solid " + (controlEdit.disabled ? COLORS.red : COLORS.border), borderRadius: "8px", background: controlEdit.disabled ? "#fef2f2" : COLORS.panel, padding: "10px", fontWeight: 900, display: "flex", gap: "8px", alignItems: "center" }}>
-                <input type="checkbox" checked=${controlEdit.disabled} onChange=${e => setControlEdit({ ...controlEdit, disabled: e.target.checked })} />
-                Wylacz dodawanie raportu
-              </label>
-            </div>
-            <div style=${{ display: "grid", gridTemplateColumns: "1fr auto", gap: "8px", marginTop: "10px" }}>
-              <input style=${S.input} placeholder="Pytanie do potwierdzenia, np. Czy sprawdziles komplet elementow?" value=${controlEdit.question} onInput=${e => setControlEdit({ ...controlEdit, question: e.target.value })} />
-              <button style=${S.btn} disabled=${savingKey === "report-control"} onClick=${saveReportControl}>Zapisz ustawienie</button>
-            </div>
-            <div style=${{ display: "grid", gap: "7px", marginTop: "12px" }}>
-              ${controlRows.map(row => html`
-                <button key=${reportControlKey(row.project || "*", row.stage)} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "9px", textAlign: "left", cursor: "pointer" }} onClick=${() => loadControlToEdit(row)}>
-                  <strong>${row.project === "*" ? "Wszystkie projekty" : "Projekt " + row.project}</strong> / ${stageLabel(row.stage)}
-                  <span style=${{ marginLeft: "8px", color: row.disabled ? COLORS.red : COLORS.green, fontWeight: 900 }}>${row.disabled ? "wylaczone" : "aktywne"}</span>
-                  ${row.question ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>Pytanie: ${row.question}</div>` : null}
-                </button>
-              `)}
-              ${controlRows.length ? null : html`<div style=${{ color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Brak dodatkowych ustawien raportowania.</div>`}
-            </div>
-          </div>
           <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "14px" }}>
             <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
               <div>
@@ -5594,7 +5639,7 @@
           ` : tab === "database" ? html`
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
           ` : tab === "projects" ? html`
-            <${ProjectsTab} reports=${reports} token=${token} serverProjects=${serverProjects} reloadProjects=${reloadProjects} />
+            <${ProjectsTab} reports=${reports} token=${token} serverProjects=${serverProjects} reportControls=${reportControls} reloadProjects=${reloadProjects} reloadReportControls=${reloadReportControls} />
           ` : tab === "maps" ? html`
             <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} canAddComments=${true} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} reloadBathroomComments=${reloadBathroomComments} reloadBathroomChecks=${reloadBathroomChecks} />
           ` : tab === "production" ? html`
@@ -5604,7 +5649,7 @@
           ` : tab === "transport" ? html`
             <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} />
           ` : tab === "quality" ? html`
-            <${QualityControlTab} qualityData=${qualityData} token=${token} reports=${reports} transportDates=${transportDates} serverProjects=${serverProjects} reportControls=${reportControls} reloadQuality=${reloadQuality} reloadReportControls=${reloadReportControls} />
+            <${QualityControlTab} qualityData=${qualityData} token=${token} reports=${reports} transportDates=${transportDates} serverProjects=${serverProjects} reloadQuality=${reloadQuality} />
           ` : tab === "calculations" ? html`
             <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} reloadMaterialUsages=${reloadMaterialUsages} />
           ` : html`

@@ -182,6 +182,23 @@ function normalizeMapWidths(rawWidths, layouts = {}) {
   return result;
 }
 
+function normalizeMapStarts(rawStarts, layouts = {}) {
+  const result = {};
+  for (const hallId of Object.keys(MAP_HALLS)) {
+    const hall = MAP_HALLS[hallId];
+    const cells = Array.isArray(layouts?.[hallId]) ? layouts[hallId] : [];
+    const minOccupied = cells.reduce((min, cell) => {
+      const col = Number(cell.col || 0);
+      return col > 0 ? Math.min(min, col) : min;
+    }, hall.cols + 1);
+    const maxStart = minOccupied <= hall.cols ? minOccupied : hall.cols;
+    const raw = Number(rawStarts?.[hallId]);
+    const desired = Number.isInteger(raw) && raw > 0 ? raw : 1;
+    result[hallId] = Math.max(1, Math.min(desired, maxStart));
+  }
+  return result;
+}
+
 async function ensureMapLayoutsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS map_layouts (
@@ -190,6 +207,7 @@ async function ensureMapLayoutsTable() {
       photos JSONB NOT NULL DEFAULT '{}'::jsonb,
       map_dates JSONB NOT NULL DEFAULT '{}'::jsonb,
       map_widths JSONB NOT NULL DEFAULT '{}'::jsonb,
+      map_starts JSONB NOT NULL DEFAULT '{}'::jsonb,
       updated_by TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -197,8 +215,9 @@ async function ensureMapLayoutsTable() {
   await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS photos JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS map_dates JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS map_widths JSONB NOT NULL DEFAULT '{}'::jsonb");
+  await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS map_starts JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query(
-    "INSERT INTO map_layouts (id, layouts, photos, map_dates, map_widths) VALUES ('main', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb) ON CONFLICT (id) DO NOTHING"
+    "INSERT INTO map_layouts (id, layouts, photos, map_dates, map_widths, map_starts) VALUES ('main', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb) ON CONFLICT (id) DO NOTHING"
   );
 }
 
@@ -1409,13 +1428,14 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
 app.get('/api/maps-layouts', auth, async (req, res) => {
   try {
     await ensureMapLayoutsTable();
-    const r = await pool.query("SELECT layouts, photos, map_dates, map_widths FROM map_layouts WHERE id='main'");
+    const r = await pool.query("SELECT layouts, photos, map_dates, map_widths, map_starts FROM map_layouts WHERE id='main'");
     const layouts = normalizeMapLayouts(r.rows[0]?.layouts || {});
     res.json({
       layouts,
       photos: normalizeMapPhotos(r.rows[0]?.photos || {}),
       mapDates: normalizeMapDates(r.rows[0]?.map_dates || {}),
-      mapWidths: normalizeMapWidths(r.rows[0]?.map_widths || {}, layouts)
+      mapWidths: normalizeMapWidths(r.rows[0]?.map_widths || {}, layouts),
+      mapStarts: normalizeMapStarts(r.rows[0]?.map_starts || {}, layouts)
     });
   } catch (err) {
     console.error('Maps layouts GET error:', err);
@@ -1429,14 +1449,15 @@ app.put('/api/maps-layouts', auth, canManageMaps, async (req, res) => {
     const layouts = normalizeMapLayouts(req.body?.layouts || {});
     const mapDates = normalizeMapDates(req.body?.mapDates || {});
     const mapWidths = normalizeMapWidths(req.body?.mapWidths || {}, layouts);
+    const mapStarts = normalizeMapStarts(req.body?.mapStarts || {}, layouts);
     await pool.query(
-      `INSERT INTO map_layouts (id, layouts, map_dates, map_widths, updated_by, updated_at)
-       VALUES ('main', $1::jsonb, $2::jsonb, $3::jsonb, $4, NOW())
-       ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, map_dates=EXCLUDED.map_dates, map_widths=EXCLUDED.map_widths, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
-      [JSON.stringify(layouts), JSON.stringify(mapDates), JSON.stringify(mapWidths), req.user.code]
+      `INSERT INTO map_layouts (id, layouts, map_dates, map_widths, map_starts, updated_by, updated_at)
+       VALUES ('main', $1::jsonb, $2::jsonb, $3::jsonb, $4::jsonb, $5, NOW())
+       ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, map_dates=EXCLUDED.map_dates, map_widths=EXCLUDED.map_widths, map_starts=EXCLUDED.map_starts, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [JSON.stringify(layouts), JSON.stringify(mapDates), JSON.stringify(mapWidths), JSON.stringify(mapStarts), req.user.code]
     );
     await auditLog(req, 'maps_layout_changed', 'main');
-    res.json({ success: true, layouts, mapDates, mapWidths });
+    res.json({ success: true, layouts, mapDates, mapWidths, mapStarts });
   } catch (err) {
     console.error('Maps layouts PUT error:', err);
     res.status(500).json({ error: err.message || 'Błąd zapisu map' });
@@ -1496,6 +1517,19 @@ app.put('/api/report-controls', auth, managerOnly, async (req, res) => {
     res.json(r.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad zapisu ustawien raportowania' });
+  }
+});
+
+app.delete('/api/report-controls', auth, managerOnly, async (req, res) => {
+  const item = normalizeReportControlInput(req.query || {});
+  if (!item.stage) return res.status(400).json({ error: 'Wybierz etap' });
+  try {
+    await ensureReportControlsTable();
+    const r = await pool.query('DELETE FROM report_controls WHERE project=$1 AND stage=$2', [item.project, item.stage]);
+    await auditLog(req, 'report_control_deleted', item.project + '#' + item.stage);
+    res.json({ success: true, deleted: r.rowCount > 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad usuwania ustawien raportowania' });
   }
 });
 
@@ -2195,12 +2229,12 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       await ensureMapLayoutsTable();
       for (const m of data.map_layouts) {
         await client.query(
-          `INSERT INTO map_layouts (id, layouts, photos, map_dates, map_widths, updated_by, updated_at)
-           VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6,COALESCE($7,NOW()))
-           ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, photos=EXCLUDED.photos, map_dates=EXCLUDED.map_dates, map_widths=EXCLUDED.map_widths, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          `INSERT INTO map_layouts (id, layouts, photos, map_dates, map_widths, map_starts, updated_by, updated_at)
+           VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6::jsonb,$7,COALESCE($8,NOW()))
+           ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, photos=EXCLUDED.photos, map_dates=EXCLUDED.map_dates, map_widths=EXCLUDED.map_widths, map_starts=EXCLUDED.map_starts, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
           (() => {
             const layouts = normalizeMapLayouts(m.layouts || {});
-            return [m.id || 'main', JSON.stringify(layouts), JSON.stringify(normalizeMapPhotos(m.photos || {})), JSON.stringify(normalizeMapDates(m.map_dates || m.mapDates || {})), JSON.stringify(normalizeMapWidths(m.map_widths || m.mapWidths || {}, layouts)), m.updated_by || req.user.code, m.updated_at || null];
+            return [m.id || 'main', JSON.stringify(layouts), JSON.stringify(normalizeMapPhotos(m.photos || {})), JSON.stringify(normalizeMapDates(m.map_dates || m.mapDates || {})), JSON.stringify(normalizeMapWidths(m.map_widths || m.mapWidths || {}, layouts)), JSON.stringify(normalizeMapStarts(m.map_starts || m.mapStarts || {}, layouts)), m.updated_by || req.user.code, m.updated_at || null];
           })()
         );
         mapsRestored++;
