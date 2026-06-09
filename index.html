@@ -73,9 +73,12 @@
       importProject: (token, project, bathrooms, count, sourceFile) => apiRequest("POST", "/api/projects/import", { project, bathrooms, count, sourceFile }, token),
       getMaterialUsages: token => apiRequest("GET", "/api/material-usages", null, token),
       addMaterialUsage: (token, payload) => apiRequest("POST", "/api/material-usages", payload, token),
+      deleteMaterialUsage: (token, id) => apiRequest("DELETE", "/api/material-usages/" + id, null, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
+      getSessions: token => apiRequest("GET", "/api/sessions", null, token),
+      logoutAllSessions: token => apiRequest("POST", "/api/sessions/logout-all", {}, token),
       getTransportDates: token => apiRequest("GET", "/api/transport-dates", null, token),
       saveTransportDate: (token, project, product, loadDate, lkwNumber, details = {}) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate, lkwNumber, ...details }, token),
       getBathroomComments: token => apiRequest("GET", "/api/bathroom-comments", null, token),
@@ -116,6 +119,7 @@
     const STAGES = [
       ["2.1", "2.1 - Wyprodukowanie profilow scian i sufitu"],
       ["4", "4 - Skrecanie"],
+      ["4.1", "4.1 - Nawozenie"],
       ["5", "5 - Izolacja 2"],
       ["6.1", "6.1 - Szlifowanie"],
       ["6.2", "6.2 - Osadzanie rurek"],
@@ -785,7 +789,7 @@
       `;
     }
 
-    function ChangePasswordBox({ token }) {
+    function ChangePasswordBox({ token, forced, onChanged }) {
       const [current, setCurrent] = useState("");
       const [next, setNext] = useState("");
       const [confirm, setConfirm] = useState("");
@@ -793,14 +797,15 @@
       const [msg, setMsg] = useState(null);
 
       const save = async () => {
-        if (!current) return setMsg({ type: "error", text: "Wpisz obecne haslo." });
-        if (next.length < 4) return setMsg({ type: "error", text: "Nowe haslo musi miec co najmniej 4 znaki." });
+        if (!forced && !current) return setMsg({ type: "error", text: "Wpisz obecne haslo." });
+        if (next.length < 8 || !/[A-Za-z]/.test(next) || !/[0-9]/.test(next)) return setMsg({ type: "error", text: "Nowe haslo musi miec minimum 8 znakow oraz litery i cyfry." });
         if (next !== confirm) return setMsg({ type: "error", text: "Nowe hasla nie sa takie same." });
         setSaving(true); setMsg(null);
         try {
           await api.changePassword(token, current, next);
           setCurrent(""); setNext(""); setConfirm("");
           setMsg({ type: "success", text: "Haslo zostalo zmienione." });
+          if (onChanged) onChanged();
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -811,13 +816,13 @@
         <div style=${{ marginTop: "18px", paddingTop: "16px", borderTop: "1px solid " + COLORS.border }}>
           <h3 style=${{ ...S.title, fontSize: "17px" }}>Reset hasla</h3>
           <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
-            Ustaw nowe haslo do swojego konta. Dla bezpieczenstwa wpisz najpierw obecne haslo.
+            ${forced ? "To pierwsze logowanie albo haslo zostalo zresetowane. Ustaw nowe haslo, zeby wejsc do aplikacji." : "Ustaw nowe haslo do swojego konta. Dla bezpieczenstwa wpisz najpierw obecne haslo."}
           </div>
           <div className="grid-3" style=${S.row3}>
-            <div>
+            ${forced ? null : html`<div>
               <label style=${S.label}>Obecne haslo</label>
               <input style=${S.input} type="password" value=${current} onInput=${e => setCurrent(e.target.value)} />
-            </div>
+            </div>`}
             <div>
               <label style=${S.label}>Nowe haslo</label>
               <input style=${S.input} type="password" value=${next} onInput=${e => setNext(e.target.value)} />
@@ -827,9 +832,89 @@
               <input style=${S.input} type="password" value=${confirm} onInput=${e => setConfirm(e.target.value)} onKeyDown=${e => e.key === "Enter" && save()} />
             </div>
           </div>
-          <button style=${{ ...S.btn, marginTop: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${save}>${saving ? "Resetowanie..." : "Resetuj haslo"}</button>
+          <button style=${{ ...S.btn, marginTop: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${save}>${saving ? "Zapisywanie..." : "Zmien haslo"}</button>
           <${Message} msg=${msg} />
         </div>
+      `;
+    }
+
+    function SessionHistoryTab({ token, logout }) {
+      const [sessions, setSessions] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [saving, setSaving] = useState(false);
+      const [msg, setMsg] = useState(null);
+      const load = async () => {
+        setLoading(true); setMsg(null);
+        try {
+          setSessions(await api.getSessions(token));
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setLoading(false);
+        }
+      };
+      useEffect(() => { load(); }, [token]);
+      const fmt = value => {
+        if (!value) return "-";
+        try { return new Date(value).toLocaleString("pl-PL"); } catch (_) { return String(value); }
+      };
+      const shortAgent = value => {
+        const text = String(value || "");
+        if (!text) return "-";
+        if (text.includes("Edg/")) return "Microsoft Edge";
+        if (text.includes("Chrome/")) return "Chrome";
+        if (text.includes("Firefox/")) return "Firefox";
+        if (text.includes("Safari/")) return "Safari";
+        return text.slice(0, 80);
+      };
+      const logoutAll = async () => {
+        if (!confirm("Wylogowac konto ze wszystkich urzadzen? Po tej operacji trzeba bedzie zalogowac sie ponownie.")) return;
+        setSaving(true); setMsg(null);
+        try {
+          await api.logoutAllSessions(token);
+          logout();
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSaving(false);
+        }
+      };
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+            <div>
+              <h2 style=${S.title}>Historia sesji</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Ostatnie logowania i aktywne tokeny tego konta.</div>
+            </div>
+            <button style=${S.danger} disabled=${saving} onClick=${logoutAll}>${saving ? "Wylogowywanie..." : "Wyloguj ze wszystkich urzadzen"}</button>
+          </div>
+          <${Message} msg=${msg} />
+          ${loading ? html`<div style=${{ color: COLORS.muted, padding: "16px" }}>Ladowanie sesji...</div>` : html`
+            <div style=${{ overflowX: "auto" }}>
+              <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "760px" }}>
+                <thead>
+                  <tr>
+                    ${["Status", "Logowanie", "Ostatnia aktywnosc", "IP", "Urzadzenie"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${h}</th>`)}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${sessions.map(session => html`
+                    <tr key=${session.id}>
+                      <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900, color: session.revokedAt ? COLORS.red : session.current ? COLORS.green : COLORS.text }}>
+                        ${session.revokedAt ? "Wylogowana" : session.current ? "Aktualna" : "Aktywna"}
+                      </td>
+                      <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${fmt(session.createdAt)}</td>
+                      <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${fmt(session.lastSeenAt)}</td>
+                      <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${session.ip || "-"}</td>
+                      <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${shortAgent(session.userAgent)}</td>
+                    </tr>
+                  `)}
+                  ${sessions.length ? null : html`<tr><td colSpan="5" style=${{ color: COLORS.dim, textAlign: "center", padding: "18px" }}>Brak zapisanych sesji.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+          `}
+        </section>
       `;
     }
 
@@ -1279,7 +1364,7 @@
         }
       };
 
-      const mainStyle = tab === "transport"
+      const mainStyle = tab === "maps"
         ? { ...S.main, width: "calc(100vw - 24px)", maxWidth: "none", margin: "0", padding: "12px" }
         : S.main;
 
@@ -1296,7 +1381,8 @@
             ${[
               ["add", "Dodaj raport"],
               ["history", "Historia"],
-              ["maps", "Mapy"],
+              ["maps", "Szachownice"],
+              ["sessions", "Historia sesji"],
               ["account", "Konto"]
             ].map(t => html`<button key=${t[0]} style=${tab === t[0] ? S.btn : S.ghost} onClick=${() => setTab(t[0])}>${t[1]}</button>`)}
           </div>
@@ -1316,6 +1402,8 @@
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : tab === "maps" ? html`
             <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} canAddComments=${false} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} reloadBathroomComments=${async () => {}} reloadBathroomChecks=${async () => {}} />
+          ` : tab === "sessions" ? html`
+            <${SessionHistoryTab} token=${token} logout=${logout} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Konto</h2>
@@ -1371,7 +1459,7 @@
       const [mapFilterProject, setMapFilterProject] = useState("all");
       const [mapFilterStage, setMapFilterStage] = useState("all");
       const [mapFilterAlerts, setMapFilterAlerts] = useState(false);
-      const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "" });
+      const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "", placedDate: today() });
       const [dragCell, setDragCell] = useState(null);
       const [selectedCell, setSelectedCell] = useState(null);
       const [aiDetected, setAiDetected] = useState([]);
@@ -1395,6 +1483,7 @@
       ];
       const stageColors = [
         { stage: "4", label: "4 Skrecanie", short: "Skr.", color: "#e5e7eb", text: COLORS.text },
+        { stage: "4.1", label: "4.1 Nawozenie", short: "Nawoz.", color: "#fef3c7", text: "#92400e" },
         { stage: "6.1", label: "6.1 Szlifowanie", short: "Szlif", color: "#9ca3af", text: "#111827" },
         { stage: "7.1", label: "7.1 Izolowanie", short: "Izol.", color: "#111827", text: "#fff" },
         { stage: "9", label: "9 Szpachlowanie", short: "Szpach.", color: "#3b82f6", text: "#fff" },
@@ -1405,14 +1494,14 @@
         { stage: "13.2", label: "13.2 Silikonowanie", short: "Silik.", color: "#fde047", text: "#111827" },
         { stage: "17", label: "17 Czyszczenie", short: "Czysz.", color: "#86efac", text: "#064e3b" }
       ];
-      const stageOrder = { "4": 1, "6.1": 2, "7.1": 3, "9": 4, "10": 5, "11.2": 6, "13.1": 7, "13.2": 8, "15.1": 9, "17": 10, "19": 11, "20": 12, "21": 13 };
+      const stageOrder = { "4": 1, "4.1": 1.5, "6.1": 2, "7.1": 3, "9": 4, "10": 5, "11.2": 6, "13.1": 7, "13.2": 8, "15.1": 9, "17": 10, "19": 11, "20": 12, "21": 13 };
       const removedFromMapStages = new Set(["19", "20", "21"]);
       const selectedHall = halls.find(h => h.id === hall) || halls[0];
       const loadDateByBathroom = useMemo(() => transportMap(transportDates), [transportDates]);
       const projectCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
       const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
       const saveLayouts = next => {
-        if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik moze ogladac mapy i generowac PDF, ale nie moze ich modyfikowac." });
+        if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik moze ogladac szachownice i generowac PDF, ale nie moze ich modyfikowac." });
         setLayouts(next);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         if (token && canEditMaps) {
@@ -1420,7 +1509,7 @@
             .then(() => setServerAvailable(true))
             .catch(() => {
               setServerAvailable(false);
-              setMsg({ type: "warning", text: "Mapa zapisana lokalnie, ale serwer nie przyjal zapisu map. Trzeba dodac endpoint /api/maps-layouts, zeby inni uzytkownicy widzieli zmiany." });
+              setMsg({ type: "warning", text: "Szachownica zapisana lokalnie, ale serwer nie przyjal zapisu. Trzeba dodac endpoint /api/maps-layouts, zeby inni uzytkownicy widzieli zmiany." });
             });
         }
       };
@@ -1485,7 +1574,7 @@
       const savedLayout = layouts[hall] || [];
       const isRemovedFromMap = cell => {
         if (!cell) return false;
-        const state = stageByBathroom[bathroomKey(cell.project, cell.product)];
+        const state = stageByBathroom[bathroomKey(cell.project, cell.product)] || (cell.placedDate ? { stage: "4.1", date: cell.placedDate } : null);
         return !!(state && removedFromMapStages.has(String(state.stage)));
       };
       const currentLayout = useMemo(() => savedLayout.filter(cell => !isRemovedFromMap(cell)), [savedLayout, stageByBathroom]);
@@ -1504,9 +1593,21 @@
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
         return map;
       }, [currentLayout]);
+      const selectedMapCell = useMemo(() => {
+        if (!selectedCell) return null;
+        return currentLayout.find(cell => sameProject(cell.project, selectedCell.project) && productNo(cell.product) === productNo(selectedCell.product)) || selectedCell;
+      }, [currentLayout, selectedCell]);
       const selectedHistory = useMemo(() => {
         if (!selectedCell) return [];
-        return (reports || [])
+        const mapEntry = selectedMapCell;
+        const mapHistory = mapEntry && mapEntry.placedDate ? [{
+          project: selectedCell.project,
+          product: selectedCell.product,
+          stage: "4.1",
+          date: mapEntry.placedDate,
+          worker: "Szachownica"
+        }] : [];
+        const reportHistory = (reports || [])
           .flatMap(report => (report.lines || [])
             .filter(line => sameProject(line.project, selectedCell.project) && productNo(line.product) === productNo(selectedCell.product))
             .map(line => ({
@@ -1514,8 +1615,9 @@
               date: report.date || "",
               worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
             })))
-          .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (stageOrder[a.stage] || 0) - (stageOrder[b.stage] || 0));
-      }, [reports, selectedCell]);
+        return [...mapHistory, ...reportHistory]
+          .sort((a, b) => (a.date || "").localeCompare(b.date || "") || ((stageOrder[a.stage] || (a.stage === "4.1" ? 1.5 : 0)) - (stageOrder[b.stage] || (b.stage === "4.1" ? 1.5 : 0))));
+      }, [reports, selectedCell, selectedMapCell]);
       const selectedComments = useMemo(() => {
         if (!selectedCell) return [];
         return (bathroomComments || []).filter(c => sameProject(c.project, selectedCell.project) && productNo(c.product) === productNo(selectedCell.product));
@@ -1606,6 +1708,7 @@
         if (!cell) return true;
         if (mapFilterProject !== "all" && !sameProject(cell.project, mapFilterProject)) return false;
         if (mapFilterStage !== "all") {
+          if (mapFilterStage === "4.1") return !!cell.placedDate;
           const state = stageByBathroom[bathroomKey(cell.project, cell.product)];
           if (!state || String(state.stage) !== mapFilterStage) return false;
         }
@@ -1629,7 +1732,7 @@
           let y = 10;
           doc.setFont("helvetica", "bold");
           doc.setFontSize(15);
-          doc.text("Mapa - " + selectedHall.label, margin, y);
+          doc.text("Szachownica - " + selectedHall.label, margin, y);
           doc.setFont("helvetica", "normal");
           doc.setFontSize(8);
           doc.text("Wygenerowano: " + today(), pageW - margin - 42, y);
@@ -1781,8 +1884,8 @@
               }
             }
           });
-          doc.save("flowrbr_mapa_" + hall + "_" + today() + ".pdf");
-          setMsg({ type: "success", text: "PDF mapy wygenerowany." });
+          doc.save("flowrbr_szachownica_" + hall + "_" + today() + ".pdf");
+          setMsg({ type: "success", text: "PDF szachownicy wygenerowany." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -1796,7 +1899,8 @@
         if (!col || col < 1 || col > selectedHall.cols) return setMsg({ type: "error", text: "Wybierz poprawna kolumne." });
         if (!manual.project.trim()) return setMsg({ type: "error", text: "Wpisz projekt." });
         if (!Number(manual.product)) return setMsg({ type: "error", text: "Wpisz numer lazienki." });
-        const nextCell = { row, col, project: manual.project.trim(), product: productNo(manual.product) };
+        const placedDate = /^\d{4}-\d{2}-\d{2}$/.test(manual.placedDate || "") ? manual.placedDate : today();
+        const nextCell = { row, col, project: manual.project.trim(), product: productNo(manual.product), placedDate };
         const next = currentLayout.filter(cell => cellKey(cell) !== cellKey(nextCell));
         saveLayouts({ ...layouts, [hall]: [...next, nextCell].sort((a, b) => selectedHall.rows.indexOf(a.row) - selectedHall.rows.indexOf(b.row) || a.col - b.col) });
         setMsg({ type: "success", text: "Pozycja zapisana w ukladzie." });
@@ -1807,7 +1911,7 @@
           suppressClickRef.current = false;
           return;
         }
-        setManual({ row, col: String(col), project: cell ? cell.project || "" : "", product: cell ? String(cell.product || "") : "" });
+        setManual({ row, col: String(col), project: cell ? cell.project || "" : "", product: cell ? String(cell.product || "") : "", placedDate: cell && cell.placedDate ? cell.placedDate : (manual.placedDate || today()) });
         setMsg(null);
       };
       const selectCellHistory = cell => {
@@ -1858,7 +1962,7 @@
           .map(cell => cellKey(cell) === sourceKey ? moved : cell)
           .sort((a, b) => selectedHall.rows.indexOf(a.row) - selectedHall.rows.indexOf(b.row) || a.col - b.col);
         saveLayouts({ ...layouts, [hall]: next });
-        setManual({ row: targetRow, col: String(targetCol), project: moved.project || "", product: String(moved.product || "") });
+        setManual({ row: targetRow, col: String(targetCol), project: moved.project || "", product: String(moved.product || ""), placedDate: moved.placedDate || manual.placedDate || today() });
         setDragCell(null);
         setMsg({ type: "success", text: "Lazienka przeniesiona na pole " + targetRow + "-" + targetCol + "." });
       };
@@ -1893,7 +1997,8 @@
           row: String(item.row || "").trim().toUpperCase(),
           col: Number(item.col ?? item.column),
           project: String(item.project ?? item.projectNo ?? item.order ?? "").trim(),
-          product: productNo(item.product ?? item.productNo ?? item.bathroom ?? item.bathroomNo)
+          product: productNo(item.product ?? item.productNo ?? item.bathroom ?? item.bathroomNo),
+          placedDate: /^\d{4}-\d{2}-\d{2}$/.test(String(item.placedDate || item.date || "")) ? String(item.placedDate || item.date) : today()
         })).filter(item =>
           selectedHall.rows.includes(item.row) &&
           item.col >= 1 &&
@@ -1928,7 +2033,7 @@
         if (!aiDetected.length) return;
         const byCell = {};
         currentLayout.forEach(cell => { byCell[cellKey(cell)] = cell; });
-        aiDetected.forEach(cell => { byCell[cellKey(cell)] = cell; });
+        aiDetected.forEach(cell => { byCell[cellKey(cell)] = { ...cell, placedDate: cell.placedDate || today() }; });
         const next = Object.values(byCell)
           .filter(cell => selectedHall.rows.includes(cell.row) && cell.col >= 1 && cell.col <= selectedHall.cols)
           .sort((a, b) => selectedHall.rows.indexOf(a.row) - selectedHall.rows.indexOf(b.row) || a.col - b.col);
@@ -1965,10 +2070,10 @@
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
             <div>
-              <h2 style=${{ ...S.title, margin: 0 }}>Mapy</h2>
+              <h2 style=${{ ...S.title, margin: 0 }}>Szachownice</h2>
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>Uklady hal produkcyjnych z kolorami wedlug aktualnego etapu.</div>
               <div style=${{ color: serverAvailable === false ? COLORS.orange : COLORS.dim, fontSize: "12px", marginTop: "4px" }}>
-                ${serverAvailable === true ? "Mapa zsynchronizowana z serwerem." : serverAvailable === false ? "Mapa dziala lokalnie - backend musi dodac /api/maps-layouts, aby widzieli ja wszyscy." : "Sprawdzanie zapisu map na serwerze..."}
+                ${serverAvailable === true ? "Szachownica zsynchronizowana z serwerem." : serverAvailable === false ? "Szachownica dziala lokalnie - backend musi dodac /api/maps-layouts, aby widzieli ja wszyscy." : "Sprawdzanie zapisu szachownicy na serwerze..."}
               </div>
             </div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -1983,7 +2088,7 @@
             </div>
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
-            ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: "1", project: "", product: "" }); }}>${h.label}</button>`)}
+            ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: "1", project: "", product: "", placedDate: today() }); }}>${h.label}</button>`)}
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
             ${stageColors.map(s => html`<span key=${s.stage} style=${{ background: s.color, color: s.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 800 }}>${s.label}</span>`)}
@@ -2040,6 +2145,10 @@
                 <option value="">- wybierz lazienke -</option>
                 ${manualProducts.map(product => html`<option key=${product} value=${product}>Laz. ${product}</option>`)}
               </select>
+              <div>
+                <label style=${S.label}>Data wstawienia</label>
+                <input style=${S.input} type="date" value=${manual.placedDate || today()} onInput=${e => setManual({ ...manual, placedDate: e.target.value })} />
+              </div>
               <button style=${S.btn} onClick=${addManual}>Zapisz pozycje</button>
               <button style=${S.danger} onClick=${removeManual}>Usun z pola</button>
             </div>
@@ -2234,6 +2343,9 @@
               <div>
                 <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Historia lazienki</h3>
                 <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Projekt ${selectedCell.project} / Lazienka ${selectedCell.product}</div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>
+                  Data wstawienia na szachownice: ${selectedMapCell && selectedMapCell.placedDate ? html`<strong style=${{ color: COLORS.text }}>${selectedMapCell.placedDate}</strong>` : "brak"}
+                </div>
                 <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>
                   Data zaladunku: ${selectedLoadDate ? html`<strong style=${{ color: selectedLoadAlert ? selectedLoadAlert.color : COLORS.text }}>${selectedLoadDate}</strong> ${selectedLoadAlert ? "(" + selectedLoadAlert.label + ")" : ""}` : "brak"}
                 </div>
@@ -3065,8 +3177,10 @@
       `;
     }
 
-    function CalculationsTab({ materialUsages, serverProjects }) {
+    function CalculationsTab({ materialUsages, serverProjects, token, reloadMaterialUsages }) {
       const [filters, setFilters] = useState({ project: "all", stage: "all" });
+      const [msg, setMsg] = useState(null);
+      const [deletingId, setDeletingId] = useState("");
       const projects = useMemo(() => activeProjectItems(serverProjects).map(p => p.project), [serverProjects]);
       const visible = useMemo(() => (materialUsages || []).filter(item => {
         if (filters.project !== "all" && !sameProject(item.project, filters.project)) return false;
@@ -3074,6 +3188,20 @@
         return true;
       }), [materialUsages, filters]);
       const fields = item => Object.entries(item.data || {}).filter(([, value]) => value != null && String(value) !== "");
+      const removeCalculation = async item => {
+        if (!item || !item.id) return;
+        if (!confirm("Usunac kalkulacje: projekt " + item.project + ", laz. " + item.product + ", " + stageLabel(item.stage) + "?")) return;
+        setDeletingId(item.id); setMsg(null);
+        try {
+          await api.deleteMaterialUsage(token, item.id);
+          await reloadMaterialUsages();
+          setMsg({ type: "success", text: "Kalkulacja zostala usunieta." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setDeletingId("");
+        }
+      };
       return html`
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
@@ -3099,12 +3227,16 @@
             </div>
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
+          <${Message} msg=${msg} />
           <div style=${{ display: "grid", gap: "10px" }}>
             ${visible.map(item => html`
               <div key=${item.id} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
                 <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap" }}>
-                  <strong>Projekt ${item.project} / Laz. ${item.product} / ${stageLabel(item.stage)}</strong>
-                  <span style=${{ color: COLORS.muted, fontSize: "12px" }}>${(item.createdAt || "").slice(0, 10)} / ${item.workerName || item.workerCode || "-"}</span>
+                  <div>
+                    <strong>Projekt ${item.project} / Laz. ${item.product} / ${stageLabel(item.stage)}</strong>
+                    <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>${(item.createdAt || "").slice(0, 10)} / ${item.workerName || item.workerCode || "-"}</div>
+                  </div>
+                  <button style=${S.danger} disabled=${deletingId === item.id} onClick=${() => removeCalculation(item)}>${deletingId === item.id ? "Usuwanie..." : "Usun kalkulacje"}</button>
                 </div>
                 <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${item.typeLabel || item.typeKey}</div>
                 <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px", marginTop: "10px" }}>
@@ -3126,6 +3258,7 @@
     function TransportTab({ reports, transportDates, token, serverProjects, reloadTransportDates }) {
       const transportPanelStyle = {
         ...S.card,
+        background: "#fff",
         width: "100%",
         maxWidth: "none",
         overflow: "hidden"
@@ -3135,6 +3268,7 @@
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
       const transportInfo = useMemo(() => transportInfoMap(transportDates), [transportDates]);
       const [filters, setFilters] = useState({ project: "all", status: "all", date: "", lkw: "" });
+      const [columnFilters, setColumnFilters] = useState({});
       const [batchDate, setBatchDate] = useState(today());
       const [batchLkw, setBatchLkw] = useState("");
       const [batchProject, setBatchProject] = useState("");
@@ -3181,6 +3315,34 @@
           items: row.items.sort((a, b) => a.product - b.product)
         })).sort((a, b) => (a.loadDate || "").localeCompare(b.loadDate || "") || String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || Number(a.lkwNumber || 999999) - Number(b.lkwNumber || 999999));
       }, [visible, transportInfo]);
+      const transportColumnDefs = [
+        ["project", "Nr. zlecenia", row => row.project],
+        ["orderName", "Nazwa zlecenia", row => row.orderName],
+        ["trailer", "NACZEPA", row => row.trailer],
+        ["lkwNumber", "LKW", row => row.lkwNumber],
+        ["bathrooms", "Numery lazienek", row => row.items.map(item => item.product).join(",")],
+        ["direction", "Kierunek", row => row.direction],
+        ["count", "Ilosc", row => String(row.items.length)],
+        ["loadDate", "Data zaladunku", row => row.loadDate],
+        ["sizeLabel", "Rozmiar", row => row.sizeLabel],
+        ["unloadDate", "Data rozladunku", row => row.unloadDate],
+        ["carrier", "Przewoznik", row => row.carrier],
+        ["note", "Notatka", row => row.note],
+        ["delayNote", "Spoznienia", row => row.delayNote]
+      ];
+      const columnValue = (row, id) => {
+        const def = transportColumnDefs.find(item => item[0] === id);
+        return def ? String(def[2](row) || "") : "";
+      };
+      const columnOptions = useMemo(() => Object.fromEntries(transportColumnDefs.map(def => {
+        const values = [...new Set(transportRows.map(row => columnValue(row, def[0])).filter(Boolean))]
+          .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }));
+        return [def[0], values];
+      })), [transportRows]);
+      const filteredTransportRows = useMemo(() => transportRows.filter(row => {
+        return Object.entries(columnFilters).every(([field, value]) => !value || columnValue(row, field) === value);
+      }), [transportRows, columnFilters]);
+      const clearColumnFilters = () => setColumnFilters({});
       const selectBatchProject = project => {
         setBatchProject(project);
         setSelectedProducts([]);
@@ -3311,8 +3473,11 @@
               </div>
             </div>
           </div>
+          <div style=${{ display: "flex", justifyContent: "flex-end", marginBottom: "10px" }}>
+            <button style=${S.ghost} onClick=${clearColumnFilters}>Wyczysc filtry kolumn</button>
+          </div>
           <${Message} msg=${msg} />
-          <div style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", marginBottom: "14px" }}>
+          <div style=${{ background: "#fff", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", marginBottom: "14px" }}>
             <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Dodaj transport</h3>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px", fontSize: "12px", fontWeight: 900 }}>
               <span style=${{ background: warehousePalette("magazyn").color, color: warehousePalette("magazyn").text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>zielony - magazyn</span>
@@ -3413,13 +3578,25 @@
                     <th key=${label} style=${{ padding: "8px 7px", border: "1px solid " + COLORS.border, textAlign: "center", fontWeight: 900, whiteSpace: "nowrap" }}>${label}</th>
                   `)}
                 </tr>
+                <tr style=${{ background: "#fff" }}>
+                  <th style=${{ padding: "5px", border: "1px solid " + COLORS.border }}></th>
+                  ${transportColumnDefs.map(def => html`
+                    <th key=${def[0]} style=${{ padding: "5px", border: "1px solid " + COLORS.border }}>
+                      <select title=${"Filtr: " + def[1]} style=${{ ...S.input, minHeight: "28px", padding: "4px 6px", fontSize: "11px" }} value=${columnFilters[def[0]] || ""} onChange=${e => setColumnFilters({ ...columnFilters, [def[0]]: e.target.value })}>
+                        <option value="">Wszystkie</option>
+                        ${(columnOptions[def[0]] || []).map(value => html`<option key=${value} value=${value}>${value}</option>`)}
+                      </select>
+                    </th>
+                  `)}
+                  <th style=${{ padding: "5px", border: "1px solid " + COLORS.border }}></th>
+                </tr>
               </thead>
               <tbody>
-                ${transportRows.map((row, index) => {
+                ${filteredTransportRows.map((row, index) => {
                   const alert = transportAlert(row.loadDate);
                   const saving = savingKey === row.key;
                   return html`
-                    <tr key=${row.key} style=${{ background: "#b7d7a8", color: "#111827", fontWeight: 800 }}>
+                    <tr key=${row.key} style=${{ background: "#fff", color: "#111827", fontWeight: 800 }}>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${index + 1}</td>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.project}</td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "130px" }}>
@@ -3487,7 +3664,7 @@
                     </tr>
                   `;
                 })}
-                ${transportRows.length ? null : html`
+                ${filteredTransportRows.length ? null : html`
                   <tr>
                     <td colSpan="15" style=${{ padding: "22px", textAlign: "center", color: COLORS.dim, border: "1px solid " + COLORS.border }}>Brak transportow dla wybranych filtrow.</td>
                   </tr>
@@ -3499,7 +3676,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, bathroomComments, bathroomChecks, serverProjects, stagePermissions, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadStagePermissions, reloadTransportDates, reloadReports, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, bathroomComments, bathroomChecks, serverProjects, stagePermissions, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadStagePermissions, reloadTransportDates, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -3528,7 +3705,7 @@
 
       const remove = async id => {
         if (!confirm("Usunac raport?")) return;
-        try { await api.deleteReport(token, id); await reloadReports(); }
+        try { await api.deleteReport(token, id); await reloadReports(); await reloadMaterialUsages(); }
         catch (e) { setMsg({ type: "error", text: e.message }); }
       };
       const addUser = async () => {
@@ -3621,7 +3798,7 @@
         if (next.has(normalized)) next.delete(normalized); else next.add(normalized);
         setStageWorkers([...next]);
       };
-      const mainStyle = tab === "transport"
+      const mainStyle = tab === "transport" || tab === "maps"
         ? { ...S.main, width: "100%", maxWidth: "none", padding: "16px 18px" }
         : S.main;
 
@@ -3635,11 +3812,13 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
-            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "calculations"] : []), "projects", "maps", "users", "database", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Mapy" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : "Konto"}</button>`)}
+            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "calculations"] : []), "projects", "maps", "users", "database", "sessions", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Szachownice" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : t === "sessions" ? "Historia sesji" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
           ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reloadReports=${reloadReports} />` : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} />
+          ` : tab === "sessions" ? html`
+            <${SessionHistoryTab} token=${token} logout=${logout} />
           ` : tab === "database" ? html`
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
           ` : tab === "projects" ? html`
@@ -3653,7 +3832,7 @@
           ` : tab === "transport" ? html`
             <${TransportTab} reports=${reports} transportDates=${transportDates} token=${token} serverProjects=${serverProjects} reloadTransportDates=${reloadTransportDates} />
           ` : tab === "calculations" ? html`
-            <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} />
+            <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} reloadMaterialUsages=${reloadMaterialUsages} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Dodaj uzytkownika</h2>
@@ -3783,7 +3962,7 @@
         try {
           const payload = JSON.parse(atob(t.split(".")[1]));
           if (payload.exp && payload.exp * 1000 < Date.now()) return null;
-          return { code: payload.code, login: payload.code, name: payload.name, role: payload.role };
+          return { code: payload.code, login: payload.code, name: payload.name, role: payload.role, mustChangePassword: !!payload.mustChangePassword };
         } catch (_) {
           return null;
         }
@@ -3885,8 +4064,17 @@
             </div>
             ${user ? html`<div style=${{ color: COLORS.muted, fontSize: "14px" }}>${user.role || "worker"} / ${user.code || user.login}</div>` : null}
           </header>
-          ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadStagePermissions=${() => reloadStagePermissions()} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+          ${!user ? html`<${LoginScreen} onLogin=${onLogin} />` : user.mustChangePassword ? html`
+            <main style=${{ ...S.main, maxWidth: "760px" }}>
+              <section style=${S.card}>
+                <h2 style=${S.title}>Wymagana zmiana hasla</h2>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Po pierwszym logowaniu albo resecie hasla trzeba ustawic swoje nowe haslo.</div>
+                <${ChangePasswordBox} token=${token} forced=${true} onChanged=${() => setUser({ ...user, mustChangePassword: false })} />
+                <button style=${{ ...S.ghost, marginTop: "14px" }} onClick=${logout}>Wyloguj</button>
+              </section>
+            </main>
+          ` : isManagerLike(user) ?
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadStagePermissions=${() => reloadStagePermissions()} reloadTransportDates=${() => reloadTransportDates()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
             html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;

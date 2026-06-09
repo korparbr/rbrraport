@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const cron = require('node-cron');
 const path = require('path');
 const { Pool } = require('pg');
@@ -114,10 +115,17 @@ function normalizeMapCell(hallId, raw) {
   const col = Number(raw.col);
   const project = String(raw.project || '').replace(/\D/g, '');
   const product = Number(String(raw.product || '').replace(/\D/g, ''));
+  const placedDate = String(raw.placedDate || raw.placed_date || raw.date || '').trim();
   if (!hall.rows.includes(row)) return null;
   if (!Number.isInteger(col) || col < 1 || col > hall.cols) return null;
   if (!project || !Number.isInteger(product) || product < 1) return null;
-  return { row, col, project, product };
+  return {
+    row,
+    col,
+    project,
+    product,
+    placedDate: /^\d{4}-\d{2}-\d{2}$/.test(placedDate) ? placedDate : ''
+  };
 }
 
 function normalizeMapLayouts(rawLayouts) {
@@ -174,6 +182,24 @@ async function ensureUsersBlockColumn() {
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS lock_until TIMESTAMPTZ");
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ");
   await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_failed_login_at TIMESTAMPTZ");
+  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0");
+}
+
+async function ensureUserSessionsTable() {
+  await ensureUsersBlockColumn();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_code TEXT NOT NULL REFERENCES users(code) ON DELETE CASCADE,
+      token_version INTEGER NOT NULL DEFAULT 0,
+      ip TEXT,
+      user_agent TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      revoked_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_user_sessions_user_code ON user_sessions(user_code)");
 }
 
 async function ensureAuditLogsTable() {
@@ -348,11 +374,41 @@ async function ensureBathroomChecksTable() {
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
-function auth(req, res, next) {
+function authOld(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Brak tokenu' });
   try { req.user = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }); next(); }
   catch { res.status(401).json({ error: 'Nieprawidłowy token' }); }
+}
+async function auth(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Brak tokenu' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
+    await ensureUserSessionsTable();
+    if (!payload.jti) {
+      const legacy = await pool.query('SELECT token_version, is_blocked FROM users WHERE code=$1', [payload.code]);
+      if (!legacy.rows.length || legacy.rows[0].is_blocked || Number(legacy.rows[0].token_version) !== Number(payload.tokenVersion || 0)) {
+        return res.status(401).json({ error: 'Sesja wygasla. Zaloguj sie ponownie.' });
+      }
+      req.user = payload;
+      return next();
+    }
+    const r = await pool.query(
+      `SELECT s.id, s.revoked_at, u.token_version, u.is_blocked
+       FROM user_sessions s JOIN users u ON u.code=s.user_code
+       WHERE s.id=$1 AND s.user_code=$2`,
+      [payload.jti, payload.code]
+    );
+    if (!r.rows.length || r.rows[0].revoked_at || r.rows[0].is_blocked || Number(r.rows[0].token_version) !== Number(payload.tokenVersion || 0)) {
+      return res.status(401).json({ error: 'Sesja wygasla. Zaloguj sie ponownie.' });
+    }
+    await pool.query('UPDATE user_sessions SET last_seen_at=NOW() WHERE id=$1', [payload.jti]);
+    req.user = payload;
+    next();
+  } catch (_) {
+    res.status(401).json({ error: 'Nieprawidlowy token' });
+  }
 }
 function managerOnly(req, res, next) {
   const role = req.user.role;
@@ -420,8 +476,16 @@ app.post('/api/login', async (req, res) => {
       await auditLog(req, 'login_failed', user.code, { reason: 'bad_password', failedCount, locked: !!lockUntil });
       return res.status(lockUntil ? 423 : 401).json({ error: lockUntil ? 'Za duzo blednych prob. Konto chwilowo zablokowane.' : 'Nieprawidlowe haslo' });
     }
+    await ensureUserSessionsTable();
     await pool.query('UPDATE users SET failed_login_count=0, lock_until=NULL, last_login_at=NOW() WHERE code=$1', [user.code]);
-    const token = jwt.sign({ code: user.code, name: user.name, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
+    const freshUser = await pool.query('SELECT token_version FROM users WHERE code=$1', [user.code]);
+    const tokenVersion = Number((freshUser.rows[0] && freshUser.rows[0].token_version) || 0);
+    const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+    const token = jwt.sign({ code: user.code, name: user.name, role: user.role, mustChangePassword: !!user.must_change_password, jti: sessionId, tokenVersion }, JWT_SECRET, { expiresIn: '12h' });
+    await pool.query(
+      'INSERT INTO user_sessions (id, user_code, token_version, ip, user_agent) VALUES ($1,$2,$3,$4,$5)',
+      [sessionId, user.code, tokenVersion, req.ip || req.socket.remoteAddress || '', String(req.headers['user-agent'] || '').slice(0, 500)]
+    );
     await auditLog(req, 'login_success', user.code);
     res.json({ token, user: { code: user.code, name: user.name, role: user.role, mustChangePassword: user.must_change_password } });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Blad serwera' }); }
@@ -445,6 +509,36 @@ app.post('/api/change-password', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Blad serwera' }); }
 });
 // ─── USERS ────────────────────────────────────────────────────────────────────
+app.get('/api/sessions', auth, async (req, res) => {
+  try {
+    await ensureUserSessionsTable();
+    const r = await pool.query(
+      `SELECT id, ip, user_agent AS "userAgent", created_at AS "createdAt", last_seen_at AS "lastSeenAt", revoked_at AS "revokedAt",
+              CASE WHEN id=$2 THEN TRUE ELSE FALSE END AS "current"
+       FROM user_sessions
+       WHERE user_code=$1
+       ORDER BY last_seen_at DESC
+       LIMIT 50`,
+      [req.user.code, req.user.jti]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu sesji' });
+  }
+});
+
+app.post('/api/sessions/logout-all', auth, async (req, res) => {
+  try {
+    await ensureUserSessionsTable();
+    await pool.query('UPDATE users SET token_version=token_version+1 WHERE code=$1', [req.user.code]);
+    await pool.query('UPDATE user_sessions SET revoked_at=NOW() WHERE user_code=$1 AND revoked_at IS NULL', [req.user.code]);
+    await auditLog(req, 'sessions_logout_all', req.user.code);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad wylogowania sesji' });
+  }
+});
+
 app.get('/api/users', auth, managerOnly, async (req, res) => {
   try {
     await ensureUsersBlockColumn();
@@ -777,6 +871,18 @@ app.post('/api/material-usages', auth, async (req, res) => {
   }
 });
 
+app.delete('/api/material-usages/:id', auth, managerOnly, async (req, res) => {
+  try {
+    await ensureMaterialUsagesTable();
+    const r = await pool.query('DELETE FROM material_usages WHERE id=$1 RETURNING id, project, product, stage, type_key', [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Nie znaleziono kalkulacji' });
+    await auditLog(req, 'material_usage_deleted', String(req.params.id), r.rows[0]);
+    res.json({ success: true, deleted: r.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad usuwania kalkulacji' });
+  }
+});
+
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
 app.get('/api/reports', auth, async (req, res) => {
   try {
@@ -884,9 +990,35 @@ app.delete('/api/report-lines/:id', auth, async (req, res) => {
 
 
 app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
-  await pool.query('DELETE FROM reports WHERE id=$1', [req.params.id]);
-  await auditLog(req, 'report_deleted', String(req.params.id));
-  res.json({ success: true });
+  const client = await pool.connect();
+  try {
+    await ensureMaterialUsagesTable();
+    await client.query('BEGIN');
+    const report = await client.query('SELECT id, worker_code, report_date::text AS report_date FROM reports WHERE id=$1', [req.params.id]);
+    if (!report.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Nie znaleziono raportu' });
+    }
+    const lines = await client.query('SELECT project, product, stage FROM report_lines WHERE report_id=$1', [req.params.id]);
+    let deletedCalculations = 0;
+    for (const line of lines.rows) {
+      const del = await client.query(
+        `DELETE FROM material_usages
+         WHERE project=$1 AND product=$2 AND stage=$3 AND worker_code=$4 AND report_date=$5`,
+        [line.project, line.product, line.stage, report.rows[0].worker_code, report.rows[0].report_date]
+      );
+      deletedCalculations += del.rowCount || 0;
+    }
+    await client.query('DELETE FROM reports WHERE id=$1', [req.params.id]);
+    await client.query('COMMIT');
+    await auditLog(req, 'report_deleted', String(req.params.id), { deletedCalculations });
+    res.json({ success: true, deletedCalculations });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message || 'Blad usuwania raportu' });
+  } finally {
+    client.release();
+  }
 });
 
 // Manager adds report on behalf of a worker
