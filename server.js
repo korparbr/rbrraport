@@ -1,4 +1,4 @@
-// RaportRBR v1.6 - Backend
+// RaportRBR v1.7 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -169,6 +169,19 @@ function normalizeMapDates(rawDates) {
   return result;
 }
 
+function normalizeMapWidths(rawWidths, layouts = {}) {
+  const result = {};
+  for (const hallId of Object.keys(MAP_HALLS)) {
+    const hall = MAP_HALLS[hallId];
+    const cells = Array.isArray(layouts?.[hallId]) ? layouts[hallId] : [];
+    const maxOccupied = cells.reduce((max, cell) => Math.max(max, Number(cell.col || 0)), 0);
+    const raw = Number(rawWidths?.[hallId]);
+    const desired = Number.isInteger(raw) && raw > 0 ? raw : hall.cols;
+    result[hallId] = Math.min(hall.cols, Math.max(maxOccupied || 1, desired));
+  }
+  return result;
+}
+
 async function ensureMapLayoutsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS map_layouts (
@@ -176,14 +189,16 @@ async function ensureMapLayoutsTable() {
       layouts JSONB NOT NULL DEFAULT '{}'::jsonb,
       photos JSONB NOT NULL DEFAULT '{}'::jsonb,
       map_dates JSONB NOT NULL DEFAULT '{}'::jsonb,
+      map_widths JSONB NOT NULL DEFAULT '{}'::jsonb,
       updated_by TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
   await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS photos JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS map_dates JSONB NOT NULL DEFAULT '{}'::jsonb");
+  await pool.query("ALTER TABLE map_layouts ADD COLUMN IF NOT EXISTS map_widths JSONB NOT NULL DEFAULT '{}'::jsonb");
   await pool.query(
-    "INSERT INTO map_layouts (id, layouts, photos, map_dates) VALUES ('main', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb) ON CONFLICT (id) DO NOTHING"
+    "INSERT INTO map_layouts (id, layouts, photos, map_dates, map_widths) VALUES ('main', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb) ON CONFLICT (id) DO NOTHING"
   );
 }
 
@@ -1335,11 +1350,13 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
 app.get('/api/maps-layouts', auth, async (req, res) => {
   try {
     await ensureMapLayoutsTable();
-    const r = await pool.query("SELECT layouts, photos, map_dates FROM map_layouts WHERE id='main'");
+    const r = await pool.query("SELECT layouts, photos, map_dates, map_widths FROM map_layouts WHERE id='main'");
+    const layouts = normalizeMapLayouts(r.rows[0]?.layouts || {});
     res.json({
-      layouts: normalizeMapLayouts(r.rows[0]?.layouts || {}),
+      layouts,
       photos: normalizeMapPhotos(r.rows[0]?.photos || {}),
-      mapDates: normalizeMapDates(r.rows[0]?.map_dates || {})
+      mapDates: normalizeMapDates(r.rows[0]?.map_dates || {}),
+      mapWidths: normalizeMapWidths(r.rows[0]?.map_widths || {}, layouts)
     });
   } catch (err) {
     console.error('Maps layouts GET error:', err);
@@ -1352,14 +1369,15 @@ app.put('/api/maps-layouts', auth, canManageMaps, async (req, res) => {
     await ensureMapLayoutsTable();
     const layouts = normalizeMapLayouts(req.body?.layouts || {});
     const mapDates = normalizeMapDates(req.body?.mapDates || {});
+    const mapWidths = normalizeMapWidths(req.body?.mapWidths || {}, layouts);
     await pool.query(
-      `INSERT INTO map_layouts (id, layouts, map_dates, updated_by, updated_at)
-       VALUES ('main', $1::jsonb, $2::jsonb, $3, NOW())
-       ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, map_dates=EXCLUDED.map_dates, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
-      [JSON.stringify(layouts), JSON.stringify(mapDates), req.user.code]
+      `INSERT INTO map_layouts (id, layouts, map_dates, map_widths, updated_by, updated_at)
+       VALUES ('main', $1::jsonb, $2::jsonb, $3::jsonb, $4, NOW())
+       ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, map_dates=EXCLUDED.map_dates, map_widths=EXCLUDED.map_widths, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [JSON.stringify(layouts), JSON.stringify(mapDates), JSON.stringify(mapWidths), req.user.code]
     );
     await auditLog(req, 'maps_layout_changed', 'main');
-    res.json({ success: true, layouts, mapDates });
+    res.json({ success: true, layouts, mapDates, mapWidths });
   } catch (err) {
     console.error('Maps layouts PUT error:', err);
     res.status(500).json({ error: err.message || 'Błąd zapisu map' });
@@ -1817,7 +1835,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.6 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.7 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -1868,7 +1886,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     ]);
 
     const backup = {
-      version: '1.6',
+      version: '1.7',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -2076,10 +2094,13 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       await ensureMapLayoutsTable();
       for (const m of data.map_layouts) {
         await client.query(
-          `INSERT INTO map_layouts (id, layouts, photos, map_dates, updated_by, updated_at)
-           VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5,COALESCE($6,NOW()))
-           ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, photos=EXCLUDED.photos, map_dates=EXCLUDED.map_dates, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
-          [m.id || 'main', JSON.stringify(normalizeMapLayouts(m.layouts || {})), JSON.stringify(normalizeMapPhotos(m.photos || {})), JSON.stringify(normalizeMapDates(m.map_dates || m.mapDates || {})), m.updated_by || req.user.code, m.updated_at || null]
+          `INSERT INTO map_layouts (id, layouts, photos, map_dates, map_widths, updated_by, updated_at)
+           VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb,$6,COALESCE($7,NOW()))
+           ON CONFLICT (id) DO UPDATE SET layouts=EXCLUDED.layouts, photos=EXCLUDED.photos, map_dates=EXCLUDED.map_dates, map_widths=EXCLUDED.map_widths, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          (() => {
+            const layouts = normalizeMapLayouts(m.layouts || {});
+            return [m.id || 'main', JSON.stringify(layouts), JSON.stringify(normalizeMapPhotos(m.photos || {})), JSON.stringify(normalizeMapDates(m.map_dates || m.mapDates || {})), JSON.stringify(normalizeMapWidths(m.map_widths || m.mapWidths || {}, layouts)), m.updated_by || req.user.code, m.updated_at || null];
+          })()
         );
         mapsRestored++;
       }
@@ -2214,7 +2235,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.6',
+      version: '1.7',
       time: new Date(),
       db: {
         connected: true,
@@ -2250,4 +2271,4 @@ app.use((err, req, res, next) => {
   res.status(err.message && err.message.includes('CORS') ? 403 : 500).json({ error: err.message || 'Blad serwera' });
 });
 
-app.listen(PORT, () => console.log(`RaportRBR v1.6 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`RaportRBR v1.7 running on port ${PORT}`));

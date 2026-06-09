@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.6</title>
+  <title>FlowRBR 1.7</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -95,7 +95,7 @@
       getBathroomChecks: token => apiRequest("GET", "/api/bathroom-checks", null, token),
       setBathroomCheck: (token, project, product, checkType, checked, status, comment) => apiRequest("PUT", "/api/bathroom-checks", { project, product, checkType, checked, status, comment }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
-      saveMapLayouts: (token, layouts, mapDates) => apiRequest("PUT", "/api/maps-layouts", { layouts, mapDates }, token),
+      saveMapLayouts: (token, layouts, mapDates, mapWidths) => apiRequest("PUT", "/api/maps-layouts", { layouts, mapDates, mapWidths }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
       importMapPhoto: (token, hall, file) => {
         const form = new FormData();
@@ -435,7 +435,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.6</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.7</span>` : null}
         </div>
       `;
     }
@@ -1798,6 +1798,7 @@
     function MapsTab({ reports, token, canEditMaps, canAddComments, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, reloadBathroomComments, reloadBathroomChecks }) {
       const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
+      const WIDTH_KEY = "flowrbr_maps_widths_1_7";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
       const [mapFilterProject, setMapFilterProject] = useState("all");
@@ -1805,6 +1806,9 @@
       const [mapFilterAlerts, setMapFilterAlerts] = useState(false);
       const [manual, setManual] = useState({ row: "F", col: "1", project: "", product: "", placedDate: today() });
       const [mapDates, setMapDates] = useState({});
+      const [mapWidths, setMapWidths] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || "{}"); } catch (_) { return {}; }
+      });
       const [dragCell, setDragCell] = useState(null);
       const [selectedCell, setSelectedCell] = useState(null);
       const [aiDetected, setAiDetected] = useState([]);
@@ -1847,12 +1851,12 @@
       const loadDateByBathroom = useMemo(() => transportMap((transportDates || []).filter(item => !item.extra)), [transportDates]);
       const projectCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
       const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
-      const saveLayouts = (next, nextDates = mapDates) => {
+      const saveLayouts = (next, nextDates = mapDates, nextWidths = mapWidths) => {
         if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik moze ogladac szachownice i generowac PDF, ale nie moze ich modyfikowac." });
         setLayouts(next);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
         if (token && canEditMaps) {
-          api.saveMapLayouts(token, next, nextDates)
+          api.saveMapLayouts(token, next, nextDates, nextWidths)
             .then(() => setServerAvailable(true))
             .catch(() => {
               setServerAvailable(false);
@@ -1893,6 +1897,11 @@
             }
             if (data && data.mapDates && typeof data.mapDates === "object" && !Array.isArray(data.mapDates)) {
               setMapDates(data.mapDates);
+              setServerAvailable(true);
+            }
+            if (data && data.mapWidths && typeof data.mapWidths === "object" && !Array.isArray(data.mapWidths)) {
+              setMapWidths(data.mapWidths);
+              localStorage.setItem(WIDTH_KEY, JSON.stringify(data.mapWidths));
               setServerAvailable(true);
             }
           })
@@ -1951,17 +1960,33 @@
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
         return map;
       }, [currentLayout]);
-      const occupiedMapCols = useMemo(() => {
+      const maxOccupiedMapCol = useMemo(() => {
         if (selectedHall.future) return 0;
-        const maxUsed = currentLayout.reduce((max, cell) => Math.max(max, Number(cell.col || 0)), 0);
-        return Math.min(selectedHall.cols, Math.max(3, maxUsed || 0));
+        return currentLayout.reduce((max, cell) => Math.max(max, Number(cell.col || 0)), 0);
       }, [currentLayout, selectedHall.cols, selectedHall.future]);
       const visibleMapCols = useMemo(() => {
         if (selectedHall.future) return 0;
-        const manualCol = edit ? Number(manual.col || 0) : 0;
-        const target = edit ? Math.max(occupiedMapCols, manualCol, currentLayout.length ? occupiedMapCols + 1 : 3) : occupiedMapCols;
-        return Math.min(selectedHall.cols, target || Math.min(3, selectedHall.cols));
-      }, [currentLayout.length, edit, manual.col, occupiedMapCols, selectedHall.cols, selectedHall.future]);
+        const saved = Number(mapWidths[hall]);
+        const desired = Number.isInteger(saved) && saved > 0 ? saved : selectedHall.cols;
+        return Math.min(selectedHall.cols, Math.max(maxOccupiedMapCol || 1, desired));
+      }, [hall, mapWidths, maxOccupiedMapCol, selectedHall.cols, selectedHall.future]);
+      const saveMapWidth = value => {
+        if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik nie moze modyfikowac szachownicy." });
+        if (selectedHall.future) return;
+        const width = Number(value);
+        const minWidth = Math.max(1, maxOccupiedMapCol || 0);
+        if (!Number.isInteger(width) || width < 1 || width > selectedHall.cols) {
+          return setMsg({ type: "error", text: "Wybierz szerokosc od 1 do " + selectedHall.cols + "." });
+        }
+        if (width < minWidth) {
+          return setMsg({ type: "error", text: "Nie mozna skrocic do kolumny " + width + ", bo lazienka stoi w kolumnie " + minWidth + "." });
+        }
+        const nextWidths = { ...mapWidths, [hall]: width };
+        setMapWidths(nextWidths);
+        localStorage.setItem(WIDTH_KEY, JSON.stringify(nextWidths));
+        saveLayouts(layouts, mapDates, nextWidths);
+        setMsg({ type: "success", text: "Szerokosc szachownicy zapisana: kolumny 1-" + width + "." });
+      };
       const selectedMapCell = useMemo(() => {
         if (!selectedCell) return null;
         return currentLayout.find(cell => sameProject(cell.project, selectedCell.project) && productNo(cell.product) === productNo(selectedCell.product)) || selectedCell;
@@ -2224,7 +2249,7 @@
 
           const rowHeader = 8;
           const gap = 1;
-          const pdfMapCols = Math.max(1, occupiedMapCols || Math.min(3, selectedHall.cols));
+          const pdfMapCols = Math.max(1, visibleMapCols || selectedHall.cols);
           const availableW = pageW - margin * 2 - rowHeader - (pdfMapCols - 1) * gap;
           const availableH = pageH - y - margin - (selectedHall.rows.length - 1) * gap;
           const cellW = Math.min(selectedHall.rows.length <= 2 ? 30 : 24, availableW / pdfMapCols);
@@ -2338,7 +2363,7 @@
         const row = manual.row;
         const col = Number(manual.col);
         if (!selectedHall.rows.includes(row)) return setMsg({ type: "error", text: "Wybierz poprawny wiersz." });
-        if (!col || col < 1 || col > selectedHall.cols) return setMsg({ type: "error", text: "Wybierz poprawna kolumne." });
+        if (!col || col < 1 || col > visibleMapCols) return setMsg({ type: "error", text: "Wybierz kolumne widoczna na szachownicy. Rozszerz szachownice, jesli chcesz dodac dalsza kolumne." });
         if (!manual.project.trim()) return setMsg({ type: "error", text: "Wpisz projekt." });
         if (!Number(manual.product)) return setMsg({ type: "error", text: "Wpisz numer lazienki." });
         const placedDate = /^\d{4}-\d{2}-\d{2}$/.test(manual.placedDate || "") ? manual.placedDate : today();
@@ -2595,11 +2620,24 @@
           <section style=${S.card}>
             <h3 style=${{ ...S.title, fontSize: "18px" }}>Modyfikuj uklad</h3>
             <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "10px" }}>Kliknij kafelke, aby edytowac. Przytrzymaj zajeta kafelke i pusc na wolnym polu, aby przeniesc lazienke.</div>
+            <div style=${{ display: "grid", gridTemplateColumns: "1fr auto", gap: "10px", alignItems: "center", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px", marginBottom: "12px", background: "#f8fafc" }}>
+              <div>
+                <div style=${{ fontWeight: 900 }}>Szerokosc szachownicy od lewej</div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "2px" }}>
+                  Widoczne kolumny 1-${visibleMapCols}. Nie mozna skrocic za kolumne ${Math.max(1, maxOccupiedMapCol || 0)}, jesli stoi tam lazienka.
+                </div>
+              </div>
+              <div style=${{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <button style=${visibleMapCols <= Math.max(1, maxOccupiedMapCol || 0) ? S.ghost : S.btn} disabled=${visibleMapCols <= Math.max(1, maxOccupiedMapCol || 0)} onClick=${() => saveMapWidth(visibleMapCols - 1)}>-</button>
+                <input style=${{ ...S.input, width: "96px", textAlign: "center", fontWeight: 900 }} type="number" min=${Math.max(1, maxOccupiedMapCol || 0)} max=${selectedHall.cols} value=${visibleMapCols} onInput=${e => saveMapWidth(Number(e.target.value))} />
+                <button style=${visibleMapCols >= selectedHall.cols ? S.ghost : S.btn} disabled=${visibleMapCols >= selectedHall.cols} onClick=${() => saveMapWidth(visibleMapCols + 1)}>+</button>
+              </div>
+            </div>
             <div className="grid-3" style=${S.row3}>
               <select style=${S.input} value=${manual.row} onChange=${e => setManual({ ...manual, row: e.target.value })}>
                 ${selectedHall.rows.map(row => html`<option key=${row} value=${row}>Wiersz ${row}</option>`)}
               </select>
-              <input style=${S.input} type="number" min="1" max=${selectedHall.cols} placeholder="Kolumna" value=${manual.col} onInput=${e => setManual({ ...manual, col: e.target.value })} />
+              <input style=${S.input} type="number" min="1" max=${visibleMapCols} placeholder="Kolumna" value=${manual.col} onInput=${e => setManual({ ...manual, col: e.target.value })} />
               <select style=${S.input} value=${manual.project} onChange=${e => setManual({ ...manual, project: e.target.value, product: "" })}>
                 <option value="">- wybierz projekt -</option>
                 ${mapProjectOptions.map(project => html`<option key=${project} value=${project}>${project} (${projectCounts[project] || "?"})</option>`)}
