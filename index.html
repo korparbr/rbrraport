@@ -1951,13 +1951,17 @@
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
         return map;
       }, [currentLayout]);
-      const visibleMapCols = useMemo(() => {
+      const occupiedMapCols = useMemo(() => {
         if (selectedHall.future) return 0;
         const maxUsed = currentLayout.reduce((max, cell) => Math.max(max, Number(cell.col || 0)), 0);
+        return Math.min(selectedHall.cols, Math.max(3, maxUsed || 0));
+      }, [currentLayout, selectedHall.cols, selectedHall.future]);
+      const visibleMapCols = useMemo(() => {
+        if (selectedHall.future) return 0;
         const manualCol = edit ? Number(manual.col || 0) : 0;
-        const target = Math.max(3, maxUsed, manualCol, edit && maxUsed ? maxUsed + 1 : 0);
+        const target = edit ? Math.max(occupiedMapCols, manualCol, currentLayout.length ? occupiedMapCols + 1 : 3) : occupiedMapCols;
         return Math.min(selectedHall.cols, target || Math.min(3, selectedHall.cols));
-      }, [currentLayout, edit, manual.col, selectedHall.cols, selectedHall.future]);
+      }, [currentLayout.length, edit, manual.col, occupiedMapCols, selectedHall.cols, selectedHall.future]);
       const selectedMapCell = useMemo(() => {
         if (!selectedCell) return null;
         return currentLayout.find(cell => sameProject(cell.project, selectedCell.project) && productNo(cell.product) === productNo(selectedCell.product)) || selectedCell;
@@ -2214,19 +2218,21 @@
           doc.setFillColor(34, 197, 94); doc.circle(lx + 2, y - 1.5, 2, "F"); doc.text("komentarz zrobiony", lx + 6, y); lx += 43;
           doc.setDrawColor(249, 115, 22); doc.rect(lx, y - 4, 4, 4, "S"); doc.text("kontrola", lx + 6, y); lx += 28;
           doc.setDrawColor(22, 163, 74); doc.setFillColor(220, 252, 231); doc.rect(lx, y - 4, 4, 4, "FD"); doc.text(String.fromCharCode(10003), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("sprawdzona", lx + 6, y); lx += 33;
-          doc.setDrawColor(220, 38, 38); doc.setFillColor(254, 226, 226); doc.rect(lx, y - 4, 4, 4, "FD"); doc.setTextColor(153, 27, 27); doc.text(String.fromCharCode(10005), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("poprawka", lx + 6, y);
+          doc.setDrawColor(220, 38, 38); doc.setFillColor(254, 226, 226); doc.rect(lx, y - 4, 4, 4, "FD"); doc.setTextColor(153, 27, 27); doc.text(String.fromCharCode(10005), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("poprawka", lx + 6, y); lx += 31;
+          doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.circle(lx + 2, y - 2, 2.3, "FD"); doc.setTextColor(51, 65, 85); doc.setFont("helvetica", "bold"); doc.text("K", lx + 0.8, y - 0.5); doc.setFont("helvetica", "normal"); doc.setTextColor(20, 30, 45); doc.text("kask", lx + 6, y);
           y += 6;
 
           const rowHeader = 8;
           const gap = 1;
-          const availableW = pageW - margin * 2 - rowHeader - (selectedHall.cols - 1) * gap;
+          const pdfMapCols = Math.max(1, occupiedMapCols || Math.min(3, selectedHall.cols));
+          const availableW = pageW - margin * 2 - rowHeader - (pdfMapCols - 1) * gap;
           const availableH = pageH - y - margin - (selectedHall.rows.length - 1) * gap;
-          const cellW = Math.min(12.2, availableW / selectedHall.cols);
-          const cellH = Math.min(selectedHall.rows.length <= 2 ? 28 : 21, availableH / Math.max(1, selectedHall.rows.length));
-          const infoFont = selectedHall.rows.length <= 2 ? 7.2 : 6.8;
-          const stageFont = selectedHall.rows.length <= 2 ? 5.8 : 5.4;
-          const colorH = Math.max(14, cellH * 0.72);
-          const gridW = rowHeader + selectedHall.cols * cellW + (selectedHall.cols - 1) * gap;
+          const cellW = Math.min(selectedHall.rows.length <= 2 ? 30 : 24, availableW / pdfMapCols);
+          const cellH = Math.min(selectedHall.rows.length <= 2 ? 32 : 23, availableH / Math.max(1, selectedHall.rows.length));
+          const infoFont = selectedHall.rows.length <= 2 ? 8.2 : 7.2;
+          const stageFont = selectedHall.rows.length <= 2 ? 6.5 : 5.8;
+          const colorH = Math.max(14, cellH * 0.68);
+          const gridW = rowHeader + pdfMapCols * cellW + (pdfMapCols - 1) * gap;
           const startX = Math.max(margin, (pageW - gridW) / 2);
           doc.setFontSize(7);
           doc.setTextColor(65, 75, 90);
@@ -2234,7 +2240,7 @@
             const cy = y + rowIndex * (cellH + gap);
             doc.setFont("helvetica", "bold");
             doc.text(row, startX + 2, cy + cellH / 2);
-            for (let col = 1; col <= selectedHall.cols; col++) {
+            for (let col = 1; col <= pdfMapCols; col++) {
               const cell = layoutByCell[row + "-" + col];
               const st = styleForCell(cell);
               const bg = hexToRgb(st.background);
@@ -2250,6 +2256,9 @@
                 const tilingCheck = needsTilingCheck ? bathroomChecksByKey[bKey + "#tiling"] : null;
                 const tileCheckStatus = checkStatus(tilingCheck);
                 const tileCheckStyle = checkStatusStyle(tileCheckStatus);
+                const helmetCheck = bathroomChecksByKey[bKey + "#entry"];
+                const helmetStatus = checkStatus(helmetCheck);
+                const helmetStyle = helmetStatusStyle(helmetStatus);
                 doc.setFillColor(bg[0], bg[1], bg[2]);
                 doc.rect(x, cy, cellW, colorH, "F");
                 doc.setFillColor(255, 255, 255);
@@ -2276,7 +2285,19 @@
                 }
                 if (commentStatus) {
                   doc.setFillColor(commentStatus.open ? 239 : 34, commentStatus.open ? 68 : 197, commentStatus.open ? 68 : 94);
-                  doc.circle(x + cellW / 2, cy + cellH - 3, 1.8, "F");
+                  doc.circle(x + cellW - 3.4, cy + cellH - 3.4, 2, "F");
+                }
+                if (helmetCheck || cell) {
+                  const hsBg = hexToRgb(helmetStyle.bg);
+                  const hsBorder = hexToRgb(helmetStyle.border);
+                  const hsText = hexToRgb(helmetStyle.color);
+                  doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
+                  doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
+                  doc.circle(x + cellW / 2, cy + cellH - 3.4, 2.5, "FD");
+                  doc.setTextColor(hsText[0], hsText[1], hsText[2]);
+                  doc.setFont("helvetica", "bold");
+                  doc.setFontSize(5.6);
+                  doc.text("K", x + cellW / 2 - 1.1, cy + cellH - 1.7);
                 }
                 if (needsTilingCheck) {
                   const csBg = hexToRgb(tileCheckStyle.bg);
@@ -2284,12 +2305,12 @@
                   const csText = hexToRgb(tileCheckStyle.color);
                   doc.setDrawColor(csBorder[0], csBorder[1], csBorder[2]);
                   doc.setFillColor(csBg[0], csBg[1], csBg[2]);
-                  doc.rect(x + 1, cy + cellH - 5.2, 4.4, 4.4, "FD");
+                  doc.rect(x + 1.1, cy + cellH - 5.8, 5, 5, "FD");
                   if (tileCheckStyle.mark) {
                     doc.setTextColor(csText[0], csText[1], csText[2]);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(6);
-                    doc.text(tileCheckStyle.mark, x + 1.8, cy + cellH - 1.8);
+                    doc.setFontSize(6.6);
+                    doc.text(tileCheckStyle.mark, x + 2, cy + cellH - 2);
                   }
                 }
               } else if (rowIndex === 0) {
@@ -2647,7 +2668,7 @@
             <div style=${{ color: COLORS.dim, textAlign: "center", padding: "36px" }}>Hala ISO bedzie dodana w przyszlosci.</div>
           ` : html`
             <div style=${{ overflowX: "auto" }}>
-              <div style=${{ display: "grid", gridTemplateColumns: "58px repeat(" + visibleMapCols + ", minmax(72px, 1fr))", gap: "7px", minWidth: (76 + visibleMapCols * 80) + "px" }}>
+              <div style=${{ display: "grid", gridTemplateColumns: "62px repeat(" + visibleMapCols + ", minmax(108px, 1fr))", gap: "8px", minWidth: (84 + visibleMapCols * 116) + "px" }}>
                 <div></div>
                 ${Array.from({ length: visibleMapCols }, (_, i) => i + 1).map(col => html`<div key=${"h" + col} style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "center", fontWeight: 800 }}>${col}</div>`)}
                 ${selectedHall.rows.flatMap(row => [
@@ -2686,7 +2707,7 @@
                         onClick=${() => handleCellClick(row, col, cell)}
                         title=${cell ? st.label + " / projekt " + cell.project + " / lazienka " + cell.product : "Puste pole"}
                         style=${{
-                          minHeight: selectedHall.rows.length <= 2 ? "144px" : "158px",
+                          minHeight: selectedHall.rows.length <= 2 ? "174px" : "190px",
                           border: (isDragging || isSelected || isManualCell ? "2px solid " + (isManualCell ? COLORS.orange : COLORS.accent) : "1px solid " + st.border),
                           borderRadius: "8px",
                           background: "#fff",
@@ -2743,10 +2764,10 @@
                           ${commentStatus ? html`
                             <span title=${commentStatus.open ? "Komentarz do zrobienia" : "Komentarze zrobione"} style=${{
                               position: "absolute",
-                              right: "7px",
-                              bottom: "6px",
-                              width: "20px",
-                              height: "20px",
+                              right: "10px",
+                              bottom: "10px",
+                              width: "24px",
+                              height: "24px",
                               borderRadius: "999px",
                               background: commentStatus.open ? "#ef4444" : "#22c55e",
                               border: "2px solid #fff",
@@ -2757,10 +2778,10 @@
                           ${needsTilingCheck ? html`
                             <span title=${"Kontrola po plytkowaniu: " + checkStatusLabel(tileCheckStatus)} style=${{
                               position: "absolute",
-                              left: "8px",
-                              bottom: "7px",
-                              width: "26px",
-                              height: "26px",
+                              left: "10px",
+                              bottom: "8px",
+                              width: "32px",
+                              height: "32px",
                               borderRadius: "3px",
                               background: tileCheckStyle.bg,
                               border: "2px solid " + tileCheckStyle.border,
@@ -2768,7 +2789,7 @@
                               display: "grid",
                               placeItems: "center",
                               fontWeight: 900,
-                              fontSize: "20px",
+                              fontSize: "24px",
                               lineHeight: 1,
                               boxShadow: "0 0 0 1px rgba(255,255,255,0.9)",
                               zIndex: 2
@@ -2777,10 +2798,10 @@
                           <span title=${helmetStyle.label + (helmetCheck && helmetCheck.comment ? ": " + helmetCheck.comment : "")} style=${{
                             position: "absolute",
                             left: "50%",
-                            bottom: "7px",
+                            bottom: "8px",
                             transform: "translateX(-50%)",
-                            width: "26px",
-                            height: "26px",
+                            width: "32px",
+                            height: "32px",
                             borderRadius: "999px",
                             background: helmetStyle.bg,
                             border: "2px solid " + helmetStyle.border,
@@ -2788,7 +2809,7 @@
                             display: "grid",
                             placeItems: "center",
                             fontWeight: 900,
-                            fontSize: "18px",
+                            fontSize: "22px",
                             lineHeight: 1,
                             boxShadow: "0 0 0 1px rgba(255,255,255,0.9)",
                             zIndex: 2
@@ -2796,8 +2817,8 @@
                           ${qState.goatActive || qState.missingActive ? html`
                             <span style=${{
                               position: "absolute",
-                              right: "5px",
-                              bottom: "36px",
+                              right: "8px",
+                              bottom: "44px",
                               display: "flex",
                               gap: "3px",
                               fontSize: "24px",
@@ -4267,22 +4288,15 @@
         const map = {};
         (transportReplacements || []).forEach(item => {
           if (item.mode !== "podmiana") return;
-          const key = transportKey(item.project, item.toProduct);
+          if (!(item.details && item.details.simpleReplacement)) return;
+          const key = [transportKey(item.project, item.toProduct), item.loadDate || "", item.lkwNumber || ""].join("#");
           if (!map[key]) map[key] = item;
-        });
-        return map;
-      }, [transportReplacements]);
-      const replacementUseCount = useMemo(() => {
-        const map = {};
-        (transportReplacements || []).forEach(item => {
-          if (item.mode !== "podmiana") return;
-          const key = transportKey(item.project, item.toProduct);
-          map[key] = (map[key] || 0) + 1;
         });
         return map;
       }, [transportReplacements]);
       const loadedReplacements = useMemo(() => (transportReplacements || []).filter(item => {
         if (item.mode !== "podmiana") return false;
+        if (!(item.details && item.details.simpleReplacement)) return false;
         return loadedBathroomSet.has(transportKey(item.project, item.toProduct)) || loadedBathroomSet.has(transportKey(item.project, item.fromProduct));
       }), [transportReplacements, loadedBathroomSet]);
       const replacementProjects = useMemo(() => [...new Set(loadedReplacements.map(item => String(item.project || "")).filter(Boolean))]
@@ -4916,7 +4930,7 @@
                           ${row.items.map(item => {
                             const isWarehouse = item.status === "magazyn";
                             const tilePalette = warehousePalette(isWarehouse ? "magazyn" : "produkcja");
-                            const replacement = replacementByTarget[transportKey(row.project, item.product)];
+                            const replacement = replacementByTarget[[transportKey(row.project, item.product), row.loadDate || "", row.lkwNumber || ""].join("#")];
                             const qState = qualityStateFor(qualityData, row.project, item.product);
                             const isReplacement = !!replacement;
                             const tileBg = tilePalette.color;
