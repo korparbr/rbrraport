@@ -417,6 +417,7 @@ async function ensureBathroomChecksTable() {
       check_type TEXT NOT NULL DEFAULT 'tiling',
       checked BOOLEAN NOT NULL DEFAULT FALSE,
       status TEXT NOT NULL DEFAULT 'pending',
+      comment TEXT,
       checked_by TEXT,
       checked_at TIMESTAMPTZ,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -424,6 +425,7 @@ async function ensureBathroomChecksTable() {
     )
   `);
   await pool.query("ALTER TABLE bathroom_checks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'");
+  await pool.query("ALTER TABLE bathroom_checks ADD COLUMN IF NOT EXISTS comment TEXT");
 }
 
 async function ensureQualityTables() {
@@ -1475,7 +1477,7 @@ app.get('/api/bathroom-checks', auth, async (req, res) => {
   try {
     await ensureBathroomChecksTable();
     const r = await pool.query(
-      `SELECT project, product, check_type AS "checkType", checked, status,
+      `SELECT project, product, check_type AS "checkType", checked, status, comment,
               checked_by AS "checkedBy", checked_at AS "checkedAt", updated_at AS "updatedAt"
        FROM bathroom_checks
        ORDER BY updated_at DESC, project, product`
@@ -1493,18 +1495,19 @@ app.put('/api/bathroom-checks', auth, managerOnly, async (req, res) => {
   const requestedStatus = String(req.body.status || '').trim().toLowerCase();
   const status = ['pending', 'checked', 'rework'].includes(requestedStatus) ? requestedStatus : (req.body.checked ? 'checked' : 'pending');
   const checked = status === 'checked';
+  const comment = String(req.body.comment || '').trim().slice(0, 600) || null;
   if (!project || !Number.isInteger(product) || product < 1) return res.status(400).json({ error: 'Brak projektu lub numeru lazienki' });
   try {
     await ensureBathroomChecksTable();
     await pool.query(
-      `INSERT INTO bathroom_checks (project, product, check_type, checked, status, checked_by, checked_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $4 THEN NOW() ELSE NULL END,NOW())
+      `INSERT INTO bathroom_checks (project, product, check_type, checked, status, comment, checked_by, checked_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,CASE WHEN $4 THEN NOW() ELSE NULL END,NOW())
        ON CONFLICT (project, product, check_type)
-       DO UPDATE SET checked=EXCLUDED.checked, status=EXCLUDED.status, checked_by=EXCLUDED.checked_by,
+       DO UPDATE SET checked=EXCLUDED.checked, status=EXCLUDED.status, comment=EXCLUDED.comment, checked_by=EXCLUDED.checked_by,
          checked_at=EXCLUDED.checked_at, updated_at=NOW()`,
-      [project, product, checkType, checked, status, checked ? req.user.code : null]
+      [project, product, checkType, checked, status, comment, checked ? req.user.code : null]
     );
-    res.json({ success: true, project, product, checkType, checked, status });
+    res.json({ success: true, project, product, checkType, checked, status, comment });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad zapisu kontroli' });
   }
@@ -2111,10 +2114,10 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       await ensureBathroomChecksTable();
       for (const c of data.bathroom_checks) {
         await client.query(
-          `INSERT INTO bathroom_checks (project, product, check_type, checked, status, checked_by, checked_at, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,NOW()))
+          `INSERT INTO bathroom_checks (project, product, check_type, checked, status, comment, checked_by, checked_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,COALESCE($9,NOW()))
            ON CONFLICT (project, product, check_type)
-           DO UPDATE SET checked=EXCLUDED.checked, status=EXCLUDED.status, checked_by=EXCLUDED.checked_by,
+           DO UPDATE SET checked=EXCLUDED.checked, status=EXCLUDED.status, comment=EXCLUDED.comment, checked_by=EXCLUDED.checked_by,
              checked_at=EXCLUDED.checked_at, updated_at=EXCLUDED.updated_at`,
           [
             c.project,
@@ -2122,6 +2125,7 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
             c.check_type || c.checkType || 'tiling',
             !!c.checked,
             c.status || (c.checked ? 'checked' : 'pending'),
+            c.comment || null,
             c.checked_by || c.checkedBy || null,
             c.checked_at || c.checkedAt || null,
             c.updated_at || c.updatedAt || null
