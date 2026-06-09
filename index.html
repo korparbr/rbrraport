@@ -74,6 +74,8 @@
       getMaterialUsages: token => apiRequest("GET", "/api/material-usages", null, token),
       addMaterialUsage: (token, payload) => apiRequest("POST", "/api/material-usages", payload, token),
       deleteMaterialUsage: (token, id) => apiRequest("DELETE", "/api/material-usages/" + id, null, token),
+      getQuality: token => apiRequest("GET", "/api/quality", null, token),
+      updateQualityRecord: (token, payload) => apiRequest("PUT", "/api/quality-record", payload, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
@@ -215,6 +217,28 @@
       const map = {};
       (items || []).forEach(item => { map[transportKey(item.project, item.product)] = item; });
       return map;
+    };
+    const qualityIcon = type => type === "goat" ? String.fromCodePoint(128167) : String.fromCodePoint(128230);
+    const qualityRecordMap = data => {
+      const map = {};
+      ((data && data.records) || []).forEach(item => { map[transportKey(item.project, item.product)] = item; });
+      return map;
+    };
+    const openQualityItems = record => {
+      const missing = Array.isArray(record && record.missingItems) ? record.missingItems : [];
+      const resolved = new Set(Array.isArray(record && record.resolvedItems) ? record.resolvedItems : []);
+      return missing.filter(item => !resolved.has(item));
+    };
+    const qualityStateFor = (qualityData, project, product) => {
+      const record = qualityRecordMap(qualityData)[transportKey(project, product)];
+      if (!record) return { goatActive: false, missingActive: false, openMissing: [], record: null };
+      const openMissing = openQualityItems(record);
+      return {
+        goatActive: !!record.goat && !record.goatDone,
+        missingActive: openMissing.length > 0,
+        openMissing,
+        record
+      };
     };
     const projectCountMap = serverProjects => {
       const counts = { ...PROJECTS };
@@ -455,13 +479,16 @@
       `;
     }
 
-    function LineEditor({ reports, lines, onChange, serverProjects, stagePermissions, workerCode, fixedStages }) {
+    function LineEditor({ reports, lines, onChange, serverProjects, stagePermissions, workerCode, fixedStages, qualityData }) {
       const [stages, setStages] = useState([]);
       const [project, setProject] = useState("");
       const [selectedProducts, setSelectedProducts] = useState([]);
       const [hall, setHall] = useState("");
       const [note, setNote] = useState("");
       const [msg, setMsg] = useState(null);
+      const [qualityGoat, setQualityGoat] = useState(false);
+      const [qualityMissing, setQualityMissing] = useState([]);
+      const [qualityNewMissing, setQualityNewMissing] = useState("");
 
       const effectiveStages = fixedStages && fixedStages.length ? fixedStages : stages;
       useEffect(() => {
@@ -479,6 +506,12 @@
       const usedInCurrentReport = useMemo(() => new Set(
         lines.filter(l => sameProject(l.project, project) && effectiveStages.includes(String(l.stage))).map(l => String(l.stage) + "#" + productNo(l.product))
       ), [lines, project, effectiveStages]);
+      const isQualityStage = effectiveStages.includes("18");
+      const projectQualityItems = useMemo(() => ((qualityData && qualityData.items) || [])
+        .filter(item => sameProject(item.project, project))
+        .map(item => item.itemName || item.item_name)
+        .filter(Boolean)
+        .sort((a, b) => String(a).localeCompare(String(b), "pl", { numeric: true })), [qualityData, project]);
       const isUsedProduct = product => effectiveStages.length > 0 && effectiveStages.every(stage => usedInCurrentReport.has(stage + "#" + product));
       const requiresHall = false;
       const toggleStage = id => {
@@ -500,20 +533,31 @@
         const available = products.filter(p => !isUsedProduct(p)).slice(0, count);
         setSelectedProducts(available);
       };
+      const toggleQualityMissing = item => {
+        setQualityMissing(prev => prev.includes(item) ? prev.filter(x => x !== item) : [...prev, item]);
+      };
+      const addQualityMissing = () => {
+        const item = qualityNewMissing.trim();
+        if (!item) return;
+        setQualityMissing(prev => prev.includes(item) ? prev : [...prev, item]);
+        setQualityNewMissing("");
+      };
 
       const add = () => {
         if (!effectiveStages.length) return setMsg({ type: "error", text: "Wybierz co najmniej jeden etap." });
         if (!project) return setMsg({ type: "error", text: "Wybierz projekt." });
         if (!selectedProducts.length) return setMsg({ type: "error", text: "Zaznacz co najmniej jedna lazienke." });
         if (requiresHall && !hall) return setMsg({ type: "error", text: "Dla tego etapu wybierz hale." });
+        if (isQualityStage && !qualityGoat && !qualityMissing.length) return setMsg({ type: "error", text: "Dla kontroli jakosci wybierz Koza albo co najmniej jeden brak." });
+        const quality = isQualityStage ? { goat: qualityGoat, missingItems: qualityMissing } : null;
         const next = selectedProducts
           .sort((a, b) => a - b)
           .flatMap(product => effectiveStages
             .filter(stage => !usedInCurrentReport.has(stage + "#" + product))
-            .map(stage => ({ project, product, stage, note, hall: requiresHall ? hall : undefined })));
+            .map(stage => ({ project, product, stage, note, hall: requiresHall ? hall : undefined, quality: stage === "18" ? quality : undefined })));
         if (!next.length) return setMsg({ type: "warning", text: "Ten etap jest juz zapisany dla wybranych lazienek." });
         onChange([...lines, ...next]);
-        setSelectedProducts([]); setNote(""); setMsg({ type: "success", text: "Dodano " + next.length + " pozycji." });
+        setSelectedProducts([]); setNote(""); setQualityGoat(false); setQualityMissing([]); setQualityNewMissing(""); setMsg({ type: "success", text: "Dodano " + next.length + " pozycji." });
       };
 
       return html`
@@ -610,6 +654,31 @@
               </div>
             </div>
           ` : null}
+          ${isQualityStage && project ? html`
+            <div style=${{ marginTop: "12px", border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px" }}>
+              <label style=${S.label}>Kontrola jakosci</label>
+              <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
+                <button type="button" style=${qualityGoat ? S.btn : S.ghost} onClick=${() => setQualityGoat(!qualityGoat)}>
+                  ${qualityIcon("goat")} Koza
+                </button>
+                <span style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "center" }}>Braki sa zapisywane jako lista dla projektu ${project}.</span>
+              </div>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: "7px" }}>
+                ${projectQualityItems.map(item => html`
+                  <label key=${item} style=${{ border: "1px solid " + (qualityMissing.includes(item) ? COLORS.accent : COLORS.border), borderRadius: "8px", background: qualityMissing.includes(item) ? "#eef4ff" : COLORS.panel, padding: "8px", fontSize: "13px", fontWeight: 800, display: "flex", gap: "7px", alignItems: "center" }}>
+                    <input type="checkbox" checked=${qualityMissing.includes(item)} onChange=${() => toggleQualityMissing(item)} />
+                    ${item}
+                  </label>
+                `)}
+                ${projectQualityItems.length ? null : html`<div style=${{ color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Brak zapisanej listy brakow dla tego projektu.</div>`}
+              </div>
+              <div style=${{ display: "grid", gridTemplateColumns: "1fr auto", gap: "8px", marginTop: "10px" }}>
+                <input style=${S.input} placeholder="Dopisz nowy brak dla tego projektu" value=${qualityNewMissing} onInput=${e => setQualityNewMissing(e.target.value)} onKeyDown=${e => e.key === "Enter" && addQualityMissing()} />
+                <button type="button" style=${S.ghost} onClick=${addQualityMissing}>Dodaj brak</button>
+              </div>
+              ${qualityMissing.length ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "8px" }}>Wybrane braki: ${qualityMissing.join(", ")}</div>` : null}
+            </div>
+          ` : null}
           <div style=${{ marginTop: "12px" }}>
             <label style=${S.label}>Uwagi</label>
             <input style=${S.input} value=${note} onInput=${e => setNote(e.target.value)} />
@@ -635,7 +704,7 @@
             <div key=${i} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px 12px", display: "flex", justifyContent: "space-between", gap: "10px", marginBottom: "8px" }}>
               <div>
                 <strong>${reportLineShort(line, serverProjects)}</strong>
-                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "3px" }}>${stageLabel(line.stage)}${line.hall ? " / " + line.hall : ""}${line.note ? " / " + line.note : ""}</div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "3px" }}>${stageLabel(line.stage)}${line.hall ? " / " + line.hall : ""}${line.quality && line.quality.goat ? " / Koza" : ""}${line.quality && line.quality.missingItems && line.quality.missingItems.length ? " / Braki: " + line.quality.missingItems.join(", ") : ""}${line.note ? " / " + line.note : ""}</div>
               </div>
               <button style=${S.danger} onClick=${() => onRemove(i)}>Usun</button>
             </div>
@@ -927,7 +996,7 @@
       `;
     }
 
-    function ManagerAddReport({ token, reports, users, serverProjects, stagePermissions, reloadReports }) {
+    function ManagerAddReport({ token, reports, users, serverProjects, stagePermissions, qualityData, reloadReports, reloadQuality }) {
       const [open, setOpen] = useState(false);
       const [selectedStages, setSelectedStages] = useState([]);
       const [workerCode, setWorkerCode] = useState("");
@@ -961,6 +1030,7 @@
           const result = await api.addReportAsWorker(token, workerCode, date, lines);
           setLines([]);
           await reloadReports();
+          if (reloadQuality) await reloadQuality();
           const worker = workers.find(w => (w.code || w.login) === workerCode);
           const msg = saveReportMessage(result, lines.length);
           setMsg({ ...msg, text: msg.text + " Pracownik: " + (worker ? worker.name : workerCode) + "." });
@@ -1022,7 +1092,7 @@
               </div>
             </div>
             ${workerCode ? html`
-              <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${workerCode} fixedStages=${selectedStages} />
+              <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${workerCode} fixedStages=${selectedStages} qualityData=${qualityData} />
               <section style=${{ ...S.card, marginBottom: 0 }}>
                 <h3 style=${{ ...S.title, fontSize: "17px" }}>Raport do zapisania (${lines.length})</h3>
                 <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
@@ -1035,7 +1105,7 @@
       `;
     }
 
-    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, reloadReports }) {
+    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, qualityData, reloadReports, reloadQuality }) {
       const [dateFrom, setDateFrom] = useState("");
       const [dateTo, setDateTo] = useState("");
       const [worker, setWorker] = useState("all");
@@ -1119,7 +1189,7 @@
       };
 
       return html`
-        <${ManagerAddReport} token=${token} reports=${reports} users=${users} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reloadReports=${reloadReports} />
+        <${ManagerAddReport} token=${token} reports=${reports} users=${users} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadReports=${reloadReports} reloadQuality=${reloadQuality} />
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
             <h2 style=${{ ...S.title, margin: 0 }}>Raporty</h2>
@@ -1261,7 +1331,7 @@
       `;
     }
 
-    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, serverProjects, stagePermissions, materialUsages, reloadMaterialUsages, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, materialUsages, reloadMaterialUsages, reloadQuality, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
@@ -1304,6 +1374,7 @@
         const result = await api.addReport(token, today(), lines);
         setLines([]);
         await reload();
+        if (reloadQuality) await reloadQuality();
         setMsg(saveReportMessage(result, lines.length));
       };
 
@@ -1366,6 +1437,7 @@
         try {
           await api.deleteReport(token, id);
           await reload();
+          if (reloadQuality) await reloadQuality();
           setMsg({ type: "success", text: "Raport zostal usuniety." });
           setTab("history");
         } catch (e) {
@@ -1400,7 +1472,7 @@
               <label style=${S.label}>Data raportu</label>
               <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
             </section>
-            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${user.code || user.login} />
+            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} workerCode=${user.code || user.login} qualityData=${qualityData} />
             <section style=${S.card}>
               <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
               <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
@@ -1410,7 +1482,7 @@
           ` : tab === "history" ? html`
             <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} canAddComments=${false} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} reloadBathroomComments=${async () => {}} reloadBathroomChecks=${async () => {}} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} canAddComments=${false} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} reloadBathroomComments=${async () => {}} reloadBathroomChecks=${async () => {}} />
           ` : tab === "sessions" ? html`
             <${SessionHistoryTab} token=${token} logout=${logout} />
           ` : html`
@@ -1460,7 +1532,7 @@
       `;
     }
 
-    function MapsTab({ reports, token, canEditMaps, canAddComments, transportDates, bathroomComments, bathroomChecks, serverProjects, reloadBathroomComments, reloadBathroomChecks }) {
+    function MapsTab({ reports, token, canEditMaps, canAddComments, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, reloadBathroomComments, reloadBathroomChecks }) {
       const STORAGE_KEY = "flowrbr_maps_layouts_1_01";
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const [hall, setHall] = useState("betonowanie");
@@ -1507,7 +1579,7 @@
       const stageOrder = { "4": 1, "4.1": 1.5, "6.1": 2, "7.1": 3, "9": 4, "10": 5, "11.2": 6, "13.1": 7, "13.2": 8, "15.1": 9, "17": 10, "19": 11, "20": 12, "21": 13 };
       const removedFromMapStages = new Set(["19", "20", "21"]);
       const selectedHall = halls.find(h => h.id === hall) || halls[0];
-      const loadDateByBathroom = useMemo(() => transportMap(transportDates), [transportDates]);
+      const loadDateByBathroom = useMemo(() => transportMap((transportDates || []).filter(item => !item.extra)), [transportDates]);
       const projectCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
       const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
       const saveLayouts = (next, nextDates = mapDates) => {
@@ -1634,6 +1706,7 @@
         if (!selectedCell) return [];
         return (bathroomComments || []).filter(c => sameProject(c.project, selectedCell.project) && productNo(c.product) === productNo(selectedCell.product));
       }, [bathroomComments, selectedCell]);
+      const selectedQuality = selectedCell ? qualityStateFor(qualityData, selectedCell.project, selectedCell.product) : { goatActive: false, missingActive: false, openMissing: [], record: null };
       const commentStatusByBathroom = useMemo(() => {
         const map = {};
         (bathroomComments || []).forEach(c => {
@@ -2296,6 +2369,7 @@
                     const tileCheckStatus = checkStatus(tilingCheck);
                     const tileCheckStyle = checkStatusStyle(tileCheckStatus);
                     const sampleEnabled = sampleEnabledForCell(cell);
+                    const qState = cell ? qualityStateFor(qualityData, cell.project, cell.product) : { goatActive: false, missingActive: false };
                     const matchesFilter = matchesMapFilters(cell, alert);
                     const isManualCell = edit && manual.row === row && Number(manual.col) === col;
                     return html`
@@ -2400,6 +2474,21 @@
                               zIndex: 2
                             }}>${tileCheckStyle.mark}</span>
                           ` : null}
+                          ${qState.goatActive || qState.missingActive ? html`
+                            <span style=${{
+                              position: "absolute",
+                              right: "5px",
+                              bottom: "7px",
+                              display: "flex",
+                              gap: "3px",
+                              fontSize: "24px",
+                              lineHeight: 1,
+                              zIndex: 3
+                            }}>
+                              ${qState.goatActive ? html`<span title="Koza">${qualityIcon("goat")}</span>` : null}
+                              ${qState.missingActive ? html`<span title=${"Braki: " + qState.openMissing.join(", ")}>${qualityIcon("missing")}</span>` : null}
+                            </span>
+                          ` : null}
                           <div style=${{
                             background: st.background,
                             color: st.color,
@@ -2456,6 +2545,15 @@
                     <div style=${{ fontWeight: 900, marginTop: "4px" }}>${item[1] || "-"}</div>
                   </div>
                 `)}
+              </div>
+            ` : null}
+            ${selectedQuality.record ? html`
+              <div style=${{ background: selectedQuality.goatActive || selectedQuality.missingActive ? "#fff7ed" : "#f0fdf4", border: "1px solid " + (selectedQuality.goatActive || selectedQuality.missingActive ? "#fb923c" : "#86efac"), borderRadius: "8px", padding: "10px 12px", marginBottom: "12px" }}>
+                <div style=${{ fontWeight: 900 }}>Kontrola jakosci</div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px", lineHeight: 1.5 }}>
+                  ${selectedQuality.record.goat ? (selectedQuality.goatActive ? qualityIcon("goat") + " Koza otwarta" : "Koza zrobiona") : "Bez kozy"}
+                  ${selectedQuality.record.missingItems && selectedQuality.record.missingItems.length ? html`<br />${qualityIcon("missing")} Braki otwarte: ${selectedQuality.openMissing.length ? selectedQuality.openMissing.join(", ") : "brak"}` : null}
+                </div>
               </div>
             ` : null}
             <div style=${{
@@ -3292,7 +3390,112 @@
         }));
     }
 
-    function WarehouseTab({ reports, transportDates }) {
+    function QualityControlTab({ qualityData, token, reloadQuality }) {
+      const [filters, setFilters] = useState({ project: "all", status: "open" });
+      const [msg, setMsg] = useState(null);
+      const [savingKey, setSavingKey] = useState("");
+      const records = (qualityData && qualityData.records) || [];
+      const projects = useMemo(() => [...new Set(records.map(r => String(r.project || "")).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [records]);
+      const visible = useMemo(() => records.filter(record => {
+        const state = qualityStateFor(qualityData, record.project, record.product);
+        const isOpen = state.goatActive || state.missingActive;
+        if (filters.project !== "all" && !sameProject(record.project, filters.project)) return false;
+        if (filters.status === "open" && !isOpen) return false;
+        if (filters.status === "done" && isOpen) return false;
+        return true;
+      }).sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || productNo(a.product) - productNo(b.product)), [records, filters, qualityData]);
+      const updateRecord = async (record, patch) => {
+        const key = transportKey(record.project, record.product);
+        setSavingKey(key); setMsg(null);
+        try {
+          await api.updateQualityRecord(token, {
+            project: record.project,
+            product: record.product,
+            goatDone: patch.goatDone != null ? patch.goatDone : !!record.goatDone,
+            resolvedItems: patch.resolvedItems || record.resolvedItems || []
+          });
+          await reloadQuality();
+          setMsg({ type: "success", text: "Kontrola jakosci zaktualizowana." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
+      const toggleMissingDone = (record, item) => {
+        const resolved = new Set(Array.isArray(record.resolvedItems) ? record.resolvedItems : []);
+        if (resolved.has(item)) resolved.delete(item); else resolved.add(item);
+        updateRecord(record, { resolvedItems: [...resolved] });
+      };
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
+            <div>
+              <h2 style=${S.title}>Kontrola jakosci</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Kozy i braki zapisane przy raporcie 18.</div>
+            </div>
+          </div>
+          <div className="grid-3" style=${{ ...S.row3, marginBottom: "12px" }}>
+            <div>
+              <label style=${S.label}>Projekt</label>
+              <select style=${S.input} value=${filters.project} onChange=${e => setFilters({ ...filters, project: e.target.value })}>
+                <option value="all">Wszystkie projekty</option>
+                ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+              </select>
+            </div>
+            <div>
+              <label style=${S.label}>Status</label>
+              <select style=${S.input} value=${filters.status} onChange=${e => setFilters({ ...filters, status: e.target.value })}>
+                <option value="open">Otwarte</option>
+                <option value="all">Wszystkie</option>
+                <option value="done">Zamkniete</option>
+              </select>
+            </div>
+            <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
+          </div>
+          <${Message} msg=${msg} />
+          <div style=${{ display: "grid", gap: "10px" }}>
+            ${visible.map(record => {
+              const state = qualityStateFor(qualityData, record.project, record.product);
+              const missing = Array.isArray(record.missingItems) ? record.missingItems : [];
+              const resolved = new Set(Array.isArray(record.resolvedItems) ? record.resolvedItems : []);
+              const key = transportKey(record.project, record.product);
+              return html`
+                <article key=${key} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
+                  <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "start", flexWrap: "wrap" }}>
+                    <div>
+                      <strong>Projekt ${record.project} / Laz. ${record.product}</strong>
+                      <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>
+                        ${state.goatActive ? qualityIcon("goat") + " Koza otwarta" : record.goat ? "Koza zrobiona" : "Bez kozy"}
+                        ${missing.length ? " / " + qualityIcon("missing") + " braki: " + state.openMissing.length + " otwarte" : ""}
+                      </div>
+                    </div>
+                    ${record.goat ? html`
+                      <button style=${record.goatDone ? S.ghost : S.btn} disabled=${savingKey === key} onClick=${() => updateRecord(record, { goatDone: !record.goatDone })}>
+                        ${record.goatDone ? "Cofnij koze" : "Koza zrobiona"}
+                      </button>
+                    ` : null}
+                  </div>
+                  ${missing.length ? html`
+                    <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px", marginTop: "10px" }}>
+                      ${missing.map(item => html`
+                        <label key=${item} style=${{ border: "1px solid " + (resolved.has(item) ? "#16a34a" : COLORS.border), borderRadius: "8px", background: resolved.has(item) ? "#dcfce7" : COLORS.panel, padding: "8px", fontSize: "13px", fontWeight: 800, display: "flex", gap: "7px", alignItems: "center" }}>
+                          <input type="checkbox" checked=${resolved.has(item)} disabled=${savingKey === key} onChange=${() => toggleMissingDone(record, item)} />
+                          ${item}
+                        </label>
+                      `)}
+                    </div>
+                  ` : null}
+                </article>
+              `;
+            })}
+            ${visible.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "22px" }}>Brak wpisow kontroli jakosci.</div>`}
+          </div>
+        </section>
+      `;
+    }
+
+    function WarehouseTab({ reports, transportDates, qualityData }) {
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
       const wh = warehousePalette("magazyn");
@@ -3345,9 +3548,16 @@
                   ${group.items.map(item => {
                     const loadDate = loads[transportKey(item.project, item.product)];
                     const alert = transportAlert(loadDate);
+                    const qState = qualityStateFor(qualityData, item.project, item.product);
                     return html`
                       <div key=${item.project + "-" + item.product} style=${{ position: "relative", background: wh.color, color: wh.text, border: "1px solid " + COLORS.border, borderRadius: "7px", padding: "6px", minHeight: "54px", overflow: "hidden" }}>
                         ${alert ? html`<div title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{ position: "absolute", top: "4px", right: "4px", width: "16px", height: "16px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900, fontSize: "11px" }}>!</div>` : null}
+                        ${qState.goatActive || qState.missingActive ? html`
+                          <div style=${{ position: "absolute", right: "4px", bottom: "3px", display: "flex", gap: "2px", fontSize: "14px", lineHeight: 1 }}>
+                            ${qState.goatActive ? html`<span title="Koza">${qualityIcon("goat")}</span>` : null}
+                            ${qState.missingActive ? html`<span title=${"Braki: " + qState.openMissing.join(", ")}>${qualityIcon("missing")}</span>` : null}
+                          </div>
+                        ` : null}
                         <div style=${{ fontWeight: 900, fontSize: "12px", lineHeight: 1.1, paddingRight: "18px" }}>${item.project}</div>
                         <div style=${{ fontWeight: 900, fontSize: "12px", lineHeight: 1.1 }}>Laz. ${item.product}</div>
                         <div style=${{ fontSize: "10px", marginTop: "3px", lineHeight: 1.15 }}>${item.packStage || "19"} - ${item.packDate || "-"}</div>
@@ -3442,7 +3652,7 @@
       `;
     }
 
-    function TransportTab({ reports, transportDates, transportReplacements, token, serverProjects, users, stagePermissions, reloadTransportDates, reloadTransportReplacements, reloadReports }) {
+    function TransportTab({ reports, transportDates, transportReplacements, token, serverProjects, users, stagePermissions, qualityData, reloadTransportDates, reloadTransportReplacements, reloadReports }) {
       const transportPanelStyle = {
         ...S.card,
         background: "#fff",
@@ -3472,6 +3682,7 @@
       const [transportSubtab, setTransportSubtab] = useState("list");
       const [replacementModal, setReplacementModal] = useState(null);
       const [editBathroomsModal, setEditBathroomsModal] = useState(null);
+      const [transportModal, setTransportModal] = useState(null);
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
       const transportItemByBathroom = useMemo(() => {
         const map = {};
@@ -3592,6 +3803,7 @@
         setBatchProject(project);
         setSelectedProducts([]);
       };
+      const emptyTransportDetails = { orderName: "", trailer: "", direction: "", sizeLabel: "", unloadDate: "", carrier: "", note: "", delayNote: "" };
       const toggleProduct = product => {
         setSelectedProducts(prev => prev.includes(product) ? prev.filter(p => p !== product) : [...prev, product].sort((a, b) => a - b));
       };
@@ -3676,6 +3888,119 @@
         note: rowEditValue(row, "note"),
         delayNote: rowEditValue(row, "delayNote")
       });
+      const openNewTransportModal = () => {
+        setTransportModal({
+          mode: "new",
+          row: null,
+          project: "",
+          loadDate: today(),
+          lkwNumber: "",
+          details: { ...emptyTransportDetails },
+          selectedProducts: [],
+          replacements: {}
+        });
+        setMsg(null);
+      };
+      const openEditTransportModal = row => {
+        setTransportModal({
+          mode: "edit",
+          row,
+          project: row.project,
+          loadDate: rowEditValue(row, "loadDate") || row.loadDate || today(),
+          lkwNumber: rowEditValue(row, "lkwNumber") || row.lkwNumber || "",
+          details: transportDetailsForRow(row),
+          selectedProducts: row.items.map(item => productNo(item.product)).sort((a, b) => a - b),
+          replacements: Object.fromEntries(row.items
+            .map(item => [productNo(item.product), replacementByTarget[transportKey(row.project, item.product)]?.fromProduct || ""])
+            .filter(([, from]) => from))
+        });
+        setMsg(null);
+      };
+      const modalProjectCount = transportModal ? (Number(projectCountMap(serverProjects)[transportModal.project]) || Math.max(0, ...allTransportItems.filter(item => sameProject(item.project, transportModal.project)).map(item => item.product || 0))) : 0;
+      const modalProducts = transportModal ? Array.from({ length: modalProjectCount }, (_, i) => i + 1) : [];
+      const modalRowItemByProduct = useMemo(() => {
+        const map = {};
+        (transportModal?.row?.items || []).forEach(item => { map[productNo(item.product)] = item; });
+        return map;
+      }, [transportModal]);
+      const setTransportModalField = (field, value) => setTransportModal(prev => prev ? ({ ...prev, [field]: value }) : prev);
+      const setTransportModalDetail = (field, value) => setTransportModal(prev => prev ? ({ ...prev, details: { ...prev.details, [field]: value } }) : prev);
+      const toggleModalProduct = product => {
+        setTransportModal(prev => {
+          if (!prev) return prev;
+          const selected = prev.selectedProducts.includes(product);
+          const nextReplacements = { ...prev.replacements };
+          if (selected) delete nextReplacements[product];
+          return {
+            ...prev,
+            selectedProducts: selected ? prev.selectedProducts.filter(p => p !== product) : [...prev.selectedProducts, product].sort((a, b) => a - b),
+            replacements: nextReplacements
+          };
+        });
+      };
+      const setModalReplacement = (product, fromProduct) => {
+        setTransportModal(prev => {
+          if (!prev) return prev;
+          const replacements = { ...prev.replacements };
+          if (fromProduct) replacements[product] = Number(fromProduct);
+          else delete replacements[product];
+          const selectedProducts = prev.selectedProducts.includes(product) ? prev.selectedProducts : [...prev.selectedProducts, product].sort((a, b) => a - b);
+          return { ...prev, selectedProducts, replacements };
+        });
+      };
+      const modalProductState = product => {
+        if (!transportModal) return {};
+        const key = transportKey(transportModal.project, product);
+        const rowItem = modalRowItemByProduct[product];
+        const baseInfo = transportInfo[key];
+        const hasExtra = extraTransportDates.some(item => sameProject(item.project, transportModal.project) && productNo(item.product) === product);
+        const selected = transportModal.selectedProducts.includes(product);
+        const replaced = !!transportModal.replacements[product];
+        const duplicate = selected && ((baseInfo && !rowItem) || hasExtra);
+        const item = transportItemByBathroom[key] || { status: "produkcja" };
+        return { selected, replaced, duplicate, rowItem, baseInfo, hasExtra, status: item.status || "produkcja" };
+      };
+      const saveTransportModal = async () => {
+        if (!transportModal) return;
+        if (!transportModal.project) return setMsg({ type: "error", text: "Wybierz projekt." });
+        if (!transportModal.loadDate) return setMsg({ type: "error", text: "Wybierz date zaladunku." });
+        if (!transportModal.selectedProducts.length) return setMsg({ type: "error", text: "Zaznacz co najmniej jedna lazienke." });
+        setSavingKey("transport-modal"); setMsg(null);
+        try {
+          const project = transportModal.project;
+          const details = transportModal.details || {};
+          const selectedSet = new Set(transportModal.selectedProducts.map(Number));
+          if (transportModal.mode === "edit" && transportModal.row) {
+            for (const item of transportModal.row.items) {
+              if (selectedSet.has(productNo(item.product))) continue;
+              if (item.extra && item.extraId) await api.deleteTransportExtra(token, item.extraId);
+              else await api.saveTransportDate(token, item.project, item.product, "");
+            }
+          }
+          for (const product of transportModal.selectedProducts) {
+            const state = modalProductState(product);
+            if (state.duplicate) {
+              await api.addTransportExtra(token, { project, product, loadDate: transportModal.loadDate, lkwNumber: transportModal.lkwNumber, ...details });
+            } else {
+              await api.saveTransportDate(token, project, product, transportModal.loadDate, transportModal.lkwNumber, details);
+            }
+          }
+          for (const [toProductRaw, fromProductRaw] of Object.entries(transportModal.replacements || {})) {
+            const toProduct = Number(toProductRaw);
+            const fromProduct = Number(fromProductRaw);
+            if (!Number.isInteger(toProduct) || !Number.isInteger(fromProduct) || toProduct === fromProduct) continue;
+            await api.saveTransportReplacement(token, { mode: "podmiana", project, fromProduct, toProduct });
+          }
+          await reloadTransportDates();
+          if (reloadTransportReplacements) await reloadTransportReplacements();
+          setTransportModal(null);
+          setMsg({ type: "success", text: "Transport zapisany dla " + selectedSet.size + " lazienek." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
       const openEditBathroomsModal = row => {
         setEditBathroomsModal({ row, product: "" });
         setMsg(null);
@@ -3815,6 +4140,7 @@
               <h2 style=${S.title}>Transport</h2>
               <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Ustawianie i edycja dat zaladunku dla spakowanych lazienek.</div>
             </div>
+            <button style=${S.btn} onClick=${openNewTransportModal}>Nowy transport</button>
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
             <button style=${transportSubtab === "list" ? S.btn : S.ghost} onClick=${() => setTransportSubtab("list")}>Transport</button>
@@ -3849,7 +4175,7 @@
             <button style=${S.ghost} onClick=${clearColumnFilters}>Wyczysc filtry kolumn</button>
           </div>
           <${Message} msg=${msg} />
-          <div style=${{ background: "#fff", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", marginBottom: "14px" }}>
+          <div style=${{ display: "none", background: "#fff", border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", marginBottom: "14px" }}>
             <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Dodaj transport</h3>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px", fontSize: "12px", fontWeight: 900 }}>
               <span style=${{ background: warehousePalette("magazyn").color, color: warehousePalette("magazyn").text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>zielony - magazyn</span>
@@ -3988,26 +4314,34 @@
                             const tilePalette = warehousePalette(isWarehouse ? "magazyn" : "produkcja");
                             const replacement = replacementByTarget[transportKey(row.project, item.product)];
                             const usedAgain = item.extra || (replacementUseCount[transportKey(row.project, item.product)] || 0) > 1;
-                            const tileBg = usedAgain ? "#ef4444" : tilePalette.color;
-                            const tileFg = usedAgain ? "#fff" : tilePalette.text;
+                            const qState = qualityStateFor(qualityData, row.project, item.product);
+                            const isReplacement = !!replacement;
+                            const tileBg = usedAgain ? "#ef4444" : isReplacement ? "#f97316" : tilePalette.color;
+                            const tileFg = usedAgain || isReplacement ? "#fff" : tilePalette.text;
                             return html`
-                              <button key=${(item.extra ? "x" + item.extraId + "-" : "") + item.product} title=${item.extra ? "Lazienka dodana ponownie do transportu" : usedAgain ? "Lazienka uzyta jako podmiana kolejny raz" : replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openReplacementModal(row, item)} style=${{
-                                minWidth: replacement ? "42px" : "27px",
-                                minHeight: "23px",
-                                padding: "2px 5px",
-                                borderRadius: "5px",
+                              <button key=${(item.extra ? "x" + item.extraId + "-" : "") + item.product} title=${item.extra ? "Lazienka dodana ponownie do transportu" : usedAgain ? "Lazienka uzyta jako podmiana kolejny raz" : replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openEditTransportModal(row)} style=${{
+                                minWidth: "81px",
+                                minHeight: "69px",
+                                padding: "7px 8px",
+                                borderRadius: "7px",
                                 border: "1px solid " + COLORS.border,
                                 background: tileBg,
                                 color: tileFg,
                                 display: "inline-grid",
                                 placeItems: "center",
-                                fontSize: "11px",
+                                fontSize: "20px",
                                 fontWeight: 900,
                                 cursor: "pointer",
                                 lineHeight: 1.05
                               }}>
                                 <span>${item.product}</span>
-                                ${replacement ? html`<span style=${{ fontSize: "9px", fontWeight: 900 }}>za ${replacement.fromProduct}</span>` : null}
+                                ${replacement ? html`<span style=${{ fontSize: "14px", fontWeight: 900 }}>za ${replacement.fromProduct}</span>` : null}
+                                ${qState.goatActive || qState.missingActive ? html`
+                                  <span style=${{ fontSize: "15px", display: "flex", gap: "1px" }}>
+                                    ${qState.goatActive ? html`<span title="Koza">${qualityIcon("goat")}</span>` : null}
+                                    ${qState.missingActive ? html`<span title=${"Braki: " + qState.openMissing.join(", ")}>${qualityIcon("missing")}</span>` : null}
+                                  </span>
+                                ` : null}
                               </button>
                             `;
                           })}
@@ -4040,7 +4374,7 @@
                         <div style=${{ display: "grid", gridTemplateColumns: "auto auto", gap: "5px", alignItems: "center" }}>
                           <button style=${{ ...S.btn, padding: "7px 9px", fontSize: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${() => saveTransportRow(row)}>${saving ? "..." : "Zapisz"}</button>
                           <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px" }} disabled=${saving} onClick=${() => clearTransportRow(row)}>Wyczysc</button>
-                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "bathrooms-edit"} onClick=${() => openEditBathroomsModal(row)}>Edytuj lazienki</button>
+                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-modal"} onClick=${() => openEditTransportModal(row)}>Edytuj transport</button>
                           <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-report"} onClick=${() => openTransportReport(row)}>Raport zaladunek</button>
                         </div>
                       </td>
@@ -4088,6 +4422,125 @@
                 </table>
               </div>
             </section>
+          ` : null}
+          ${transportModal ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 64, display: "grid", placeItems: "center", padding: "14px" }}>
+              <section style=${{ ...S.card, width: "min(1320px, 100%)", maxHeight: "94vh", overflowY: "auto", margin: 0, background: "#fff" }}>
+                <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", marginBottom: "12px" }}>
+                  <div>
+                    <h2 style=${S.title}>${transportModal.mode === "edit" ? "Edytuj transport" : "Nowy transport"}</h2>
+                    <div style=${{ color: COLORS.muted, fontSize: "13px", lineHeight: 1.5 }}>
+                      Zaznacz lazienki kafelkami. Odznaczenie lazienki przy edycji usunie ja z tego LKW dopiero po kliknieciu Zapisz.
+                    </div>
+                  </div>
+                  <button style=${S.ghost} disabled=${savingKey === "transport-modal"} onClick=${() => setTransportModal(null)}>Zamknij</button>
+                </div>
+                <${Message} msg=${msg} />
+                <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px", fontSize: "12px", fontWeight: 900 }}>
+                  <span style=${{ background: warehousePalette("magazyn").color, color: warehousePalette("magazyn").text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>zielony - gotowe/magazyn</span>
+                  <span style=${{ background: warehousePalette("produkcja").color, color: warehousePalette("produkcja").text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>zolty - produkcja</span>
+                  <span style=${{ background: "#f97316", color: "#fff", border: "1px solid #ea580c", borderRadius: "999px", padding: "5px 9px" }}>pomaranczowy - podmiana</span>
+                  <span style=${{ background: "#ef4444", color: "#fff", border: "1px solid #b91c1c", borderRadius: "999px", padding: "5px 9px" }}>czerwony - jedzie drugi raz</span>
+                </div>
+                <div className="grid-3" style=${S.row3}>
+                  <div>
+                    <label style=${S.label}>Data zaladunku</label>
+                    <input style=${S.input} type="date" value=${transportModal.loadDate} onInput=${e => setTransportModalField("loadDate", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>LKW</label>
+                    <input style=${S.input} type="number" min="1" placeholder="auto" value=${transportModal.lkwNumber} onInput=${e => setTransportModalField("lkwNumber", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Projekt</label>
+                    <select style=${S.input} value=${transportModal.project} disabled=${transportModal.mode === "edit"} onChange=${e => setTransportModal(prev => ({ ...prev, project: e.target.value, selectedProducts: [], replacements: {} }))}>
+                      <option value="">- wybierz projekt -</option>
+                      ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+                    </select>
+                  </div>
+                </div>
+                <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "8px", marginTop: "10px" }}>
+                  <div>
+                    <label style=${S.label}>Nazwa zlecenia</label>
+                    <input style=${S.input} value=${transportModal.details.orderName || ""} onInput=${e => setTransportModalDetail("orderName", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Naczepa</label>
+                    <input style=${S.input} value=${transportModal.details.trailer || ""} onInput=${e => setTransportModalDetail("trailer", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Kierunek</label>
+                    <input style=${S.input} value=${transportModal.details.direction || ""} onInput=${e => setTransportModalDetail("direction", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Rozmiar</label>
+                    <input style=${S.input} value=${transportModal.details.sizeLabel || ""} onInput=${e => setTransportModalDetail("sizeLabel", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Data rozladunku</label>
+                    <input style=${S.input} type="date" value=${transportModal.details.unloadDate || ""} onInput=${e => setTransportModalDetail("unloadDate", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Przewoznik</label>
+                    <input style=${S.input} value=${transportModal.details.carrier || ""} onInput=${e => setTransportModalDetail("carrier", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Spoznienia</label>
+                    <input style=${S.input} value=${transportModal.details.delayNote || ""} onInput=${e => setTransportModalDetail("delayNote", e.target.value)} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Notatka</label>
+                    <input style=${S.input} value=${transportModal.details.note || ""} onInput=${e => setTransportModalDetail("note", e.target.value)} />
+                  </div>
+                </div>
+                ${transportModal.project ? html`
+                  <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginTop: "14px", marginBottom: "10px", flexWrap: "wrap" }}>
+                    <div style=${{ color: COLORS.muted, fontSize: "13px" }}>
+                      Wybrane: <strong style=${{ color: COLORS.text }}>${transportModal.selectedProducts.length}</strong> / projekt ${transportModal.project}
+                    </div>
+                    <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                      <button style=${S.ghost} onClick=${() => setTransportModal(prev => ({ ...prev, selectedProducts: modalProducts, replacements: prev.replacements }))}>Zaznacz wszystkie</button>
+                      <button style=${S.ghost} onClick=${() => setTransportModal(prev => ({ ...prev, selectedProducts: [], replacements: {} }))}>Wyczysc wybor</button>
+                    </div>
+                  </div>
+                  <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(118px, 1fr))", gap: "10px", maxHeight: "46vh", overflowY: "auto", padding: "10px", border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg }}>
+                    ${modalProducts.map(product => {
+                      const state = modalProductState(product);
+                      const palette = warehousePalette(state.status === "magazyn" ? "magazyn" : "produkcja");
+                      const type = bathroomTypeInfo(serverProjects, transportModal.project, product).rbrTypeShort;
+                      const bg = state.duplicate ? "#ef4444" : state.replaced ? "#f97316" : state.selected ? COLORS.accent : palette.color;
+                      const fg = state.duplicate || state.replaced || state.selected ? "#fff" : palette.text;
+                      const info = state.baseInfo;
+                      return html`
+                        <div key=${product} style=${{ border: "2px solid " + (state.selected ? COLORS.accent : COLORS.border), borderRadius: "9px", background: bg, color: fg, overflow: "hidden" }}>
+                          <button type="button" onClick=${() => toggleModalProduct(product)} style=${{ width: "100%", minHeight: "96px", border: 0, background: "transparent", color: "inherit", cursor: "pointer", display: "grid", placeItems: "center", padding: "8px", fontWeight: 900 }}>
+                            <span style=${{ fontSize: "28px", lineHeight: 1 }}>${product}</span>
+                            ${type ? html`<span style=${{ fontSize: "12px", lineHeight: 1.1 }}>typ ${type}</span>` : null}
+                            ${state.replaced ? html`<span style=${{ fontSize: "12px", lineHeight: 1.1 }}>za ${state.replaced ? transportModal.replacements[product] : ""}</span>` : null}
+                            ${state.duplicate && info ? html`<span style=${{ fontSize: "11px", lineHeight: 1.1 }}>jest: ${info.loadDate || "-"}${info.lkwNumber ? " LKW" + info.lkwNumber : ""}</span>` : null}
+                          </button>
+                          ${state.selected ? html`
+                            <div style=${{ background: "rgba(255,255,255,0.92)", color: COLORS.text, borderTop: "1px solid " + COLORS.border, padding: "6px" }}>
+                              <label style=${{ ...S.label, fontSize: "10px", marginBottom: "3px" }}>Podmiana: jedzie za</label>
+                              <select style=${{ ...S.input, minHeight: "28px", padding: "4px 6px", fontSize: "11px" }} value=${transportModal.replacements[product] || ""} onChange=${e => setModalReplacement(product, e.target.value)}>
+                                <option value="">brak</option>
+                                ${modalProducts.filter(p => p !== product).map(p => html`<option key=${p} value=${p}>${p}</option>`)}
+                              </select>
+                            </div>
+                          ` : null}
+                        </div>
+                      `;
+                    })}
+                  </div>
+                ` : html`
+                  <div style=${{ color: COLORS.dim, textAlign: "center", padding: "28px" }}>Wybierz projekt, aby zobaczyc wszystkie lazienki.</div>
+                `}
+                <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>
+                  <button style=${S.ghost} disabled=${savingKey === "transport-modal"} onClick=${() => setTransportModal(null)}>Anuluj</button>
+                  <button style=${{ ...S.btn, opacity: savingKey === "transport-modal" ? 0.6 : 1 }} disabled=${savingKey === "transport-modal"} onClick=${saveTransportModal}>${savingKey === "transport-modal" ? "Zapisywanie..." : "Zapisz transport"}</button>
+                </div>
+              </section>
+            </div>
           ` : null}
           ${editBathroomsModal ? html`
             <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 62, display: "grid", placeItems: "center", padding: "16px" }}>
@@ -4210,7 +4663,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, serverProjects, stagePermissions, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadStagePermissions, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -4238,7 +4691,7 @@
 
       const remove = async id => {
         if (!confirm("Usunac raport?")) return;
-        try { await api.deleteReport(token, id); await reloadReports(); await reloadMaterialUsages(); }
+        try { await api.deleteReport(token, id); await reloadReports(); await reloadMaterialUsages(); await reloadQuality(); }
         catch (e) { setMsg({ type: "error", text: e.message }); }
       };
       const addUser = async () => {
@@ -4345,10 +4798,10 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
-            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "calculations"] : []), "projects", "maps", "users", "database", "sessions", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Szachownice" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : t === "sessions" ? "Historia sesji" : "Konto"}</button>`)}
+            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "quality", "calculations"] : []), "projects", "maps", "users", "database", "sessions", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "quality" ? "Kontrola jakosci" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Szachownice" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : t === "sessions" ? "Historia sesji" : "Konto"}</button>`)}
           </div>
           <${Message} msg=${msg} />
-          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reloadReports=${reloadReports} />` : tab === "account" ? html`
+          ${tab === "reports" ? html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadReports=${reloadReports} reloadQuality=${reloadQuality} />` : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} />
           ` : tab === "sessions" ? html`
             <${SessionHistoryTab} token=${token} logout=${logout} />
@@ -4357,13 +4810,15 @@
           ` : tab === "projects" ? html`
             <${ProjectsTab} reports=${reports} token=${token} serverProjects=${serverProjects} reloadProjects=${reloadProjects} />
           ` : tab === "maps" ? html`
-            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} canAddComments=${true} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} reloadBathroomComments=${reloadBathroomComments} reloadBathroomChecks=${reloadBathroomChecks} />
+            <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} canAddComments=${true} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} reloadBathroomComments=${reloadBathroomComments} reloadBathroomChecks=${reloadBathroomChecks} />
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} token=${token} serverProjects=${serverProjects} />
           ` : tab === "warehouse" ? html`
-            <${WarehouseTab} reports=${reports} transportDates=${transportDates} />
+            <${WarehouseTab} reports=${reports} transportDates=${transportDates} qualityData=${qualityData} />
           ` : tab === "transport" ? html`
-            <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} />
+            <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} />
+          ` : tab === "quality" ? html`
+            <${QualityControlTab} qualityData=${qualityData} token=${token} reloadQuality=${reloadQuality} />
           ` : tab === "calculations" ? html`
             <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} reloadMaterialUsages=${reloadMaterialUsages} />
           ` : html`
@@ -4514,6 +4969,7 @@
       const [transportReplacements, setTransportReplacements] = useState([]);
       const [bathroomComments, setBathroomComments] = useState([]);
       const [bathroomChecks, setBathroomChecks] = useState([]);
+      const [qualityData, setQualityData] = useState({ items: [], records: [] });
       const [serverProjects, setServerProjects] = useState([]);
       const [stagePermissions, setStagePermissions] = useState([]);
       const [materialUsages, setMaterialUsages] = useState([]);
@@ -4521,7 +4977,7 @@
 
       const logout = () => {
         localStorage.removeItem("rrbr_token");
-        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setMaterialUsages([]); setBathroomChecks([]); setTransportReplacements([]);
+        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
       };
       const decodeToken = t => {
         try {
@@ -4581,6 +5037,14 @@
           setBathroomChecks([]);
         }
       };
+      const reloadQuality = async (t = token) => {
+        try {
+          const data = await api.getQuality(t);
+          setQualityData({ items: data.items || [], records: data.records || [] });
+        } catch (_) {
+          setQualityData({ items: [], records: [] });
+        }
+      };
       const reloadStagePermissions = async (t = token) => {
         try {
           const rows = await api.getStagePermissions(t);
@@ -4603,6 +5067,7 @@
                 await reloadTransportReplacements(token);
                 await reloadBathroomComments(token);
                 await reloadBathroomChecks(token);
+                await reloadQuality(token);
                 await reloadStagePermissions(token);
                 await reloadMaterialUsages(token);
                 if (isManagerLike(restored)) await reloadUsers(token);
@@ -4625,6 +5090,7 @@
         await reloadTransportReplacements(newToken);
         await reloadBathroomComments(newToken);
         await reloadBathroomChecks(newToken);
+        await reloadQuality(newToken);
         await reloadStagePermissions(newToken);
         await reloadMaterialUsages(newToken);
         if (isManagerLike(userData)) await reloadUsers(newToken);
@@ -4649,8 +5115,8 @@
               </section>
             </main>
           ` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadStagePermissions=${() => reloadStagePermissions()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }

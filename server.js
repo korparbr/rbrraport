@@ -426,6 +426,84 @@ async function ensureBathroomChecksTable() {
   await pool.query("ALTER TABLE bathroom_checks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'");
 }
 
+async function ensureQualityTables() {
+  await ensureBathroomCommentsTable();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS quality_items (
+      project TEXT NOT NULL,
+      item_name TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project, item_name)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS quality_records (
+      project TEXT NOT NULL,
+      product INTEGER NOT NULL,
+      goat BOOLEAN NOT NULL DEFAULT FALSE,
+      goat_done BOOLEAN NOT NULL DEFAULT FALSE,
+      missing_items JSONB NOT NULL DEFAULT '[]'::jsonb,
+      resolved_items JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project, product)
+    )
+  `);
+}
+
+const uniqueTextList = value => {
+  const list = Array.isArray(value) ? value : [];
+  return [...new Set(list.map(x => String(x || '').trim()).filter(Boolean))];
+};
+
+async function saveQualityFromLine(client, line, actorCode) {
+  if (String(line?.stage || '').trim() !== '18' || !line.quality) return;
+  const project = String(line.project || '').trim();
+  const product = Number(line.product);
+  if (!project || !Number.isInteger(product)) return;
+  const missingItems = uniqueTextList(line.quality.missingItems);
+  const goat = !!line.quality.goat;
+  if (!goat && !missingItems.length) return;
+
+  await ensureQualityTables();
+  for (const item of missingItems) {
+    await client.query(
+      `INSERT INTO quality_items (project, item_name, created_by)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (project, item_name) DO NOTHING`,
+      [project, item, actorCode]
+    );
+  }
+  const current = await client.query(
+    'SELECT missing_items, resolved_items FROM quality_records WHERE project=$1 AND product=$2',
+    [project, product]
+  );
+  const oldMissing = uniqueTextList(current.rows[0]?.missing_items);
+  const oldResolved = uniqueTextList(current.rows[0]?.resolved_items);
+  const mergedMissing = [...new Set([...oldMissing, ...missingItems])];
+  const resolved = oldResolved.filter(item => !missingItems.includes(item));
+  await client.query(
+    `INSERT INTO quality_records (project, product, goat, goat_done, missing_items, resolved_items, updated_by, updated_at)
+     VALUES ($1,$2,$3,FALSE,$4::jsonb,$5::jsonb,$6,NOW())
+     ON CONFLICT (project, product) DO UPDATE SET
+       goat = quality_records.goat OR EXCLUDED.goat,
+       goat_done = CASE WHEN EXCLUDED.goat THEN FALSE ELSE quality_records.goat_done END,
+       missing_items = EXCLUDED.missing_items,
+       resolved_items = EXCLUDED.resolved_items,
+       updated_by = EXCLUDED.updated_by,
+       updated_at = NOW()`,
+    [project, product, goat, JSON.stringify(mergedMissing), JSON.stringify(resolved), actorCode]
+  );
+  if (goat) {
+    await client.query(
+      `INSERT INTO bathroom_comments (project, product, comment, author_code, author_name)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [project, product, 'Koza - kontrola jakosci', actorCode, actorCode]
+    );
+  }
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 function authOld(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
@@ -946,6 +1024,49 @@ app.delete('/api/material-usages/:id', auth, managerOnly, async (req, res) => {
 });
 
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
+app.get('/api/quality', auth, async (req, res) => {
+  try {
+    await ensureQualityTables();
+    const items = await pool.query(
+      `SELECT project, item_name AS "itemName", created_by AS "createdBy", created_at AS "createdAt"
+       FROM quality_items ORDER BY project, item_name`
+    );
+    const records = await pool.query(
+      `SELECT project, product, goat, goat_done AS "goatDone", missing_items AS "missingItems",
+        resolved_items AS "resolvedItems", updated_by AS "updatedBy", updated_at AS "updatedAt"
+       FROM quality_records ORDER BY project, product`
+    );
+    res.json({ items: items.rows, records: records.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu kontroli jakosci' });
+  }
+});
+
+app.put('/api/quality-record', auth, managerOnly, async (req, res) => {
+  try {
+    await ensureQualityTables();
+    const project = String(req.body?.project || '').trim();
+    const product = Number(req.body?.product);
+    if (!project || !Number.isInteger(product)) return res.status(400).json({ error: 'Brak projektu lub numeru lazienki' });
+    const current = await pool.query('SELECT * FROM quality_records WHERE project=$1 AND product=$2', [project, product]);
+    if (!current.rows.length) return res.status(404).json({ error: 'Nie znaleziono wpisu kontroli jakosci' });
+    const resolvedItems = uniqueTextList(req.body?.resolvedItems);
+    const goatDone = !!req.body?.goatDone;
+    const r = await pool.query(
+      `UPDATE quality_records
+       SET goat_done=$3, resolved_items=$4::jsonb, updated_by=$5, updated_at=NOW()
+       WHERE project=$1 AND product=$2
+       RETURNING project, product, goat, goat_done AS "goatDone", missing_items AS "missingItems",
+        resolved_items AS "resolvedItems", updated_by AS "updatedBy", updated_at AS "updatedAt"`,
+      [project, product, goatDone, JSON.stringify(resolvedItems), req.user.code]
+    );
+    await auditLog(req, 'quality_record_updated', project + '#' + product, { goatDone, resolvedItems });
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu kontroli jakosci' });
+  }
+});
+
 app.get('/api/reports', auth, async (req, res) => {
   try {
     const isManager = true;
@@ -996,6 +1117,7 @@ app.post('/api/reports', auth, async (req, res) => {
         'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
         [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '']
       );
+      await saveQualityFromLine(client, line, req.user.code);
       saved.push(line);
     }
 
@@ -1063,6 +1185,7 @@ app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
     }
     const lines = await client.query('SELECT project, product, stage FROM report_lines WHERE report_id=$1', [req.params.id]);
     let deletedCalculations = 0;
+    let deletedQuality = 0;
     for (const line of lines.rows) {
       const del = await client.query(
         `DELETE FROM material_usages
@@ -1070,11 +1193,15 @@ app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
         [line.project, line.product, line.stage, report.rows[0].worker_code, report.rows[0].report_date]
       );
       deletedCalculations += del.rowCount || 0;
+      if (String(line.stage) === '18') {
+        const qdel = await client.query('DELETE FROM quality_records WHERE project=$1 AND product=$2', [line.project, line.product]);
+        deletedQuality += qdel.rowCount || 0;
+      }
     }
     await client.query('DELETE FROM reports WHERE id=$1', [req.params.id]);
     await client.query('COMMIT');
-    await auditLog(req, 'report_deleted', String(req.params.id), { deletedCalculations });
-    res.json({ success: true, deletedCalculations });
+    await auditLog(req, 'report_deleted', String(req.params.id), { deletedCalculations, deletedQuality });
+    res.json({ success: true, deletedCalculations, deletedQuality });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message || 'Blad usuwania raportu' });
@@ -1109,6 +1236,7 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
         'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
         [reportId, line.project, line.product, line.stage, line.contractor || workerCode, line.note || '']
       );
+      await saveQualityFromLine(client, line, workerCode);
       saved.push(line);
     }
     if (saved.length === 0) {
@@ -1614,7 +1742,8 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     await ensureMaterialUsagesTable();
     await ensureTransportReplacementsTable();
     await ensureTransportExtrasTable();
-    const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages] = await Promise.all([
+    await ensureQualityTables();
+    const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
@@ -1629,6 +1758,8 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
       pool.query('SELECT * FROM projects ORDER BY project'),
       pool.query('SELECT * FROM project_bathrooms ORDER BY project, product'),
       pool.query('SELECT * FROM material_usages ORDER BY created_at'),
+      pool.query('SELECT * FROM quality_items ORDER BY project, item_name'),
+      pool.query('SELECT * FROM quality_records ORDER BY project, product'),
     ]);
 
     const backup = {
@@ -1649,6 +1780,8 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         projects: projects.rows,
         project_bathrooms: projectBathrooms.rows,
         material_usages: materialUsages.rows,
+        quality_items: qualityItems.rows,
+        quality_records: qualityRecords.rows,
       },
       counts: {
         users: users.rows.length,
@@ -1664,6 +1797,8 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         projects: projects.rows.length,
         project_bathrooms: projectBathrooms.rows.length,
         material_usages: materialUsages.rows.length,
+        quality_items: qualityItems.rows.length,
+        quality_records: qualityRecords.rows.length,
       }
     };
 
@@ -1911,10 +2046,51 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
         stagePermissionsRestored++;
       }
     }
+
+    let qualityItemsRestored = 0;
+    let qualityRecordsRestored = 0;
+    if (Array.isArray(data.quality_items) || Array.isArray(data.quality_records)) {
+      await ensureQualityTables();
+      for (const item of (data.quality_items || [])) {
+        const project = String(item.project || '').trim();
+        const itemName = String(item.item_name || item.itemName || '').trim();
+        if (!project || !itemName) continue;
+        await client.query(
+          `INSERT INTO quality_items (project, item_name, created_by, created_at)
+           VALUES ($1,$2,$3,COALESCE($4,NOW()))
+           ON CONFLICT (project, item_name) DO UPDATE SET created_by=COALESCE(quality_items.created_by, EXCLUDED.created_by)`,
+          [project, itemName, item.created_by || item.createdBy || req.user.code, item.created_at || item.createdAt || null]
+        );
+        qualityItemsRestored++;
+      }
+      for (const record of (data.quality_records || [])) {
+        const project = String(record.project || '').trim();
+        const product = Number(record.product);
+        if (!project || !Number.isInteger(product)) continue;
+        await client.query(
+          `INSERT INTO quality_records (project, product, goat, goat_done, missing_items, resolved_items, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,COALESCE($8,NOW()))
+           ON CONFLICT (project, product) DO UPDATE SET goat=EXCLUDED.goat, goat_done=EXCLUDED.goat_done,
+             missing_items=EXCLUDED.missing_items, resolved_items=EXCLUDED.resolved_items,
+             updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [
+            project,
+            product,
+            !!record.goat,
+            !!(record.goat_done || record.goatDone),
+            JSON.stringify(uniqueTextList(record.missing_items || record.missingItems)),
+            JSON.stringify(uniqueTextList(record.resolved_items || record.resolvedItems)),
+            record.updated_by || record.updatedBy || req.user.code,
+            record.updated_at || record.updatedAt || null
+          ]
+        );
+        qualityRecordsRestored++;
+      }
+    }
     
     await client.query('COMMIT');
-    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored });
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji` });
+    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored, qualityItems: qualityItemsRestored, qualityRecords: qualityRecordsRestored });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji, ${qualityRecordsRestored} wpisow jakosci` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
