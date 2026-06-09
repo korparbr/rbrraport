@@ -652,13 +652,17 @@ async function forbiddenStagesForWorker(client, workerCode, lines) {
   const r = await client.query(
     `SELECT CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END AS stage, array_agg(UPPER(worker_code)) AS workers
      FROM stage_permissions
-     WHERE CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END = ANY($1)
      GROUP BY CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END`,
-    [stages]
+    []
   );
-  return r.rows
-    .filter(row => Array.isArray(row.workers) && row.workers.length && !row.workers.includes(code))
-    .map(row => row.stage);
+  const assignedStages = r.rows
+    .filter(row => Array.isArray(row.workers) && row.workers.includes(code))
+    .map(row => normalizeStageId(row.stage));
+  return stages.filter(stage => {
+    if (assignedStages.length) return !assignedStages.includes(stage);
+    const row = r.rows.find(item => normalizeStageId(item.stage) === stage);
+    return !!(row && Array.isArray(row.workers) && row.workers.length && !row.workers.includes(code));
+  });
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────

@@ -186,7 +186,12 @@
     };
     const isStageAllowedForWorker = (stage, workerCode, permissions) => {
       const code = String(workerCode || "").toUpperCase();
-      const allowed = stagePermissionMap(permissions)[canonicalStageId(stage)] || [];
+      const map = stagePermissionMap(permissions);
+      const assignedStages = Object.entries(map)
+        .filter(([, workers]) => workers.includes(code))
+        .map(([stage]) => stage);
+      if (assignedStages.length) return assignedStages.includes(canonicalStageId(stage));
+      const allowed = map[canonicalStageId(stage)] || [];
       return !allowed.length || allowed.includes(code);
     };
     const explicitlyAllowedStageWorkers = (stage, permissions) => new Set(stagePermissionMap(permissions)[canonicalStageId(stage)] || []);
@@ -2007,12 +2012,31 @@
         return [...projects].sort((a, b) => a.localeCompare(b, "pl", { numeric: true }));
       }, [currentLayout, reports, serverProjects]);
       const manualProjectCount = Number(projectCounts[manual.project]) || 0;
+      const unavailableMapKeys = useMemo(() => {
+        const keys = new Set();
+        currentLayout.forEach(cell => keys.add(bathroomKey(cell.project, cell.product)));
+        Object.entries(stageByBathroom).forEach(([key, state]) => {
+          if (state && removedFromMapStages.has(String(state.stage))) keys.add(key);
+        });
+        return keys;
+      }, [currentLayout, stageByBathroom]);
       const manualProducts = useMemo(() => Array.from({ length: manualProjectCount }, (_, i) => i + 1), [manualProjectCount]);
+      const manualAvailableProducts = useMemo(() => manualProducts.filter(product => !unavailableMapKeys.has(bathroomKey(manual.project, product))), [manualProducts, unavailableMapKeys, manual.project]);
+      const mapProjectTiles = useMemo(() => mapProjectOptions
+        .map(project => {
+          const count = Number(projectCounts[project]) || 0;
+          const available = Array.from({ length: count }, (_, i) => i + 1)
+            .filter(product => !unavailableMapKeys.has(bathroomKey(project, product))).length;
+          return { project, count, available };
+        })
+        .filter(item => item.available > 0)
+        .sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true })), [mapProjectOptions, projectCounts, unavailableMapKeys]);
       const layoutByCell = useMemo(() => {
         const map = {};
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
         return map;
       }, [currentLayout]);
+      const manualCell = manual.row ? layoutByCell[manual.row + "-" + Number(manual.col)] : null;
       const minOccupiedMapCol = useMemo(() => {
         if (selectedHall.future) return 0;
         return currentLayout.reduce((min, cell) => {
@@ -2426,6 +2450,12 @@
         if (!col || col < visibleMapStart || col > selectedHall.cols) return setMsg({ type: "error", text: "Wybierz kolumne widoczna na szachownicy. Rozszerz szachownice w lewo, jesli chcesz dodac wczesniejsza kolumne." });
         if (!manual.project.trim()) return setMsg({ type: "error", text: "Wpisz projekt." });
         if (!Number(manual.product)) return setMsg({ type: "error", text: "Wpisz numer lazienki." });
+        const nextKey = bathroomKey(manual.project, manual.product);
+        const selectedCellKey = row + "-" + col;
+        const duplicate = currentLayout.find(cell => bathroomKey(cell.project, cell.product) === nextKey && cellKey(cell) !== selectedCellKey);
+        const removedState = stageByBathroom[nextKey];
+        if (duplicate) return setMsg({ type: "error", text: "Ta lazienka jest juz na szachownicy." });
+        if (removedState && removedFromMapStages.has(String(removedState.stage))) return setMsg({ type: "error", text: "Ta lazienka jest juz na magazynie albo zaladowana, wiec nie mozna jej dodac na szachownice." });
         const placedDate = /^\d{4}-\d{2}-\d{2}$/.test(manual.placedDate || "") ? manual.placedDate : today();
         const nextCell = { row, col, project: manual.project.trim(), product: productNo(manual.product), placedDate };
         const next = currentLayout.filter(cell => cellKey(cell) !== cellKey(nextCell));
@@ -2693,25 +2723,71 @@
                 <button style=${visibleMapStart >= (minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : selectedHall.cols) ? S.ghost : S.btn} disabled=${visibleMapStart >= (minOccupiedMapCol <= selectedHall.cols ? minOccupiedMapCol : selectedHall.cols)} onClick=${() => saveMapStart(visibleMapStart + 1)}>Skroc z lewej</button>
               </div>
             </div>
-            <div className="grid-3" style=${S.row3}>
-              <select style=${S.input} value=${manual.row} onChange=${e => setManual({ ...manual, row: e.target.value })}>
-                ${selectedHall.rows.map(row => html`<option key=${row} value=${row}>Wiersz ${row}</option>`)}
-              </select>
-              <input style=${S.input} type="number" min=${visibleMapStart} max=${selectedHall.cols} placeholder="Kolumna" value=${manual.col} onInput=${e => setManual({ ...manual, col: e.target.value })} />
-              <select style=${S.input} value=${manual.project} onChange=${e => setManual({ ...manual, project: e.target.value, product: "" })}>
-                <option value="">- wybierz projekt -</option>
-                ${mapProjectOptions.map(project => html`<option key=${project} value=${project}>${project} (${projectCounts[project] || "?"})</option>`)}
-              </select>
-              <select style=${S.input} value=${manual.product} onChange=${e => setManual({ ...manual, product: e.target.value })} disabled=${!manualProjectCount}>
-                <option value="">- wybierz lazienke -</option>
-                ${manualProducts.map(product => html`<option key=${product} value=${product}>Laz. ${product}</option>`)}
-              </select>
-              <div>
-                <label style=${S.label}>Data wstawienia</label>
-                <input style=${S.input} type="date" value=${manual.placedDate || today()} onInput=${e => setManual({ ...manual, placedDate: e.target.value })} />
+            <div style=${{ display: "grid", gap: "12px" }}>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: "10px", alignItems: "end" }}>
+                <div style=${{ background: manualCell ? "#fff7ed" : "#eff6ff", border: "1px solid " + (manualCell ? COLORS.orange : COLORS.accent), borderRadius: "8px", padding: "10px" }}>
+                  <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800 }}>Wybrane pole</div>
+                  <div style=${{ fontWeight: 900, fontSize: "18px", marginTop: "3px" }}>${manual.row || "-"}-${manual.col || "-"}</div>
+                  <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>${manualCell ? "Pole zajete - mozesz usunac albo nadpisac." : "Puste pole - wybierz projekt i lazienke."}</div>
+                </div>
+                <div>
+                  <label style=${S.label}>Data wstawienia</label>
+                  <input style=${S.input} type="date" value=${manual.placedDate || today()} onInput=${e => setManual({ ...manual, placedDate: e.target.value })} />
+                </div>
+                <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button style=${S.btn} onClick=${addManual}>${manualCell ? "Zapisz zmiane" : "Dodaj na pole"}</button>
+                  <button style=${S.danger} onClick=${removeManual}>Usun z pola</button>
+                </div>
               </div>
-              <button style=${S.btn} onClick=${addManual}>Zapisz pozycje</button>
-              <button style=${S.danger} onClick=${removeManual}>Usun z pola</button>
+              <div>
+                <label style=${S.label}>Projekt</label>
+                <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: "8px" }}>
+                  ${mapProjectTiles.map(item => {
+                    const selected = manual.project === item.project;
+                    return html`
+                      <button key=${item.project} type="button" onClick=${() => setManual({ ...manual, project: item.project, product: "" })} style=${{
+                        border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
+                        borderRadius: "9px",
+                        background: selected ? COLORS.accent : COLORS.panel,
+                        color: selected ? "#fff" : COLORS.text,
+                        padding: "10px",
+                        fontWeight: 900,
+                        cursor: "pointer",
+                        textAlign: "left"
+                      }}>
+                        <div style=${{ fontSize: "17px" }}>${item.project}</div>
+                        <div style=${{ fontSize: "11px", opacity: 0.78, marginTop: "3px" }}>wolne: ${item.available}</div>
+                      </button>
+                    `;
+                  })}
+                  ${mapProjectTiles.length ? null : html`<div style=${{ color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Brak wolnych lazienek do dodania.</div>`}
+                </div>
+              </div>
+              <div>
+                <label style=${S.label}>Lazienka</label>
+                ${manual.project ? html`
+                  <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(74px, 1fr))", gap: "7px" }}>
+                    ${manualAvailableProducts.map(product => {
+                      const type = bathroomTypeInfo(serverProjects, manual.project, product);
+                      const selected = productNo(manual.product) === product;
+                      return html`
+                        <button key=${product} type="button" onClick=${() => setManual({ ...manual, product: String(product) })} style=${{
+                          border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
+                          borderRadius: "8px",
+                          background: selected ? COLORS.accent : COLORS.panel2,
+                          color: selected ? "#fff" : COLORS.text,
+                          minHeight: "50px",
+                          fontWeight: 900,
+                          cursor: "pointer"
+                        }}>
+                          ${type.rbrTypeShort ? product + "/" + type.rbrTypeShort : product}
+                        </button>
+                      `;
+                    })}
+                    ${manualAvailableProducts.length ? null : html`<div style=${{ gridColumn: "1 / -1", color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Ten projekt nie ma wolnych lazienek do wstawienia.</div>`}
+                  </div>
+                ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Najpierw wybierz projekt.</div>`}
+              </div>
             </div>
           </section>
         ` : null}
@@ -2791,6 +2867,8 @@
                     const qState = cell ? qualityStateFor(qualityData, cell.project, cell.product) : { goatActive: false, missingActive: false };
                     const matchesFilter = matchesMapFilters(cell, alert);
                     const isManualCell = edit && manual.row === row && Number(manual.col) === col;
+                    const typeInfo = cell ? bathroomTypeInfo(serverProjects, cell.project, cell.product) : {};
+                    const productLabel = cell ? (typeInfo.rbrTypeShort ? cell.product + "/" + typeInfo.rbrTypeShort : cell.product) : "";
                     return html`
                       <button
                         key=${row + "-" + col}
@@ -2935,12 +3013,12 @@
                             placeItems: "center",
                             padding: "4px 2px",
                             lineHeight: 1.08,
-                            fontSize: "21px"
+                            fontSize: "27px"
                           }}>
-                            <span style=${{ pointerEvents: "none", fontSize: "21px", fontWeight: 900 }}>
+                            <span style=${{ pointerEvents: "none", fontSize: "27px", fontWeight: 900 }}>
                               ${cell.project}<br />
-                              ${cell.product}<br />
-                              <span style=${{ fontSize: "16.5px", fontWeight: 900, lineHeight: 1 }}>${st.shortLabel}</span>
+                              ${productLabel}<br />
+                              <span style=${{ fontSize: "21.5px", fontWeight: 900, lineHeight: 1 }}>${st.shortLabel}</span>
                             </span>
                           </div>
                           <div style=${{ flex: 1, background: "#fff", width: "100%" }}></div>
@@ -3973,6 +4051,18 @@
       const editableItems = useMemo(() => qualityItems
         .filter(item => itemProject === "all" || sameProject(item.project, itemProject))
         .sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || String(a.itemName || "").localeCompare(String(b.itemName || ""), "pl", { numeric: true })), [qualityItems, itemProject]);
+      const editableItemRows = useMemo(() => {
+        const grouped = {};
+        editableItems.forEach(item => {
+          const project = String(item.project || "");
+          if (!grouped[project]) grouped[project] = [];
+          grouped[project].push(item);
+        });
+        return Object.keys(grouped)
+          .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
+          .map(project => ({ project, items: grouped[project].sort((a, b) => String(a.itemName || "").localeCompare(String(b.itemName || ""), "pl", { numeric: true })) }));
+      }, [editableItems]);
+      const maxEditableItems = Math.max(0, ...editableItemRows.map(row => row.items.length));
       const visible = useMemo(() => records.filter(record => {
         const state = qualityStateFor(qualityData, record.project, record.product);
         const isOpen = state.goatActive || state.missingActive;
@@ -4105,22 +4195,43 @@
                 </select>
               </div>
             </div>
-            <div style=${{ display: "grid", gap: "8px" }}>
-              ${editableItems.map(item => {
-                const key = item.project + "#" + item.itemName;
-                const value = itemEdits[key] != null ? itemEdits[key] : item.itemName;
-                const changed = String(value).trim() && String(value).trim() !== item.itemName;
-                return html`
-                  <div key=${key} style=${{ display: "grid", gridTemplateColumns: "100px 1fr auto auto", gap: "8px", alignItems: "center", background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "8px" }}>
-                    <strong>${item.project}</strong>
-                    <input style=${S.input} value=${value} onInput=${e => setItemEdits({ ...itemEdits, [key]: e.target.value })} />
-                    <button style=${S.btn} disabled=${!changed || savingKey === "item-" + key} onClick=${() => saveQualityItemName(item)}>Zmien</button>
-                    <button style=${S.danger} disabled=${savingKey === "item-" + key} onClick=${() => removeQualityItem(item)}>Usun</button>
-                  </div>
-                `;
-              })}
-              ${editableItems.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "16px" }}>Brak zapisanych nazw brakow.</div>`}
-            </div>
+            ${editableItemRows.length ? html`
+              <div style=${{ overflowX: "auto" }}>
+                <table style=${{ width: "100%", minWidth: Math.max(620, 180 + maxEditableItems * 260) + "px", borderCollapse: "collapse", fontSize: "13px" }}>
+                  <thead>
+                    <tr>
+                      <th style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, width: "150px" }}>Nr zlecenia</th>
+                      ${Array.from({ length: maxEditableItems }, (_, i) => html`
+                        <th key=${i} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted }}>Brak ${i + 1}</th>
+                      `)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${editableItemRows.map(row => html`
+                      <tr key=${row.project}>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900, verticalAlign: "top" }}>${row.project}</td>
+                        ${Array.from({ length: maxEditableItems }, (_, i) => {
+                          const item = row.items[i];
+                          if (!item) return html`<td key=${i} style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, background: COLORS.bg }}></td>`;
+                          const key = item.project + "#" + item.itemName;
+                          const value = itemEdits[key] != null ? itemEdits[key] : item.itemName;
+                          const changed = String(value).trim() && String(value).trim() !== item.itemName;
+                          return html`
+                            <td key=${key} style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, verticalAlign: "top" }}>
+                              <div style=${{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: "6px", alignItems: "center" }}>
+                                <input style=${{ ...S.input, minHeight: "34px", padding: "6px 8px" }} value=${value} onInput=${e => setItemEdits({ ...itemEdits, [key]: e.target.value })} />
+                                <button style=${{ ...S.btn, padding: "7px 9px", fontSize: "12px" }} disabled=${!changed || savingKey === "item-" + key} onClick=${() => saveQualityItemName(item)}>Zmien</button>
+                                <button style=${{ ...S.danger, padding: "7px 9px", fontSize: "12px" }} disabled=${savingKey === "item-" + key} onClick=${() => removeQualityItem(item)}>Usun</button>
+                              </div>
+                            </td>
+                          `;
+                        })}
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+            ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "16px" }}>Brak zapisanych nazw brakow.</div>`}
           </div>
           <div style=${{ display: "grid", gap: "10px" }}>
             ${visible.map(record => {
@@ -4227,25 +4338,27 @@
               <div style=${{ fontSize: "32px", lineHeight: 1, fontWeight: 900 }}>${packed.length}</div>
             </div>
           </div>
-          <div style=${{ display: "grid", gap: "14px" }}>
-            ${grouped.map(group => html`
-              <section key=${group.project} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
-                <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
-                  <div>
-                    <div style=${{ fontSize: "20px", fontWeight: 900, color: COLORS.text }}>Projekt ${group.project}</div>
-                    <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "2px" }}>
-                      Podsumowanie: ${group.count} lazienek${group.fromDate ? " / pakowanie od " + group.fromDate + (group.toDate && group.toDate !== group.fromDate ? " do " + group.toDate : "") : ""}
-                    </div>
+          <div style=${{ display: "grid", gridTemplateColumns: selectedInfo ? "minmax(0, 1fr) minmax(340px, 420px)" : "1fr", gap: "14px", alignItems: "start" }}>
+            <div style=${{ overflowX: "auto", paddingBottom: "6px" }}>
+              <div style=${{ display: "grid", gridAutoFlow: "column", gridAutoColumns: "minmax(150px, 190px)", gap: "12px", alignItems: "start", minHeight: "120px" }}>
+              ${grouped.map(group => html`
+              <section key=${group.project} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "10px", minWidth: 0 }}>
+                <div style=${{ position: "sticky", top: 0, zIndex: 1, background: COLORS.panel2, paddingBottom: "8px", marginBottom: "8px", borderBottom: "1px solid " + COLORS.border }}>
+                  <div style=${{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "center" }}>
+                    <div style=${{ fontSize: "18px", fontWeight: 900, color: COLORS.text, lineHeight: 1.05 }}>${group.project}</div>
+                    <span style=${{ ...S.badge, background: wh.color, color: wh.text, borderColor: COLORS.border, padding: "3px 7px", fontSize: "11px" }}>${group.count}</span>
                   </div>
-                  <span style=${{ ...S.badge, background: wh.color, color: wh.text, borderColor: COLORS.border }}>${group.count} szt.</span>
+                  <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "4px", lineHeight: 1.25 }}>
+                    ${group.fromDate ? "19 - " + group.fromDate + (group.toDate && group.toDate !== group.fromDate ? " / " + group.toDate : "") : "Brak daty 19"}
+                  </div>
                 </div>
-                <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: "6px" }}>
+                <div style=${{ display: "grid", gridTemplateColumns: "1fr", gap: "6px" }}>
                   ${group.items.map(item => {
                     const loadDate = loads[transportKey(item.project, item.product)];
                     const alert = transportAlert(loadDate);
                     const qState = qualityStateFor(qualityData, item.project, item.product);
                     return html`
-                      <button key=${item.project + "-" + item.product} type="button" onClick=${() => setSelectedBathroom(item)} style=${{ position: "relative", textAlign: "left", background: wh.color, color: wh.text, border: "1px solid " + (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : COLORS.border), borderRadius: "7px", padding: "6px", minHeight: "54px", overflow: "hidden", cursor: "pointer", boxShadow: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? "0 0 0 3px rgba(39,94,254,0.16)" : "none" }}>
+                      <button key=${item.project + "-" + item.product} type="button" onClick=${() => setSelectedBathroom(item)} style=${{ position: "relative", textAlign: "left", background: wh.color, color: wh.text, border: "1px solid " + (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : COLORS.border), borderRadius: "7px", padding: "7px", minHeight: "58px", overflow: "hidden", cursor: "pointer", boxShadow: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? "0 0 0 3px rgba(39,94,254,0.16)" : "none" }}>
                         ${alert ? html`<div title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{ position: "absolute", top: "4px", right: "4px", width: "16px", height: "16px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900, fontSize: "11px" }}>!</div>` : null}
                         ${qState.goatActive || qState.missingActive ? html`
                           <div style=${{ position: "absolute", right: "4px", bottom: "3px", display: "flex", gap: "2px", fontSize: "14px", lineHeight: 1 }}>
@@ -4253,84 +4366,85 @@
                             ${qState.missingActive ? html`<span title=${"Braki: " + qState.openMissing.join(", ")}>${qualityIcon("missing")}</span>` : null}
                           </div>
                         ` : null}
-                        <div style=${{ fontWeight: 900, fontSize: "12px", lineHeight: 1.1, paddingRight: "18px" }}>${item.project}</div>
-                        <div style=${{ fontWeight: 900, fontSize: "12px", lineHeight: 1.1 }}>Laz. ${item.product}</div>
-                        <div style=${{ fontSize: "10px", marginTop: "3px", lineHeight: 1.15 }}>${item.packStage || "19"} - ${item.packDate || "-"}</div>
+                        <div style=${{ fontWeight: 900, fontSize: "15px", lineHeight: 1.05, paddingRight: "18px" }}>Laz. ${item.product}</div>
+                        <div style=${{ fontSize: "10px", marginTop: "4px", lineHeight: 1.15 }}>${item.packStage || "19"} - ${item.packDate || "-"}</div>
                         ${loadDate ? html`<div style=${{ fontSize: "10px", marginTop: "1px", lineHeight: 1.15 }}>Zalad. - ${loadDate}</div>` : null}
                       </button>
                     `;
                   })}
                 </div>
               </section>
-            `)}
-          </div>
-          ${packed.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "24px" }}>Brak spakowanych lazienek.</div>`}
-          ${selectedInfo ? html`
-            <section style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.panel2, padding: "14px", marginTop: "16px" }}>
-              <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", marginBottom: "12px" }}>
-                <div>
-                  <h3 style=${{ ...S.title, fontSize: "19px", marginBottom: "4px" }}>Dane lazienki: ${selectedInfo.item.project} / Laz. ${selectedInfo.item.product}</h3>
-                  <div style=${{ color: COLORS.muted, fontSize: "13px" }}>
-                    Pakowanie: ${selectedInfo.item.packStage || "19"} - ${selectedInfo.item.packDate || "-"}${selectedInfo.loadDate ? " / Zaladunek: " + selectedInfo.loadDate : ""}
+              `)}
+              </div>
+            </div>
+            ${selectedInfo ? html`
+              <aside style=${{ border: "2px solid " + COLORS.accent, borderRadius: "10px", background: "#eef4ff", padding: "14px", position: "sticky", top: "12px", boxShadow: "0 10px 24px rgba(39,94,254,0.14)" }}>
+                <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", marginBottom: "12px" }}>
+                  <div>
+                    <h3 style=${{ ...S.title, fontSize: "19px", marginBottom: "4px" }}>Dane lazienki</h3>
+                    <div style=${{ color: COLORS.text, fontSize: "18px", fontWeight: 900 }}>${selectedInfo.item.project} / Laz. ${selectedInfo.item.product}</div>
+                    <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>
+                      Pakowanie: ${selectedInfo.item.packStage || "19"} - ${selectedInfo.item.packDate || "-"}${selectedInfo.loadDate ? " / Zaladunek: " + selectedInfo.loadDate : ""}
+                    </div>
                   </div>
+                  <button style=${S.ghost} onClick=${() => setSelectedBathroom(null)}>Zamknij</button>
                 </div>
-                <button style=${S.ghost} onClick=${() => setSelectedBathroom(null)}>Zamknij</button>
-              </div>
-              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "8px", marginBottom: "12px" }}>
-                ${[
-                  ["ID", selectedInfo.meta.externalId],
-                  ["RBR Type", selectedInfo.meta.rbrType],
-                  ["Typ", bathroomTypeInfo(serverProjects, selectedInfo.item.project, selectedInfo.item.product).rbrTypeShort],
-                  ["Ventilation Variant", selectedInfo.meta.ventilationVariant],
-                  ["Visible High Walls", selectedInfo.meta.visibleHighWalls],
-                  ["Requested Delivery", selectedInfo.meta.requestedDelivery]
-                ].map(row => html`
-                  <div key=${row[0]} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "9px" }}>
-                    <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 900 }}>${row[0]}</div>
-                    <div style=${{ fontWeight: 900, marginTop: "3px" }}>${row[1] || "-"}</div>
+                <div style=${{ display: "grid", gridTemplateColumns: "1fr", gap: "8px", marginBottom: "12px" }}>
+                  ${[
+                    ["ID", selectedInfo.meta.externalId],
+                    ["RBR Type", selectedInfo.meta.rbrType],
+                    ["Typ", bathroomTypeInfo(serverProjects, selectedInfo.item.project, selectedInfo.item.product).rbrTypeShort],
+                    ["Ventilation Variant", selectedInfo.meta.ventilationVariant],
+                    ["Visible High Walls", selectedInfo.meta.visibleHighWalls],
+                    ["Requested Delivery", selectedInfo.meta.requestedDelivery]
+                  ].map(row => html`
+                    <div key=${row[0]} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "9px" }}>
+                      <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 900 }}>${row[0]}</div>
+                      <div style=${{ fontWeight: 900, marginTop: "3px" }}>${row[1] || "-"}</div>
+                    </div>
+                  `)}
+                </div>
+                <div style=${{ display: "grid", gap: "10px", marginBottom: "12px" }}>
+                  <div style=${{ background: COLORS.panel, border: "1px solid " + (selectedInfo.quality.goatActive || selectedInfo.quality.missingActive ? "#fb923c" : COLORS.border), borderRadius: "8px", padding: "10px" }}>
+                    <div style=${{ fontWeight: 900, marginBottom: "6px" }}>Kontrola jakosci</div>
+                    <div style=${{ color: COLORS.muted, fontSize: "13px", lineHeight: 1.6 }}>
+                      ${selectedInfo.quality.record && selectedInfo.quality.record.goat ? (selectedInfo.quality.goatActive ? qualityIcon("goat") + " Koza otwarta" : qualityIcon("goat") + " Koza zrobiona") : "Bez kozy"}
+                      ${selectedInfo.quality.record && selectedInfo.quality.record.missingItems && selectedInfo.quality.record.missingItems.length ? html`
+                        <br />${qualityIcon("missing")} Braki: ${selectedInfo.quality.openMissing.length ? selectedInfo.quality.openMissing.join(", ") : "wszystkie uzupelnione"}
+                      ` : html`<br />Bez brakow`}
+                    </div>
                   </div>
-                `)}
-              </div>
-              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "10px", marginBottom: "12px" }}>
-                <div style=${{ background: COLORS.panel, border: "1px solid " + (selectedInfo.quality.goatActive || selectedInfo.quality.missingActive ? "#fb923c" : COLORS.border), borderRadius: "8px", padding: "10px" }}>
-                  <div style=${{ fontWeight: 900, marginBottom: "6px" }}>Kontrola jakosci</div>
-                  <div style=${{ color: COLORS.muted, fontSize: "13px", lineHeight: 1.6 }}>
-                    ${selectedInfo.quality.record && selectedInfo.quality.record.goat ? (selectedInfo.quality.goatActive ? qualityIcon("goat") + " Koza otwarta" : qualityIcon("goat") + " Koza zrobiona") : "Bez kozy"}
-                    ${selectedInfo.quality.record && selectedInfo.quality.record.missingItems && selectedInfo.quality.record.missingItems.length ? html`
-                      <br />${qualityIcon("missing")} Braki: ${selectedInfo.quality.openMissing.length ? selectedInfo.quality.openMissing.join(", ") : "wszystkie uzupelnione"}
-                    ` : html`<br />Bez brakow`}
+                  <div style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                    <div style=${{ fontWeight: 900, marginBottom: "6px" }}>Uwagi / komentarze</div>
+                    ${selectedInfo.comments.length ? html`
+                      <div style=${{ display: "grid", gap: "6px", maxHeight: "220px", overflowY: "auto" }}>
+                        ${selectedInfo.comments.map(c => html`
+                          <div key=${c.id} style=${{ border: "1px solid " + COLORS.border, borderRadius: "7px", padding: "7px", background: c.done ? "#f0fdf4" : "#fff7ed" }}>
+                            <div style=${{ fontWeight: 800 }}>${c.comment}</div>
+                            <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "3px" }}>${c.done ? "Zrobione" : "Do zrobienia"} / ${c.authorName || c.authorCode || "-"} / ${(c.createdAt || "").slice(0, 10)}</div>
+                          </div>
+                        `)}
+                      </div>
+                    ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak komentarzy.</div>`}
                   </div>
                 </div>
                 <div style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
-                  <div style=${{ fontWeight: 900, marginBottom: "6px" }}>Uwagi / komentarze</div>
-                  ${selectedInfo.comments.length ? html`
-                    <div style=${{ display: "grid", gap: "6px" }}>
-                      ${selectedInfo.comments.map(c => html`
-                        <div key=${c.id} style=${{ border: "1px solid " + COLORS.border, borderRadius: "7px", padding: "7px", background: c.done ? "#f0fdf4" : "#fff7ed" }}>
-                          <div style=${{ fontWeight: 800 }}>${c.comment}</div>
-                          <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "3px" }}>${c.done ? "Zrobione" : "Do zrobienia"} / ${c.authorName || c.authorCode || "-"} / ${(c.createdAt || "").slice(0, 10)}</div>
+                  <div style=${{ fontWeight: 900, marginBottom: "8px" }}>Historia raportow</div>
+                  ${selectedInfo.history.length ? html`
+                    <div style=${{ display: "grid", gap: "6px", maxHeight: "260px", overflowY: "auto" }}>
+                      ${selectedInfo.history.map((line, idx) => html`
+                        <div key=${idx + "-" + line.date + "-" + line.stage} style=${{ display: "grid", gap: "2px", borderBottom: "1px solid " + COLORS.border, padding: "7px 0" }}>
+                          <strong>${line.date || "-"} / ${stageLabel(line.stage)}</strong>
+                          <span style=${{ color: COLORS.muted, fontSize: "12px" }}>${line.worker || "-"}</span>
                         </div>
                       `)}
                     </div>
-                  ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak komentarzy.</div>`}
+                  ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak historii raportow.</div>`}
                 </div>
-              </div>
-              <div style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
-                <div style=${{ fontWeight: 900, marginBottom: "8px" }}>Historia raportow</div>
-                ${selectedInfo.history.length ? html`
-                  <div style=${{ display: "grid", gap: "6px" }}>
-                    ${selectedInfo.history.map((line, idx) => html`
-                      <div key=${idx + "-" + line.date + "-" + line.stage} style=${{ display: "grid", gridTemplateColumns: "110px minmax(180px, 1fr) minmax(120px, 220px)", gap: "8px", alignItems: "center", borderBottom: "1px solid " + COLORS.border, padding: "7px 0" }}>
-                        <strong>${line.date || "-"}</strong>
-                        <span>${stageLabel(line.stage)}</span>
-                        <span style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "right" }}>${line.worker || "-"}</span>
-                      </div>
-                    `)}
-                  </div>
-                ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak historii raportow.</div>`}
-              </div>
-            </section>
-          ` : null}
+              </aside>
+            ` : null}
+          </div>
+          ${packed.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "24px" }}>Brak spakowanych lazienek.</div>`}
         </section>
       `;
     }
