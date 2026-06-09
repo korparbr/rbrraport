@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.41</title>
+  <title>FlowRBR 1.42</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -407,7 +407,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.41</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.42</span>` : null}
         </div>
       `;
     }
@@ -1657,6 +1657,36 @@
         });
         return map;
       }, [bathroomChecks]);
+      const sampleAutoKeys = useMemo(() => {
+        const firstByType = {};
+        currentLayout.forEach((cell, index) => {
+          if (!cell) return;
+          const typeInfo = bathroomTypeInfo(serverProjects, cell.project, cell.product);
+          const typeKey = normalizeCalculationType(typeInfo.rbrTypeShort || "");
+          if (!typeInfo.rbrTypeShort || typeKey === "typ-brak-danych") return;
+          const placed = cell.placedDate || "9999-12-31";
+          const current = firstByType[typeKey];
+          const order = selectedHall.rows.indexOf(cell.row) * 1000 + Number(cell.col || 0);
+          if (!current || placed < current.placed || (placed === current.placed && order < current.order) || (placed === current.placed && order === current.order && index < current.index)) {
+            firstByType[typeKey] = { key: bathroomKey(cell.project, cell.product), placed, order, index };
+          }
+        });
+        return new Set(Object.values(firstByType).map(item => item.key));
+      }, [currentLayout, serverProjects, selectedHall.rows]);
+      const sampleExplicitByKey = useMemo(() => {
+        const map = {};
+        (bathroomChecks || []).forEach(c => {
+          if (String(c.checkType || "") === "sample") map[bathroomKey(c.project, c.product)] = c;
+        });
+        return map;
+      }, [bathroomChecks]);
+      const sampleEnabledForCell = cell => {
+        if (!cell) return false;
+        const key = bathroomKey(cell.project, cell.product);
+        const explicit = sampleExplicitByKey[key];
+        if (explicit) return !!explicit.checked || String(explicit.status || "") === "checked";
+        return sampleAutoKeys.has(key);
+      };
       const checkStatus = check => {
         if (!check) return "pending";
         if (check.status) return String(check.status);
@@ -1698,6 +1728,17 @@
           await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "tiling", status === "checked", status);
           await reloadBathroomChecks();
           setMsg({ type: "success", text: "Kontrola: " + checkStatusLabel(status).toLowerCase() + "." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const setSampleCheck = async enabled => {
+        if (!selectedCell || !canAddComments) return;
+        setMsg(null);
+        try {
+          await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "sample", !!enabled, enabled ? "checked" : "pending");
+          await reloadBathroomChecks();
+          setMsg({ type: "success", text: enabled ? "Gwiazdka musztrowki nadana." : "Gwiazdka musztrowki wylaczona." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -2067,6 +2108,9 @@
       const selectedLoadAlert = transportAlert(selectedLoadDate);
       const selectedMeta = selectedCell ? bathroomMeta[transportKey(selectedCell.project, selectedCell.product)] : null;
       const selectedBathroomKey = selectedCell ? bathroomKey(selectedCell.project, selectedCell.product) : "";
+      const selectedSampleEnabled = selectedCell ? sampleEnabledForCell(selectedCell) : false;
+      const selectedSampleExplicit = selectedCell ? sampleExplicitByKey[selectedBathroomKey] : null;
+      const selectedSampleAuto = selectedCell ? sampleAutoKeys.has(selectedBathroomKey) : false;
       const selectedNeedsTilingCheck = selectedCell ? tilingByBathroom.has(selectedBathroomKey) : false;
       const selectedTilingCheck = selectedNeedsTilingCheck ? bathroomChecksByKey[selectedBathroomKey + "#tiling"] : null;
       const selectedCheckStatus = checkStatus(selectedTilingCheck);
@@ -2249,6 +2293,7 @@
                     const tilingCheck = needsTilingCheck ? bathroomChecksByKey[checkKey + "#tiling"] : null;
                     const tileCheckStatus = checkStatus(tilingCheck);
                     const tileCheckStyle = checkStatusStyle(tileCheckStatus);
+                    const sampleEnabled = sampleEnabledForCell(cell);
                     const matchesFilter = matchesMapFilters(cell, alert);
                     const isManualCell = edit && manual.row === row && Number(manual.col) === col;
                     return html`
@@ -2301,6 +2346,23 @@
                               zIndex: 2
                             }}>!</span>
                           ` : null}
+                          ${sampleEnabled ? html`
+                            <span title="Musztrowka - pierwsza lazienka tego typu" style=${{
+                              position: "absolute",
+                              top: "5px",
+                              left: "6px",
+                              width: "22px",
+                              height: "22px",
+                              color: "#facc15",
+                              textShadow: "0 1px 2px rgba(0,0,0,0.45)",
+                              display: "grid",
+                              placeItems: "center",
+                              fontWeight: 900,
+                              fontSize: "20px",
+                              lineHeight: 1,
+                              zIndex: 3
+                            }}>${String.fromCharCode(9733)}</span>
+                          ` : null}
                           ${commentStatus ? html`
                             <span title=${commentStatus.open ? "Komentarz do zrobienia" : "Komentarze zrobione"} style=${{
                               position: "absolute",
@@ -2344,12 +2406,13 @@
                             display: "grid",
                             placeItems: "center",
                             padding: "4px 2px",
-                            lineHeight: 1.12
+                            lineHeight: 1.14,
+                            fontSize: "14px"
                           }}>
-                            <span style=${{ pointerEvents: "none" }}>
+                            <span style=${{ pointerEvents: "none", fontSize: "14px", fontWeight: 900 }}>
                               ${cell.project}<br />
                               ${cell.product}<br />
-                              <span style=${{ fontSize: "9px", fontWeight: 800, lineHeight: 1 }}>${st.shortLabel}</span>
+                              <span style=${{ fontSize: "11px", fontWeight: 900, lineHeight: 1 }}>${st.shortLabel}</span>
                             </span>
                           </div>
                           <div style=${{ flex: 1, background: "#fff", width: "100%" }}></div>
@@ -2393,6 +2456,33 @@
                 `)}
               </div>
             ` : null}
+            <div style=${{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "10px",
+              background: selectedSampleEnabled ? "#fef9c3" : COLORS.panel2,
+              border: "1px solid " + (selectedSampleEnabled ? "#facc15" : COLORS.border),
+              borderRadius: "8px",
+              padding: "10px 12px",
+              marginBottom: "12px"
+            }}>
+              <div>
+                <div style=${{ fontWeight: 900 }}>
+                  <span style=${{ color: "#facc15", textShadow: "0 1px 1px rgba(0,0,0,0.35)", marginRight: "6px" }}>${String.fromCharCode(9733)}</span>
+                  Musztrowka
+                </div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "2px" }}>
+                  ${selectedSampleEnabled ? (selectedSampleExplicit ? "Gwiazdka nadana recznie." : selectedSampleAuto ? "Automatycznie: pierwsza lazienka tego typu." : "Gwiazdka aktywna.") : "Gwiazdka wylaczona dla tej lazienki."}
+                </div>
+              </div>
+              ${canAddComments ? html`
+                <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <button style=${selectedSampleEnabled ? S.ghost : S.btn} onClick=${() => setSampleCheck(false)}>Wylacz</button>
+                  <button style=${selectedSampleEnabled ? S.btn : S.ghost} onClick=${() => setSampleCheck(true)}>Nadaj gwiazdke</button>
+                </div>
+              ` : null}
+            </div>
             ${selectedNeedsTilingCheck ? html`
               <div style=${{
                 display: "flex",
@@ -3378,12 +3468,28 @@
       const [transportSubtab, setTransportSubtab] = useState("list");
       const [replacementModal, setReplacementModal] = useState(null);
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
+      const loadedBathroomSet = useMemo(() => {
+        const set = new Set();
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          if (String(line.stage || "") === "21") set.add(transportKey(line.project, line.product));
+        }));
+        return set;
+      }, [reports]);
       const replacementByTarget = useMemo(() => {
         const map = {};
         (transportReplacements || []).forEach(item => {
           if (item.mode !== "podmiana") return;
           const key = transportKey(item.project, item.toProduct);
           if (!map[key]) map[key] = item;
+        });
+        return map;
+      }, [transportReplacements]);
+      const replacementUseCount = useMemo(() => {
+        const map = {};
+        (transportReplacements || []).forEach(item => {
+          if (item.mode !== "podmiana") return;
+          const key = transportKey(item.project, item.toProduct);
+          map[key] = (map[key] || 0) + 1;
         });
         return map;
       }, [transportReplacements]);
@@ -3426,11 +3532,12 @@
           });
           groups.get(key).items.push(item);
         });
-        return [...groups.values()].map(row => ({
-          ...row,
-          items: row.items.sort((a, b) => a.product - b.product)
-        })).sort((a, b) => (a.loadDate || "").localeCompare(b.loadDate || "") || String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || Number(a.lkwNumber || 999999) - Number(b.lkwNumber || 999999));
-      }, [visible, transportInfo]);
+        return [...groups.values()].map(row => {
+          const items = row.items.sort((a, b) => a.product - b.product);
+          const loaded = items.length > 0 && items.every(item => loadedBathroomSet.has(transportKey(item.project, item.product)));
+          return { ...row, items, loaded };
+        }).sort((a, b) => Number(a.loaded) - Number(b.loaded) || (a.loadDate || "").localeCompare(b.loadDate || "") || String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || Number(a.lkwNumber || 999999) - Number(b.lkwNumber || 999999));
+      }, [visible, transportInfo, loadedBathroomSet]);
       const transportColumnDefs = [
         ["project", "Nr. zlecenia", row => row.project],
         ["orderName", "Nazwa zlecenia", row => row.orderName],
@@ -3772,8 +3879,9 @@
                 ${filteredTransportRows.map((row, index) => {
                   const alert = transportAlert(row.loadDate);
                   const saving = savingKey === row.key;
+                  const rowBg = row.loaded ? "#dcfce7" : "#fff";
                   return html`
-                    <tr key=${row.key} style=${{ background: "#fff", color: "#111827", fontWeight: 800 }}>
+                    <tr key=${row.key} style=${{ background: rowBg, color: "#111827", fontWeight: 800 }}>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${index + 1}</td>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.project}</td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "130px" }}>
@@ -3791,15 +3899,18 @@
                             const isWarehouse = item.status === "magazyn";
                             const tilePalette = warehousePalette(isWarehouse ? "magazyn" : "produkcja");
                             const replacement = replacementByTarget[transportKey(row.project, item.product)];
+                            const usedAgain = (replacementUseCount[transportKey(row.project, item.product)] || 0) > 1;
+                            const tileBg = usedAgain ? "#ef4444" : tilePalette.color;
+                            const tileFg = usedAgain ? "#fff" : tilePalette.text;
                             return html`
-                              <button key=${item.product} title=${replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openReplacementModal(row, item)} style=${{
+                              <button key=${item.product} title=${usedAgain ? "Lazienka uzyta jako podmiana kolejny raz" : replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openReplacementModal(row, item)} style=${{
                                 minWidth: replacement ? "42px" : "27px",
                                 minHeight: "23px",
                                 padding: "2px 5px",
                                 borderRadius: "5px",
                                 border: "1px solid " + COLORS.border,
-                                background: tilePalette.color,
-                                color: tilePalette.text,
+                                background: tileBg,
+                                color: tileFg,
                                 display: "inline-grid",
                                 placeItems: "center",
                                 fontSize: "11px",
@@ -3909,7 +4020,8 @@
                   <option value="">- wybierz lazienke -</option>
                   ${replacementOptions.map(item => {
                     const info = transportInfo[transportKey(item.project, item.product)];
-                    return html`<option key=${item.product} value=${item.product}>${item.product}${info ? " / ma transport " + (info.loadDate || "") + (info.lkwNumber ? " LKW" + info.lkwNumber : "") : ""}</option>`;
+                    const type = bathroomTypeInfo(serverProjects, item.project, item.product).rbrTypeShort;
+                    return html`<option key=${item.product} value=${item.product}>${item.product}${type ? " / typ " + type : ""}${info ? " / ma transport " + (info.loadDate || "") + (info.lkwNumber ? " LKW" + info.lkwNumber : "") : ""}</option>`;
                   })}
                 </select>
                 <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>

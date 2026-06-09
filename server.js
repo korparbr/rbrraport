@@ -1353,6 +1353,8 @@ app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
       return res.status(404).json({ error: 'Ta lazienka nie ma terminu transportu do przeniesienia' });
     }
     const t = source.rows[0];
+    const target = await client.query('SELECT * FROM transport_dates WHERE project=$1 AND product=$2', [project, toProduct]);
+    const returnTransport = target.rows[0] || null;
     const details = {
       orderName: t.order_name || '',
       trailer: t.trailer || '',
@@ -1361,7 +1363,19 @@ app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
       unloadDate: t.unload_date || '',
       carrier: t.carrier || '',
       note: t.note || '',
-      delayNote: t.delay_note || ''
+      delayNote: t.delay_note || '',
+      returnTransport: returnTransport ? {
+        loadDate: returnTransport.load_date || '',
+        lkwNumber: returnTransport.lkw_number || '',
+        orderName: returnTransport.order_name || '',
+        trailer: returnTransport.trailer || '',
+        direction: returnTransport.direction || '',
+        sizeLabel: returnTransport.size_label || '',
+        unloadDate: returnTransport.unload_date || '',
+        carrier: returnTransport.carrier || '',
+        note: returnTransport.note || '',
+        delayNote: returnTransport.delay_note || ''
+      } : null
     };
     await client.query(
       `INSERT INTO transport_dates (
@@ -1376,7 +1390,23 @@ app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
          delay_note=EXCLUDED.delay_note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
       [project, toProduct, t.load_date, t.lkw_number, t.order_name, t.trailer, t.direction, t.size_label, t.unload_date, t.carrier, t.note, t.delay_note, req.user.code]
     );
-    await client.query('DELETE FROM transport_dates WHERE project=$1 AND product=$2', [project, fromProduct]);
+    if (mode === 'podmiana' && returnTransport) {
+      await client.query(
+        `INSERT INTO transport_dates (
+           project, product, load_date, lkw_number, order_name, trailer, direction, size_label,
+           unload_date, carrier, note, delay_note, updated_by, updated_at
+         )
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
+         ON CONFLICT (project, product) DO UPDATE SET
+           load_date=EXCLUDED.load_date, lkw_number=EXCLUDED.lkw_number, order_name=EXCLUDED.order_name,
+           trailer=EXCLUDED.trailer, direction=EXCLUDED.direction, size_label=EXCLUDED.size_label,
+           unload_date=EXCLUDED.unload_date, carrier=EXCLUDED.carrier, note=EXCLUDED.note,
+           delay_note=EXCLUDED.delay_note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+        [project, fromProduct, returnTransport.load_date, returnTransport.lkw_number, returnTransport.order_name, returnTransport.trailer, returnTransport.direction, returnTransport.size_label, returnTransport.unload_date, returnTransport.carrier, returnTransport.note, returnTransport.delay_note, req.user.code]
+      );
+    } else if (mode === 'zamien') {
+      await client.query('DELETE FROM transport_dates WHERE project=$1 AND product=$2', [project, fromProduct]);
+    }
     const logged = await client.query(
       `INSERT INTO transport_replacements (mode, project, from_product, to_product, load_date, lkw_number, details, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
