@@ -1611,15 +1611,7 @@
       }, [currentLayout, selectedCell]);
       const selectedHistory = useMemo(() => {
         if (!selectedCell) return [];
-        const mapEntry = selectedMapCell;
-        const mapHistory = mapEntry && mapEntry.placedDate ? [{
-          project: selectedCell.project,
-          product: selectedCell.product,
-          stage: "4.1",
-          date: mapEntry.placedDate,
-          worker: "Szachownica"
-        }] : [];
-        const reportHistory = (reports || [])
+        return (reports || [])
           .flatMap(report => (report.lines || [])
             .filter(line => sameProject(line.project, selectedCell.project) && productNo(line.product) === productNo(selectedCell.product))
             .map(line => ({
@@ -1627,8 +1619,7 @@
               date: report.date || "",
               worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
             })))
-        return [...mapHistory, ...reportHistory]
-          .sort((a, b) => (a.date || "").localeCompare(b.date || "") || ((stageOrder[a.stage] || (a.stage === "4.1" ? 1.5 : 0)) - (stageOrder[b.stage] || (b.stage === "4.1" ? 1.5 : 0))));
+          .sort((a, b) => (a.date || "").localeCompare(b.date || "") || (stageOrder[a.stage] || 0) - (stageOrder[b.stage] || 0));
       }, [reports, selectedCell, selectedMapCell]);
       const selectedComments = useMemo(() => {
         if (!selectedCell) return [];
@@ -1744,11 +1735,16 @@
           let y = 10;
           doc.setFont("helvetica", "bold");
           doc.setFontSize(15);
-          doc.text("Szachownica - " + selectedHall.label, margin, y);
+          const title = "Szachownica - " + selectedHall.label;
+          doc.text(title, margin, y);
+          if (selectedHallDate) {
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(9);
+            doc.text("Data: " + selectedHallDate, margin + doc.getTextWidth(title) + 8, y);
+          }
           doc.setFont("helvetica", "normal");
           doc.setFontSize(8);
           doc.text("Wygenerowano: " + today(), pageW - margin - 42, y);
-          if (selectedHallDate) doc.text("Data szachownicy: " + selectedHallDate, margin, y + 5);
           y += 7;
 
           let lx = margin;
@@ -3120,27 +3116,53 @@
 
     function packedBathrooms(reports) {
       const map = {};
+      const inStages = new Set(["19", "20"]);
+      const outStages = new Set(["21", "transport"]);
+      let order = 0;
       (reports || []).forEach(report => {
         (report.lines || []).forEach(line => {
-          if (String(line.stage) !== "19") return;
+          const stage = String(line.stage || "");
+          if (!inStages.has(stage) && !outStages.has(stage)) return;
           const key = transportKey(line.project, line.product);
           const current = map[key];
-          if (!current || (report.date || "") >= (current.packDate || "")) {
+          const event = {
+            date: report.date || "",
+            order: order++,
+            stage
+          };
+          const isNewer = !current || event.date > (current.eventDate || "") || (event.date === (current.eventDate || "") && event.order >= (current.eventOrder || 0));
+          if (!isNewer) return;
+          if (outStages.has(stage)) {
+            map[key] = {
+              project: String(line.project || ""),
+              product: productNo(line.product),
+              status: "out",
+              eventDate: event.date,
+              eventOrder: event.order,
+              outStage: stage
+            };
+          } else {
             map[key] = {
               project: String(line.project || ""),
               product: productNo(line.product),
               packDate: report.date || "",
+              packStage: stage,
+              status: "in",
+              eventDate: event.date,
+              eventOrder: event.order,
               worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
             };
           }
         });
       });
-      return Object.values(map).sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
+      return Object.values(map)
+        .filter(item => item.status === "in")
+        .sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
     }
 
     function transportProjectItems(reports, serverProjects) {
       const counts = projectCountMap(serverProjects);
-      const stagePriority = { "19": 3, "21": 4 };
+      const stagePriority = { "19": 3, "20": 3, "21": 4, "transport": 4 };
       const states = {};
       (reports || []).forEach(report => {
         (report.lines || []).forEach(line => {
@@ -3152,12 +3174,12 @@
           const current = states[key];
           const score = stagePriority[String(line.stage)] || 1;
           const currentScore = current ? current.score : 0;
-          if (!current || score >= currentScore || (String(line.stage) === "19" && (report.date || "") >= (current.packDate || ""))) {
+          if (!current || score >= currentScore || ((String(line.stage) === "19" || String(line.stage) === "20") && (report.date || "") >= (current.packDate || ""))) {
             states[key] = {
               project,
               product,
-              status: String(line.stage) === "19" || String(line.stage) === "21" ? "magazyn" : "produkcja",
-              packDate: String(line.stage) === "19" ? (report.date || "") : (current && current.packDate) || "",
+              status: String(line.stage) === "19" || String(line.stage) === "20" ? "magazyn" : String(line.stage) === "21" || String(line.stage) === "transport" ? "wyslane" : "produkcja",
+              packDate: String(line.stage) === "19" || String(line.stage) === "20" ? (report.date || "") : (current && current.packDate) || "",
               score
             };
           }
@@ -3175,24 +3197,68 @@
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
       const wh = warehousePalette("magazyn");
+      const grouped = useMemo(() => {
+        const groups = {};
+        packed.forEach(item => {
+          const project = String(item.project || "");
+          if (!groups[project]) groups[project] = [];
+          groups[project].push(item);
+        });
+        return Object.keys(groups)
+          .sort((a, b) => a.localeCompare(b, "pl", { numeric: true }))
+          .map(project => {
+            const items = groups[project].sort((a, b) => a.product - b.product);
+            const dates = [...new Set(items.map(item => item.packDate).filter(Boolean))].sort();
+            return {
+              project,
+              items,
+              count: items.length,
+              fromDate: dates[0] || "",
+              toDate: dates[dates.length - 1] || ""
+            };
+          });
+      }, [packed]);
       return html`
         <section style=${S.card}>
-          <h2 style=${S.title}>Magazyn</h2>
-          <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>Spakowane lazienki z raportu 19. Pakowanie.</div>
-          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "10px" }}>
-            ${packed.map(item => {
-              const loadDate = loads[transportKey(item.project, item.product)];
-              const alert = transportAlert(loadDate);
-              return html`
-                <div key=${item.project + "-" + item.product} style=${{ position: "relative", background: wh.color, color: wh.text, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", minHeight: "96px" }}>
-                  ${alert ? html`<div title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{ position: "absolute", top: "8px", right: "8px", width: "24px", height: "24px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900 }}>!</div>` : null}
-                  <div style=${{ fontWeight: 900, fontSize: "18px" }}>${item.project}</div>
-                  <div style=${{ fontWeight: 900 }}>Laz. ${item.product}</div>
-                  <div style=${{ fontSize: "12px", marginTop: "6px" }}>Pakowanie: ${item.packDate || "-"}</div>
-                  ${loadDate ? html`<div style=${{ fontSize: "12px", marginTop: "3px" }}>Zaladunek: ${loadDate}</div>` : null}
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "start", marginBottom: "14px", flexWrap: "wrap" }}>
+            <div>
+              <h2 style=${S.title}>Magazyn</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki po etapie 19 lub 20. Raport 21 albo Transport zdejmuje lazienke z magazynu.</div>
+            </div>
+            <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: wh.color, color: wh.text, padding: "10px 14px", minWidth: "190px" }}>
+              <div style=${{ fontSize: "12px", fontWeight: 800, opacity: 0.8 }}>Suma na magazynie</div>
+              <div style=${{ fontSize: "32px", lineHeight: 1, fontWeight: 900 }}>${packed.length}</div>
+            </div>
+          </div>
+          <div style=${{ display: "grid", gap: "14px" }}>
+            ${grouped.map(group => html`
+              <section key=${group.project} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
+                <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "10px", flexWrap: "wrap" }}>
+                  <div>
+                    <div style=${{ fontSize: "20px", fontWeight: 900, color: COLORS.text }}>Projekt ${group.project}</div>
+                    <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "2px" }}>
+                      Podsumowanie: ${group.count} lazienek${group.fromDate ? " / pakowanie od " + group.fromDate + (group.toDate && group.toDate !== group.fromDate ? " do " + group.toDate : "") : ""}
+                    </div>
+                  </div>
+                  <span style=${{ ...S.badge, background: wh.color, color: wh.text, borderColor: COLORS.border }}>${group.count} szt.</span>
                 </div>
-              `;
-            })}
+                <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "10px" }}>
+                  ${group.items.map(item => {
+                    const loadDate = loads[transportKey(item.project, item.product)];
+                    const alert = transportAlert(loadDate);
+                    return html`
+                      <div key=${item.project + "-" + item.product} style=${{ position: "relative", background: wh.color, color: wh.text, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "12px", minHeight: "98px" }}>
+                        ${alert ? html`<div title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{ position: "absolute", top: "8px", right: "8px", width: "24px", height: "24px", borderRadius: "999px", background: alert.color, color: alert.text, display: "grid", placeItems: "center", fontWeight: 900 }}>!</div>` : null}
+                        <div style=${{ fontWeight: 900, fontSize: "18px", paddingRight: "28px" }}>${item.project}</div>
+                        <div style=${{ fontWeight: 900 }}>Laz. ${item.product}</div>
+                        <div style=${{ fontSize: "12px", marginTop: "6px" }}>${stageLabel(item.packStage || "19")}: ${item.packDate || "-"}</div>
+                        ${loadDate ? html`<div style=${{ fontSize: "12px", marginTop: "3px" }}>Plan zaladunku: ${loadDate}</div>` : null}
+                      </div>
+                    `;
+                  })}
+                </div>
+              </section>
+            `)}
           </div>
           ${packed.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "24px" }}>Brak spakowanych lazienek.</div>`}
         </section>
@@ -3277,7 +3343,7 @@
       `;
     }
 
-    function TransportTab({ reports, transportDates, token, serverProjects, users, reloadTransportDates, reloadReports }) {
+    function TransportTab({ reports, transportDates, token, serverProjects, users, stagePermissions, reloadTransportDates, reloadReports }) {
       const transportPanelStyle = {
         ...S.card,
         background: "#fff",
@@ -3303,7 +3369,10 @@
       const [transportReportDate, setTransportReportDate] = useState(today());
       const [transportReportWorker, setTransportReportWorker] = useState("");
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
-      const reportWorkers = useMemo(() => (users || []).filter(u => ["worker", "worker+"].includes(u.role || "worker")).sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true })), [users]);
+      const reportWorkers = useMemo(() => (users || [])
+        .filter(u => ["worker", "worker+"].includes(u.role || "worker"))
+        .filter(u => isStageAllowedForWorker("transport", u.code || u.login, stagePermissions))
+        .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true })), [users, stagePermissions]);
       const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
       const visible = transportItems.filter(item => {
         const info = transportInfo[transportKey(item.project, item.product)];
@@ -3734,6 +3803,11 @@
                 <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px", lineHeight: 1.6 }}>
                   Projekt ${transportReport.project} / LKW ${transportReport.lkwNumber || "-"} / lazienki: ${transportReport.items.map(item => item.product).join(", ")}
                 </div>
+                ${reportWorkers.length ? null : html`
+                  <div style=${{ border: "1px solid #fecaca", borderRadius: "8px", background: "#fef2f2", color: "#991b1b", padding: "10px 12px", fontWeight: 800, marginBottom: "12px" }}>
+                    Brak pracownikow przypisanych do etapu Transport. Ustaw to w zakladce Uzytkownicy.
+                  </div>
+                `}
                 <div className="grid-2" style=${S.row2}>
                   <div>
                     <label style=${S.label}>Data raportu</label>
@@ -3749,7 +3823,7 @@
                 </div>
                 <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>
                   <button style=${S.ghost} disabled=${savingKey === "transport-report"} onClick=${() => setTransportReport(null)}>Anuluj</button>
-                  <button style=${S.btn} disabled=${savingKey === "transport-report"} onClick=${saveTransportReport}>${savingKey === "transport-report" ? "Zapisywanie..." : "Zapisz raport transport"}</button>
+                  <button style=${S.btn} disabled=${savingKey === "transport-report" || !reportWorkers.length} onClick=${saveTransportReport}>${savingKey === "transport-report" ? "Zapisywanie..." : "Zapisz raport transport"}</button>
                 </div>
               </section>
             </div>
@@ -3764,15 +3838,14 @@
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
       const [resettingCode, setResettingCode] = useState("");
       const [userFilter, setUserFilter] = useState({ text: "", role: "all", status: "all" });
-      const [permissionStage, setPermissionStage] = useState("4");
-      const [savingPermissions, setSavingPermissions] = useState(false);
+      const [expandedPermissionStage, setExpandedPermissionStage] = useState("");
+      const [savingPermissionStage, setSavingPermissionStage] = useState("");
       const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
       const roleOptions = ["worker", "worker+", "manager", "viewer", "supervisor"];
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+"].includes(u.role || "worker")).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
-      const selectedStageWorkers = useMemo(() => {
-        const map = stagePermissionMap(stagePermissions);
-        return new Set((map[permissionStage] || []).map(code => String(code).toUpperCase()));
-      }, [stagePermissions, permissionStage]);
+      const permissionStages = useMemo(() => [...STAGES, ["transport", "Transport"]], []);
+      const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
+      const workersForStage = stage => new Set((permissionMap[String(stage || "")] || []).map(code => String(code).toUpperCase()));
       const visibleUsers = useMemo(() => (users || []).filter(u => {
         const code = String(u.code || u.login || "");
         const role = u.role || "worker";
@@ -3862,23 +3935,23 @@
           setMsg({ type: "error", text: e.message });
         }
       };
-      const setStageWorkers = async codes => {
-        setSavingPermissions(true); setMsg(null);
+      const saveStageWorkers = async (stage, codes) => {
+        setSavingPermissionStage(stage); setMsg(null);
         try {
-          await api.setStagePermission(token, permissionStage, codes);
+          await api.setStagePermission(token, stage, codes);
           await reloadStagePermissions();
           setMsg({ type: "success", text: codes.length ? "Przypisanie etapu zapisane." : "Etap ustawiony dla wszystkich pracownikow." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
-          setSavingPermissions(false);
+          setSavingPermissionStage("");
         }
       };
-      const toggleStageWorker = code => {
-        const next = new Set(selectedStageWorkers);
+      const toggleStageWorker = (stage, code) => {
+        const next = workersForStage(stage);
         const normalized = String(code || "").toUpperCase();
         if (next.has(normalized)) next.delete(normalized); else next.add(normalized);
-        setStageWorkers([...next]);
+        saveStageWorkers(stage, [...next]);
       };
       const mainStyle = tab === "transport" || tab === "maps"
         ? { ...S.main, width: "100%", maxWidth: "none", padding: "16px 18px" }
@@ -3912,7 +3985,7 @@
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} />
           ` : tab === "transport" ? html`
-            <${TransportTab} reports=${reports} transportDates=${transportDates} token=${token} serverProjects=${serverProjects} users=${users} reloadTransportDates=${reloadTransportDates} reloadReports=${reloadReports} />
+            <${TransportTab} reports=${reports} transportDates=${transportDates} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} reloadTransportDates=${reloadTransportDates} reloadReports=${reloadReports} />
           ` : tab === "calculations" ? html`
             <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} reloadMaterialUsages=${reloadMaterialUsages} />
           ` : html`
@@ -3933,43 +4006,74 @@
             <section style=${S.card}>
               <h2 style=${S.title}>Przypisanie etapow do pracownikow</h2>
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
-                Jesli dla etapu nie zaznaczysz nikogo, etap moga raportowac wszyscy. Po zaznaczeniu osob raportowanie bedzie dostepne tylko dla nich.
+                Etap bez wybranych osob moga raportowac wszyscy. Po zaznaczeniu pracownikow etap bedzie dostepny tylko dla nich.
               </div>
-              <div className="grid-2" style=${S.row2}>
-                <div>
-                  <label style=${S.label}>Etap</label>
-                  <select style=${S.input} value=${permissionStage} onChange=${e => setPermissionStage(e.target.value)}>
-                    ${STAGES.map(s => html`<option key=${s[0]} value=${s[0]}>${s[1]}</option>`)}
-                  </select>
-                </div>
-                <div style=${{ display: "flex", alignItems: "end", gap: "8px", flexWrap: "wrap" }}>
-                  <button style=${S.ghost} disabled=${savingPermissions} onClick=${() => setStageWorkers([])}>Wszyscy</button>
-                  <button style=${S.ghost} disabled=${savingPermissions} onClick=${() => setStageWorkers(workerUsers.map(w => String(w.code || w.login || "").toUpperCase()).filter(Boolean))}>Zaznacz pracownikow</button>
-                </div>
-              </div>
-              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px", marginTop: "12px" }}>
-                ${workerUsers.map(w => {
-                  const code = String(w.code || w.login || "").toUpperCase();
-                  const checked = selectedStageWorkers.has(code);
-                  return html`
-                    <button key=${code} style=${{
-                      border: "1px solid " + (checked ? COLORS.accent : COLORS.border),
-                      borderRadius: "8px",
-                      background: checked ? COLORS.accent : COLORS.panel,
-                      color: checked ? "#fff" : COLORS.text,
-                      padding: "9px",
-                      textAlign: "left",
-                      fontWeight: 800,
-                      opacity: savingPermissions ? 0.6 : 1
-                    }} disabled=${savingPermissions} onClick=${() => toggleStageWorker(code)}>
-                      ${checked ? String.fromCharCode(10003) + " " : ""}${w.name || code}<br />
-                      <span style=${{ fontSize: "12px", fontWeight: 700, opacity: 0.85 }}>${code}</span>
-                    </button>
-                  `;
-                })}
-              </div>
-              <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "10px" }}>
-                Aktualnie: ${selectedStageWorkers.size ? selectedStageWorkers.size + " przypisanych pracownikow" : "wszyscy pracownicy"}
+              <div style=${{ overflowX: "auto" }}>
+                <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "680px" }}>
+                  <thead>
+                    <tr>
+                      ${["Etap", "Kto moze raportowac", "Akcje"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "10px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${h}</th>`)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${permissionStages.map(stageRow => {
+                      const stage = stageRow[0];
+                      const selected = workersForStage(stage);
+                      const expanded = expandedPermissionStage === stage;
+                      const saving = savingPermissionStage === stage;
+                      const allCodes = workerUsers.map(w => String(w.code || w.login || "").toUpperCase()).filter(Boolean);
+                      return html`
+                        <tr key=${stage}>
+                          <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${stageLabel(stage)}</td>
+                          <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
+                            <span style=${{ ...S.badge, background: selected.size ? "#fff7ed" : "#ecfdf5", color: selected.size ? "#9a3412" : "#166534", borderColor: selected.size ? "#fdba74" : "#86efac" }}>
+                              ${selected.size ? "Wybrani: " + selected.size : "Wszyscy"}
+                            </span>
+                          </td>
+                          <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
+                            <button style=${expanded ? S.btn : S.ghost} disabled=${savingPermissionStage && !saving} onClick=${() => setExpandedPermissionStage(expanded ? "" : stage)}>
+                              ${expanded ? "Zwin" : "Rozwin"}
+                            </button>
+                          </td>
+                        </tr>
+                        ${expanded ? html`
+                          <tr key=${stage + "-workers"}>
+                            <td colSpan="3" style=${{ padding: "12px", borderBottom: "1px solid " + COLORS.border, background: COLORS.soft }}>
+                              <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, [])}>Wszyscy</button>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, allCodes)}>Zaznacz wszystkich</button>
+                              </div>
+                              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px" }}>
+                                ${workerUsers.map(w => {
+                                  const code = String(w.code || w.login || "").toUpperCase();
+                                  const checked = selected.has(code);
+                                  return html`
+                                    <button key=${stage + "-" + code} style=${{
+                                      border: "1px solid " + (checked ? COLORS.accent : COLORS.border),
+                                      borderRadius: "8px",
+                                      background: checked ? COLORS.accent : "#fff",
+                                      color: checked ? "#fff" : COLORS.text,
+                                      padding: "9px",
+                                      textAlign: "left",
+                                      fontWeight: 800,
+                                      opacity: saving ? 0.6 : 1
+                                    }} disabled=${saving} onClick=${() => toggleStageWorker(stage, code)}>
+                                      ${checked ? String.fromCharCode(10003) + " " : ""}${w.name || code}<br />
+                                      <span style=${{ fontSize: "12px", fontWeight: 700, opacity: 0.85 }}>${code}</span>
+                                    </button>
+                                  `;
+                                })}
+                              </div>
+                              <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "10px" }}>
+                                ${selected.size ? "Wybrani pracownicy moga raportowac ten etap." : "Brak zaznaczen oznacza dostep dla wszystkich pracownikow."}
+                              </div>
+                            </td>
+                          </tr>
+                        ` : null}
+                      `;
+                    })}
+                  </tbody>
+                </table>
               </div>
             </section>
             <section style=${S.card}>
