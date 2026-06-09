@@ -312,6 +312,30 @@ async function ensureTransportReplacementsTable() {
   `);
 }
 
+async function ensureTransportExtrasTable() {
+  await ensureTransportDatesTable();
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS transport_extras (
+      id SERIAL PRIMARY KEY,
+      project TEXT NOT NULL,
+      product INTEGER NOT NULL,
+      load_date DATE NOT NULL,
+      lkw_number INTEGER,
+      order_name TEXT,
+      trailer TEXT,
+      direction TEXT,
+      size_label TEXT,
+      unload_date DATE,
+      carrier TEXT,
+      note TEXT,
+      delay_note TEXT,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
 async function ensureProjectsTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -1160,13 +1184,22 @@ app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
 app.get('/api/transport-dates', auth, async (req, res) => {
   try {
     await ensureTransportDatesTable();
+    await ensureTransportExtrasTable();
     const r = await pool.query(
-      `SELECT project, product, load_date::text AS "loadDate", lkw_number AS "lkwNumber",
+      `SELECT * FROM (
+       SELECT project, product, load_date::text AS "loadDate", lkw_number AS "lkwNumber",
               order_name AS "orderName", trailer, direction, size_label AS "sizeLabel",
               unload_date::text AS "unloadDate", carrier, note, delay_note AS "delayNote",
-              updated_by AS "updatedBy", updated_at AS "updatedAt"
+              updated_by AS "updatedBy", updated_at AS "updatedAt", FALSE AS extra, NULL::integer AS "extraId"
        FROM transport_dates
-       ORDER BY load_date, project, COALESCE(lkw_number, 999999), product`
+       UNION ALL
+       SELECT project, product, load_date::text AS "loadDate", lkw_number AS "lkwNumber",
+              order_name AS "orderName", trailer, direction, size_label AS "sizeLabel",
+              unload_date::text AS "unloadDate", carrier, note, delay_note AS "delayNote",
+              updated_by AS "updatedBy", updated_at AS "updatedAt", TRUE AS extra, id AS "extraId"
+       FROM transport_extras
+      ) transport_all
+       ORDER BY "loadDate", project, COALESCE("lkwNumber", 999999), product, "extraId"`
     );
     res.json(r.rows);
   } catch (err) {
@@ -1330,6 +1363,54 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
     res.json({ success: true, project, product, loadDate, lkwNumber, orderName, trailer, direction, sizeLabel, unloadDate, carrier, note, delayNote });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Błąd zapisu transportu' });
+  }
+});
+
+app.post('/api/transport-extra', auth, managerOnly, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const product = Number(req.body.product);
+  const loadDate = String(req.body.loadDate || '').trim();
+  const unloadDate = String(req.body.unloadDate || '').trim();
+  const cleanText = (value, max = 240) => String(value || '').trim().slice(0, max) || null;
+  const lkwNumber = req.body.lkwNumber === '' || req.body.lkwNumber == null ? null : Number(req.body.lkwNumber);
+  if (!project || !Number.isInteger(product) || product < 1 || !/^\d{4}-\d{2}-\d{2}$/.test(loadDate)) {
+    return res.status(400).json({ error: 'Brak projektu, lazienki lub daty zaladunku' });
+  }
+  if (lkwNumber !== null && (!Number.isInteger(lkwNumber) || lkwNumber < 1)) return res.status(400).json({ error: 'Nieprawidlowy numer LKW' });
+  if (unloadDate && !/^\d{4}-\d{2}-\d{2}$/.test(unloadDate)) return res.status(400).json({ error: 'Nieprawidlowa data rozladunku' });
+  try {
+    await ensureTransportExtrasTable();
+    const r = await pool.query(
+      `INSERT INTO transport_extras (
+         project, product, load_date, lkw_number, order_name, trailer, direction, size_label,
+         unload_date, carrier, note, delay_note, updated_by
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       RETURNING id`,
+      [
+        project, product, loadDate, lkwNumber, cleanText(req.body.orderName), cleanText(req.body.trailer),
+        cleanText(req.body.direction), cleanText(req.body.sizeLabel), unloadDate || null,
+        cleanText(req.body.carrier), cleanText(req.body.note, 1000), cleanText(req.body.delayNote, 500), req.user.code
+      ]
+    );
+    await auditLog(req, 'transport_extra_added', `${project}#${product}`, { project, product, loadDate, lkwNumber });
+    res.json({ success: true, id: r.rows[0].id });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad dodawania lazienki do transportu' });
+  }
+});
+
+app.delete('/api/transport-extra/:id', auth, managerOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Nieprawidlowy wpis transportu' });
+  try {
+    await ensureTransportExtrasTable();
+    const r = await pool.query('DELETE FROM transport_extras WHERE id=$1 RETURNING project, product', [id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Wpis transportu nie istnieje' });
+    await auditLog(req, 'transport_extra_deleted', `${r.rows[0].project}#${r.rows[0].product}`, { id });
+    res.json({ success: true, deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad usuwania lazienki z transportu' });
   }
 });
 
@@ -1532,13 +1613,15 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     await ensureProjectsTables();
     await ensureMaterialUsagesTable();
     await ensureTransportReplacementsTable();
-    const [users, reports, lines, recipients, mapLayouts, transportDates, transportReplacements, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages] = await Promise.all([
+    await ensureTransportExtrasTable();
+    const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, projects, projectBathrooms, materialUsages] = await Promise.all([
       pool.query('SELECT * FROM users ORDER BY created_at'),
       pool.query('SELECT * FROM reports ORDER BY created_at'),
       pool.query('SELECT * FROM report_lines ORDER BY id'),
       pool.query('SELECT * FROM email_recipients ORDER BY id'),
       pool.query('SELECT * FROM map_layouts ORDER BY id'),
       pool.query('SELECT * FROM transport_dates ORDER BY load_date, project, product'),
+      pool.query('SELECT * FROM transport_extras ORDER BY load_date, project, product, id'),
       pool.query('SELECT * FROM transport_replacements ORDER BY created_at, id'),
       pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
       pool.query('SELECT * FROM bathroom_checks ORDER BY updated_at'),
@@ -1558,6 +1641,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         email_recipients: recipients.rows,
         map_layouts: mapLayouts.rows,
         transport_dates: transportDates.rows,
+        transport_extras: transportExtras.rows,
         transport_replacements: transportReplacements.rows,
         bathroom_comments: comments.rows,
         bathroom_checks: checks.rows,
@@ -1572,6 +1656,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
         report_lines: lines.rows.length,
         map_layouts: mapLayouts.rows.length,
         transport_dates: transportDates.rows.length,
+        transport_extras: transportExtras.rows.length,
         transport_replacements: transportReplacements.rows.length,
         bathroom_comments: comments.rows.length,
         bathroom_checks: checks.rows.length,
@@ -1652,6 +1737,30 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
         );
         transportRestored++;
       }
+    }
+
+    let transportExtrasRestored = 0;
+    if (Array.isArray(data.transport_extras)) {
+      await ensureTransportExtrasTable();
+      for (const t of data.transport_extras) {
+        const exists = t.id ? await client.query('SELECT id FROM transport_extras WHERE id=$1', [t.id]) : { rows: [] };
+        if (exists.rows.length) continue;
+        await client.query(
+          `INSERT INTO transport_extras (
+             id, project, product, load_date, lkw_number, order_name, trailer, direction, size_label,
+             unload_date, carrier, note, delay_note, updated_by, updated_at, created_at
+           )
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15,NOW()),COALESCE($16,NOW()))`,
+          [
+            t.id || null, t.project, t.product, t.load_date || t.loadDate, t.lkw_number || t.lkwNumber || null,
+            t.order_name || t.orderName || null, t.trailer || null, t.direction || null, t.size_label || t.sizeLabel || null,
+            t.unload_date || t.unloadDate || null, t.carrier || null, t.note || null, t.delay_note || t.delayNote || null,
+            t.updated_by || t.updatedBy || req.user.code, t.updated_at || t.updatedAt || null, t.created_at || t.createdAt || null
+          ]
+        );
+        transportExtrasRestored++;
+      }
+      await client.query(`SELECT setval(pg_get_serial_sequence('transport_extras','id'), COALESCE((SELECT MAX(id) FROM transport_extras), 1), true)`);
     }
 
     let transportReplacementsRestored = 0;
@@ -1804,8 +1913,8 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
     }
     
     await client.query('COMMIT');
-    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored });
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji` });
+    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, materials: materialRestored });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${materialRestored} kalkulacji` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

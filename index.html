@@ -81,6 +81,8 @@
       logoutAllSessions: token => apiRequest("POST", "/api/sessions/logout-all", {}, token),
       getTransportDates: token => apiRequest("GET", "/api/transport-dates", null, token),
       saveTransportDate: (token, project, product, loadDate, lkwNumber, details = {}) => apiRequest("PUT", "/api/transport-dates", { project, product, loadDate, lkwNumber, ...details }, token),
+      addTransportExtra: (token, payload) => apiRequest("POST", "/api/transport-extra", payload, token),
+      deleteTransportExtra: (token, id) => apiRequest("DELETE", "/api/transport-extra/" + id, null, token),
       getTransportReplacements: token => apiRequest("GET", "/api/transport-replacements", null, token),
       saveTransportReplacement: (token, payload) => apiRequest("POST", "/api/transport-replacements", payload, token),
       getBathroomComments: token => apiRequest("GET", "/api/bathroom-comments", null, token),
@@ -2331,17 +2333,17 @@
                           ${alert ? html`
                             <span title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{
                               position: "absolute",
-                              top: "-9px",
-                              right: "4px",
-                              width: "22px",
-                              height: "22px",
+                              top: "-14px",
+                              right: "2px",
+                              width: "33px",
+                              height: "33px",
                               borderRadius: "999px",
                               background: alert.color,
                               color: alert.text,
                               display: "grid",
                               placeItems: "center",
                               fontWeight: 900,
-                              fontSize: "16px",
+                              fontSize: "24px",
                               border: "1px solid " + COLORS.border,
                               zIndex: 2
                             }}>!</span>
@@ -2349,16 +2351,16 @@
                           ${sampleEnabled ? html`
                             <span title="Musztrowka - pierwsza lazienka tego typu" style=${{
                               position: "absolute",
-                              top: "5px",
-                              left: "6px",
-                              width: "22px",
-                              height: "22px",
+                              top: "2px",
+                              left: "4px",
+                              width: "33px",
+                              height: "33px",
                               color: "#facc15",
                               textShadow: "0 1px 2px rgba(0,0,0,0.45)",
                               display: "grid",
                               placeItems: "center",
                               fontWeight: 900,
-                              fontSize: "20px",
+                              fontSize: "30px",
                               lineHeight: 1,
                               zIndex: 3
                             }}>${String.fromCharCode(9733)}</span>
@@ -2367,10 +2369,10 @@
                             <span title=${commentStatus.open ? "Komentarz do zrobienia" : "Komentarze zrobione"} style=${{
                               position: "absolute",
                               left: "50%",
-                              bottom: "7px",
+                              bottom: "6px",
                               transform: "translateX(-50%)",
-                              width: "13px",
-                              height: "13px",
+                              width: "20px",
+                              height: "20px",
                               borderRadius: "999px",
                               background: commentStatus.open ? "#ef4444" : "#22c55e",
                               border: "2px solid #fff",
@@ -2383,8 +2385,8 @@
                               position: "absolute",
                               left: "8px",
                               bottom: "7px",
-                              width: "17px",
-                              height: "17px",
+                              width: "26px",
+                              height: "26px",
                               borderRadius: "3px",
                               background: tileCheckStyle.bg,
                               border: "2px solid " + tileCheckStyle.border,
@@ -2392,7 +2394,7 @@
                               display: "grid",
                               placeItems: "center",
                               fontWeight: 900,
-                              fontSize: "13px",
+                              fontSize: "20px",
                               lineHeight: 1,
                               boxShadow: "0 0 0 1px rgba(255,255,255,0.9)",
                               zIndex: 2
@@ -2406,13 +2408,13 @@
                             display: "grid",
                             placeItems: "center",
                             padding: "4px 2px",
-                            lineHeight: 1.14,
-                            fontSize: "14px"
+                            lineHeight: 1.08,
+                            fontSize: "21px"
                           }}>
-                            <span style=${{ pointerEvents: "none", fontSize: "14px", fontWeight: 900 }}>
+                            <span style=${{ pointerEvents: "none", fontSize: "21px", fontWeight: 900 }}>
                               ${cell.project}<br />
                               ${cell.product}<br />
-                              <span style=${{ fontSize: "11px", fontWeight: 900, lineHeight: 1 }}>${st.shortLabel}</span>
+                              <span style=${{ fontSize: "16.5px", fontWeight: 900, lineHeight: 1 }}>${st.shortLabel}</span>
                             </span>
                           </div>
                           <div style=${{ flex: 1, background: "#fff", width: "100%" }}></div>
@@ -3450,8 +3452,10 @@
       };
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
       const transportItems = useMemo(() => transportProjectItems(reports, serverProjects), [reports, serverProjects]);
-      const loads = useMemo(() => transportMap(transportDates), [transportDates]);
-      const transportInfo = useMemo(() => transportInfoMap(transportDates), [transportDates]);
+      const baseTransportDates = useMemo(() => (transportDates || []).filter(item => !item.extra), [transportDates]);
+      const extraTransportDates = useMemo(() => (transportDates || []).filter(item => item.extra), [transportDates]);
+      const loads = useMemo(() => transportMap(baseTransportDates), [baseTransportDates]);
+      const transportInfo = useMemo(() => transportInfoMap(baseTransportDates), [baseTransportDates]);
       const [filters, setFilters] = useState({ project: "all", status: "all", date: "", lkw: "" });
       const [columnFilters, setColumnFilters] = useState({});
       const [batchDate, setBatchDate] = useState(today());
@@ -3467,7 +3471,25 @@
       const [transportReportWorker, setTransportReportWorker] = useState("");
       const [transportSubtab, setTransportSubtab] = useState("list");
       const [replacementModal, setReplacementModal] = useState(null);
+      const [editBathroomsModal, setEditBathroomsModal] = useState(null);
       const projects = useMemo(() => [...new Set(transportItems.map(item => item.project))].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [transportItems]);
+      const transportItemByBathroom = useMemo(() => {
+        const map = {};
+        transportItems.forEach(item => { map[transportKey(item.project, item.product)] = item; });
+        return map;
+      }, [transportItems]);
+      const extraTransportItems = useMemo(() => extraTransportDates.map(item => {
+        const base = transportItemByBathroom[transportKey(item.project, item.product)] || {};
+        return {
+          project: String(item.project || ""),
+          product: productNo(item.product),
+          status: base.status || "produkcja",
+          extra: true,
+          extraId: item.extraId,
+          transportInfo: item
+        };
+      }), [extraTransportDates, transportItemByBathroom]);
+      const allTransportItems = useMemo(() => [...transportItems, ...extraTransportItems], [transportItems, extraTransportItems]);
       const loadedBathroomSet = useMemo(() => {
         const set = new Set();
         (reports || []).forEach(report => (report.lines || []).forEach(line => {
@@ -3501,8 +3523,8 @@
           .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true }));
       }, [users, stagePermissions]);
       const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
-      const visible = transportItems.filter(item => {
-        const info = transportInfo[transportKey(item.project, item.product)];
+      const visible = allTransportItems.filter(item => {
+        const info = item.transportInfo || transportInfo[transportKey(item.project, item.product)];
         if (!info) return false;
         if (filters.project !== "all" && !sameProject(item.project, filters.project)) return false;
         if (filters.status !== "all" && item.status !== filters.status) return false;
@@ -3513,7 +3535,7 @@
       const transportRows = useMemo(() => {
         const groups = new Map();
         visible.forEach(item => {
-          const info = transportInfo[transportKey(item.project, item.product)] || {};
+          const info = item.transportInfo || transportInfo[transportKey(item.project, item.product)] || {};
           const key = [item.project, info.loadDate || "", info.lkwNumber || ""].join("|");
           if (!groups.has(key)) groups.set(key, {
             key,
@@ -3638,6 +3660,72 @@
           }
           await reloadTransportDates();
           setMsg({ type: "success", text: "Transport wyczyszczony." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
+      const transportDetailsForRow = row => ({
+        orderName: rowEditValue(row, "orderName"),
+        trailer: rowEditValue(row, "trailer"),
+        direction: rowEditValue(row, "direction"),
+        sizeLabel: rowEditValue(row, "sizeLabel"),
+        unloadDate: rowEditValue(row, "unloadDate"),
+        carrier: rowEditValue(row, "carrier"),
+        note: rowEditValue(row, "note"),
+        delayNote: rowEditValue(row, "delayNote")
+      });
+      const openEditBathroomsModal = row => {
+        setEditBathroomsModal({ row, product: "" });
+        setMsg(null);
+      };
+      const editBathroomOptions = editBathroomsModal ? (() => {
+        const project = editBathroomsModal.row.project;
+        const count = Number(projectCountMap(serverProjects)[project]) || Math.max(0, ...allTransportItems.filter(item => sameProject(item.project, project)).map(item => item.product || 0));
+        return Array.from({ length: count }, (_, i) => i + 1);
+      })() : [];
+      const addBathroomToTransportRow = async () => {
+        if (!editBathroomsModal) return;
+        const row = editBathroomsModal.row;
+        const product = Number(editBathroomsModal.product);
+        if (!Number.isInteger(product) || product < 1) return setMsg({ type: "error", text: "Wybierz numer lazienki." });
+        const loadDate = rowEditValue(row, "loadDate");
+        const lkwNumber = rowEditValue(row, "lkwNumber");
+        if (!loadDate) return setMsg({ type: "error", text: "Wiersz LKW musi miec date zaladunku." });
+        setSavingKey("bathrooms-edit"); setMsg(null);
+        try {
+          const existing = transportInfo[transportKey(row.project, product)];
+          const existingExtra = extraTransportDates.some(item => sameProject(item.project, row.project) && productNo(item.product) === product);
+          const details = transportDetailsForRow(row);
+          if (existing || existingExtra) {
+            await api.addTransportExtra(token, { project: row.project, product, loadDate, lkwNumber, ...details });
+            setMsg({ type: "success", text: "Lazienka dodana ponownie do LKW i oznaczona na czerwono." });
+          } else {
+            await api.saveTransportDate(token, row.project, product, loadDate, lkwNumber, details);
+            setMsg({ type: "success", text: "Lazienka dodana do LKW." });
+          }
+          await reloadTransportDates();
+          setEditBathroomsModal(null);
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingKey("");
+        }
+      };
+      const removeBathroomFromTransportRow = async item => {
+        if (!item) return;
+        if (!confirm("Usunac lazienke " + item.product + " z tego LKW?")) return;
+        setSavingKey("bathrooms-edit"); setMsg(null);
+        try {
+          if (item.extra && item.extraId) {
+            await api.deleteTransportExtra(token, item.extraId);
+          } else {
+            await api.saveTransportDate(token, item.project, item.product, "");
+          }
+          await reloadTransportDates();
+          setEditBathroomsModal(null);
+          setMsg({ type: "success", text: "Lazienka usunieta z LKW." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -3899,11 +3987,11 @@
                             const isWarehouse = item.status === "magazyn";
                             const tilePalette = warehousePalette(isWarehouse ? "magazyn" : "produkcja");
                             const replacement = replacementByTarget[transportKey(row.project, item.product)];
-                            const usedAgain = (replacementUseCount[transportKey(row.project, item.product)] || 0) > 1;
+                            const usedAgain = item.extra || (replacementUseCount[transportKey(row.project, item.product)] || 0) > 1;
                             const tileBg = usedAgain ? "#ef4444" : tilePalette.color;
                             const tileFg = usedAgain ? "#fff" : tilePalette.text;
                             return html`
-                              <button key=${item.product} title=${usedAgain ? "Lazienka uzyta jako podmiana kolejny raz" : replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openReplacementModal(row, item)} style=${{
+                              <button key=${(item.extra ? "x" + item.extraId + "-" : "") + item.product} title=${item.extra ? "Lazienka dodana ponownie do transportu" : usedAgain ? "Lazienka uzyta jako podmiana kolejny raz" : replacement ? "Podmiana za lazienke " + replacement.fromProduct : (isWarehouse ? "Magazyn" : "Produkcja")} onClick=${() => openReplacementModal(row, item)} style=${{
                                 minWidth: replacement ? "42px" : "27px",
                                 minHeight: "23px",
                                 padding: "2px 5px",
@@ -3952,6 +4040,7 @@
                         <div style=${{ display: "grid", gridTemplateColumns: "auto auto", gap: "5px", alignItems: "center" }}>
                           <button style=${{ ...S.btn, padding: "7px 9px", fontSize: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${() => saveTransportRow(row)}>${saving ? "..." : "Zapisz"}</button>
                           <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px" }} disabled=${saving} onClick=${() => clearTransportRow(row)}>Wyczysc</button>
+                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "bathrooms-edit"} onClick=${() => openEditBathroomsModal(row)}>Edytuj lazienki</button>
                           <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-report"} onClick=${() => openTransportReport(row)}>Raport zaladunek</button>
                         </div>
                       </td>
@@ -3999,6 +4088,60 @@
                 </table>
               </div>
             </section>
+          ` : null}
+          ${editBathroomsModal ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 62, display: "grid", placeItems: "center", padding: "16px" }}>
+              <section style=${{ ...S.card, width: "min(640px, 100%)", margin: 0 }}>
+                <h2 style=${S.title}>Edytuj numery lazienek</h2>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px", lineHeight: 1.6 }}>
+                  Projekt ${editBathroomsModal.row.project} / LKW ${editBathroomsModal.row.lkwNumber || "-"} / zaladunek ${editBathroomsModal.row.loadDate || "-"}
+                </div>
+                <${Message} msg=${msg} />
+                <div style=${{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "12px" }}>
+                  ${editBathroomsModal.row.items.map(item => {
+                    const red = !!item.extra;
+                    return html`
+                      <span key=${(item.extra ? "extra-" + item.extraId : "base-") + item.product} style=${{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        background: red ? "#ef4444" : "#dcfce7",
+                        color: red ? "#fff" : "#166534",
+                        border: "1px solid " + (red ? "#b91c1c" : "#86efac"),
+                        borderRadius: "999px",
+                        padding: "5px 8px",
+                        fontWeight: 900
+                      }}>
+                        ${item.product}${red ? " ponownie" : ""}
+                        <button title="Usun z tego LKW" style=${{ border: 0, borderRadius: "999px", background: red ? "rgba(255,255,255,0.2)" : "#fff", color: red ? "#fff" : "#991b1b", cursor: "pointer", fontWeight: 900 }} disabled=${savingKey === "bathrooms-edit"} onClick=${() => removeBathroomFromTransportRow(item)}>x</button>
+                      </span>
+                    `;
+                  })}
+                </div>
+                <div className="grid-2" style=${S.row2}>
+                  <div>
+                    <label style=${S.label}>Dodaj lazienke</label>
+                    <select style=${S.input} value=${editBathroomsModal.product} onChange=${e => setEditBathroomsModal({ ...editBathroomsModal, product: e.target.value })}>
+                      <option value="">- wybierz numer -</option>
+                      ${editBathroomOptions.map(product => {
+                        const info = transportInfo[transportKey(editBathroomsModal.row.project, product)];
+                        const type = bathroomTypeInfo(serverProjects, editBathroomsModal.row.project, product).rbrTypeShort;
+                        return html`<option key=${product} value=${product}>${product}${type ? " / typ " + type : ""}${info ? " / juz w transporcie " + (info.loadDate || "") + (info.lkwNumber ? " LKW" + info.lkwNumber : "") + " - bedzie czerwony" : ""}</option>`;
+                      })}
+                    </select>
+                  </div>
+                  <div style=${{ display: "flex", alignItems: "end" }}>
+                    <button style=${S.btn} disabled=${savingKey === "bathrooms-edit"} onClick=${addBathroomToTransportRow}>${savingKey === "bathrooms-edit" ? "Zapisywanie..." : "Dodaj do LKW"}</button>
+                  </div>
+                </div>
+                <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "10px" }}>
+                  Jesli dodasz lazienke, ktora ma juz transport, zostanie dopisana jako dodatkowy czerwony kafelek i nie nadpisze jej glownego terminu.
+                </div>
+                <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>
+                  <button style=${S.ghost} disabled=${savingKey === "bathrooms-edit"} onClick=${() => setEditBathroomsModal(null)}>Zamknij</button>
+                </div>
+              </section>
+            </div>
           ` : null}
           ${replacementModal ? html`
             <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 62, display: "grid", placeItems: "center", padding: "16px" }}>
