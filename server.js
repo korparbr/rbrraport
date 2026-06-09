@@ -1,4 +1,4 @@
-// RaportRBR v1.41 - Backend
+// RaportRBR v1.5 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -1635,7 +1635,7 @@ app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
     await client.query('BEGIN');
     const source = await client.query('SELECT * FROM transport_dates WHERE project=$1 AND product=$2', [project, fromProduct]);
     const target = await client.query('SELECT * FROM transport_dates WHERE project=$1 AND product=$2', [project, toProduct]);
-    if (mode === 'podmiana' && logOnly) {
+    if (mode === 'podmiana') {
       const t = target.rows[0];
       if (!t) {
         await client.query('ROLLBACK');
@@ -1643,6 +1643,7 @@ app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
       }
       const details = {
         logOnly: true,
+        simpleReplacement: true,
         orderName: t.order_name || '',
         trailer: t.trailer || '',
         direction: t.direction || '',
@@ -1816,7 +1817,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.41 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.5 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -1867,7 +1868,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     ]);
 
     const backup = {
-      version: '1.41',
+      version: '1.5',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -2213,7 +2214,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.41',
+      version: '1.5',
       time: new Date(),
       db: {
         connected: true,
@@ -2249,4 +2250,4 @@ app.use((err, req, res, next) => {
   res.status(err.message && err.message.includes('CORS') ? 403 : 500).json({ error: err.message || 'Blad serwera' });
 });
 
-app.listen(PORT, () => console.log(`RaportRBR v1.41 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`RaportRBR v1.5 running on port ${PORT}`));

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.42</title>
+  <title>FlowRBR 1.5</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -435,7 +435,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.42</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.5</span>` : null}
         </div>
       `;
     }
@@ -1848,6 +1848,13 @@
         currentLayout.forEach(cell => { map[cellKey(cell)] = cell; });
         return map;
       }, [currentLayout]);
+      const visibleMapCols = useMemo(() => {
+        if (selectedHall.future) return 0;
+        const maxUsed = currentLayout.reduce((max, cell) => Math.max(max, Number(cell.col || 0)), 0);
+        const manualCol = edit ? Number(manual.col || 0) : 0;
+        const target = Math.max(3, maxUsed, manualCol, edit && maxUsed ? maxUsed + 1 : 0);
+        return Math.min(selectedHall.cols, target || Math.min(3, selectedHall.cols));
+      }, [currentLayout, edit, manual.col, selectedHall.cols, selectedHall.future]);
       const selectedMapCell = useMemo(() => {
         if (!selectedCell) return null;
         return currentLayout.find(cell => sameProject(cell.project, selectedCell.project) && productNo(cell.product) === productNo(selectedCell.product)) || selectedCell;
@@ -2525,10 +2532,10 @@
             <div style=${{ color: COLORS.dim, fontSize: "13px", marginBottom: "12px" }}>Mozesz wgrac zdjecie hali jako podglad. Zdjecie sluzy jako sciaga do recznego wpisywania lazienek w szachownicy.</div>
           ` : null}
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", marginBottom: "12px" }}>
-            <div>
-              <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>${selectedHall.label}</h3>
-              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>
-                ${selectedHall.future ? "Do przygotowania w przyszlosci." : "Kolumny 1-" + selectedHall.cols + " od lewej, wiersze " + selectedHall.rows.join("-") + " od gory."}
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>${selectedHall.label}</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>
+                ${selectedHall.future ? "Do przygotowania w przyszlosci." : "Widoczne kolumny 1-" + visibleMapCols + " z " + selectedHall.cols + ", wiersze " + selectedHall.rows.join("-") + " od gory."}
               </div>
             </div>
             <div style=${{ color: COLORS.muted, fontSize: "13px" }}>W ukladzie: <strong style=${{ color: COLORS.text }}>${currentLayout.length}</strong></div>
@@ -2537,12 +2544,12 @@
             <div style=${{ color: COLORS.dim, textAlign: "center", padding: "36px" }}>Hala ISO bedzie dodana w przyszlosci.</div>
           ` : html`
             <div style=${{ overflowX: "auto" }}>
-              <div style=${{ display: "grid", gridTemplateColumns: "54px repeat(" + selectedHall.cols + ", minmax(54px, 1fr))", gap: "6px", minWidth: (72 + selectedHall.cols * 60) + "px" }}>
+              <div style=${{ display: "grid", gridTemplateColumns: "58px repeat(" + visibleMapCols + ", minmax(72px, 1fr))", gap: "7px", minWidth: (76 + visibleMapCols * 80) + "px" }}>
                 <div></div>
-                ${Array.from({ length: selectedHall.cols }, (_, i) => i + 1).map(col => html`<div key=${"h" + col} style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "center", fontWeight: 800 }}>${col}</div>`)}
+                ${Array.from({ length: visibleMapCols }, (_, i) => i + 1).map(col => html`<div key=${"h" + col} style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "center", fontWeight: 800 }}>${col}</div>`)}
                 ${selectedHall.rows.flatMap(row => [
                   html`<div key=${"r" + row} style=${{ color: COLORS.muted, fontWeight: 900, display: "grid", placeItems: "center" }}>${row}</div>`,
-                  ...Array.from({ length: selectedHall.cols }, (_, i) => {
+                  ...Array.from({ length: visibleMapCols }, (_, i) => {
                     const col = i + 1;
                     const cell = layoutByCell[row + "-" + col];
                     const st = styleForCell(cell);
@@ -2576,7 +2583,7 @@
                         onClick=${() => handleCellClick(row, col, cell)}
                         title=${cell ? st.label + " / projekt " + cell.project + " / lazienka " + cell.product : "Puste pole"}
                         style=${{
-                          minHeight: selectedHall.rows.length <= 2 ? "136px" : "148px",
+                          minHeight: selectedHall.rows.length <= 2 ? "144px" : "158px",
                           border: (isDragging || isSelected || isManualCell ? "2px solid " + (isManualCell ? COLORS.orange : COLORS.accent) : "1px solid " + st.border),
                           borderRadius: "8px",
                           background: "#fff",
@@ -2633,9 +2640,8 @@
                           ${commentStatus ? html`
                             <span title=${commentStatus.open ? "Komentarz do zrobienia" : "Komentarze zrobione"} style=${{
                               position: "absolute",
-                              left: "50%",
+                              right: "7px",
                               bottom: "6px",
-                              transform: "translateX(-50%)",
                               width: "20px",
                               height: "20px",
                               borderRadius: "999px",
@@ -2667,8 +2673,9 @@
                           ` : null}
                           <span title=${helmetStyle.label + (helmetCheck && helmetCheck.comment ? ": " + helmetCheck.comment : "")} style=${{
                             position: "absolute",
-                            left: needsTilingCheck ? "40px" : "8px",
+                            left: "50%",
                             bottom: "7px",
+                            transform: "translateX(-50%)",
                             width: "26px",
                             height: "26px",
                             borderRadius: "999px",
@@ -2687,7 +2694,7 @@
                             <span style=${{
                               position: "absolute",
                               right: "5px",
-                              bottom: "7px",
+                              bottom: "36px",
                               display: "flex",
                               gap: "3px",
                               fontSize: "24px",
@@ -4278,9 +4285,7 @@
           lkwNumber: rowEditValue(row, "lkwNumber") || row.lkwNumber || "",
           details: transportDetailsForRow(row),
           selectedProducts: row.items.map(item => productNo(item.product)).sort((a, b) => a - b),
-          replacements: Object.fromEntries(row.items
-            .map(item => [productNo(item.product), replacementByTarget[transportKey(row.project, item.product)]?.fromProduct || ""])
-            .filter(([, from]) => from))
+          replacements: {}
         });
         setMsg(null);
       };
@@ -4357,6 +4362,7 @@
             const toProduct = Number(toProductRaw);
             const fromProduct = Number(fromProductRaw);
             if (!Number.isInteger(toProduct) || !Number.isInteger(fromProduct) || toProduct === fromProduct) continue;
+            if (!selectedSet.has(toProduct)) continue;
             await api.saveTransportReplacement(token, { mode: "podmiana", project, fromProduct, toProduct, logOnly: true });
           }
           await reloadTransportDates();
