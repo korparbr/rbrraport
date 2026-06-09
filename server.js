@@ -1,4 +1,4 @@
-// RaportRBR v1.4 - Backend
+// RaportRBR v1.41 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -433,6 +433,11 @@ function normalizeUserRole(role) {
   return ['worker', 'worker+', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
 }
 
+function normalizeStageId(stage) {
+  const value = String(stage || '').trim();
+  return value.toLowerCase() === 'transport' ? 'transport' : value;
+}
+
 function assertRoleAllowedForCode(code, role, res) {
   if (role === 'supervisor' && String(code || '').toUpperCase() !== 'RBR056') {
     res.status(400).json({ error: 'Rola supervisor jest zastrzezona tylko dla konta RBR056' });
@@ -443,14 +448,14 @@ function assertRoleAllowedForCode(code, role, res) {
 
 async function forbiddenStagesForWorker(client, workerCode, lines) {
   const code = String(workerCode || '').trim().toUpperCase();
-  const stages = [...new Set((lines || []).map(line => String(line.stage || '').trim()).filter(Boolean))];
+  const stages = [...new Set((lines || []).map(line => normalizeStageId(line.stage)).filter(Boolean))];
   if (!code || !stages.length) return [];
   await ensureStagePermissionsTable();
   const r = await client.query(
-    `SELECT stage, array_agg(UPPER(worker_code)) AS workers
+    `SELECT CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END AS stage, array_agg(UPPER(worker_code)) AS workers
      FROM stage_permissions
-     WHERE stage = ANY($1)
-     GROUP BY stage`,
+     WHERE CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END = ANY($1)
+     GROUP BY CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END`,
     [stages]
   );
   return r.rows
@@ -687,7 +692,7 @@ app.get('/api/stage-permissions', auth, async (req, res) => {
 });
 
 app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => {
-  const stage = String(req.params.stage || '').trim();
+  const stage = normalizeStageId(req.params.stage);
   const workerCodes = Array.isArray(req.body.workerCodes) ? req.body.workerCodes : [];
   const normalized = [...new Set(workerCodes.map(code => String(code || '').trim().toUpperCase()).filter(Boolean))];
   if (!stage) return res.status(400).json({ error: 'Brak etapu' });
@@ -695,7 +700,11 @@ app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => 
   try {
     await ensureStagePermissionsTable();
     await client.query('BEGIN');
-    await client.query('DELETE FROM stage_permissions WHERE stage=$1', [stage]);
+    await client.query(
+      `DELETE FROM stage_permissions
+       WHERE CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END=$1`,
+      [stage]
+    );
     for (const code of normalized) {
       const exists = await client.query("SELECT code FROM users WHERE code=$1 AND role IN ('worker','worker+')", [code]);
       if (!exists.rows.length) continue;
@@ -1369,7 +1378,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.4 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.41 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -1413,7 +1422,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     ]);
 
     const backup = {
-      version: '1.4',
+      version: '1.41',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -1658,7 +1667,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.4',
+      version: '1.41',
       time: new Date(),
       db: {
         connected: true,
@@ -1694,4 +1703,4 @@ app.use((err, req, res, next) => {
   res.status(err.message && err.message.includes('CORS') ? 403 : 500).json({ error: err.message || 'Blad serwera' });
 });
 
-app.listen(PORT, () => console.log(`RaportRBR v1.4 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`RaportRBR v1.41 running on port ${PORT}`));

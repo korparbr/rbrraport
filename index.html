@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.4</title>
+  <title>FlowRBR 1.41</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -159,11 +159,15 @@
       ["iso", "Hala ISO"]
     ];
 
-    const stageLabel = id => String(id) === "transport" ? "Transport" : (STAGES.find(s => s[0] === id) || [id, id])[1];
+    const canonicalStageId = id => {
+      const value = String(id || "").trim();
+      return value.toLowerCase() === "transport" ? "transport" : value;
+    };
+    const stageLabel = id => canonicalStageId(id) === "transport" ? "Transport" : (STAGES.find(s => s[0] === canonicalStageId(id)) || [id, id])[1];
     const stagePermissionMap = permissions => {
       const map = {};
       (permissions || []).forEach(row => {
-        const stage = String(row.stage || "");
+        const stage = canonicalStageId(row.stage);
         if (!map[stage]) map[stage] = [];
         map[stage].push(String(row.workerCode || row.worker_code || "").toUpperCase());
       });
@@ -171,7 +175,7 @@
     };
     const isStageAllowedForWorker = (stage, workerCode, permissions) => {
       const code = String(workerCode || "").toUpperCase();
-      const allowed = stagePermissionMap(permissions)[String(stage || "")] || [];
+      const allowed = stagePermissionMap(permissions)[canonicalStageId(stage)] || [];
       return !allowed.length || allowed.includes(code);
     };
     const today = () => new Date().toISOString().slice(0, 10);
@@ -400,7 +404,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.4</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.41</span>` : null}
         </div>
       `;
     }
