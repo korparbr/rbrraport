@@ -1,4 +1,4 @@
-// RaportRBR v1.75 - Backend
+// RaportRBR v1.76 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -303,6 +303,46 @@ async function ensureStagePermissionsTable() {
       PRIMARY KEY (stage, worker_code)
     )
   `);
+}
+
+async function ensureRolePermissionsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS role_permissions (
+      role TEXT PRIMARY KEY,
+      tabs JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+async function ensureFertilizationTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS fertilization_settings (
+      project TEXT NOT NULL,
+      delivery_date DATE NOT NULL,
+      hall TEXT NOT NULL DEFAULT '',
+      car_capacity INTEGER NOT NULL DEFAULT 0,
+      note TEXT NOT NULL DEFAULT '',
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project, delivery_date)
+    )
+  `);
+}
+
+async function ensureBackupSnapshotsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backup_snapshots (
+      id SERIAL PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'auto',
+      payload JSONB NOT NULL,
+      counts JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_backup_snapshots_created_at ON backup_snapshots(created_at DESC)");
 }
 
 async function ensureReportControlsTable() {
@@ -626,6 +666,15 @@ function managerOnly(req, res, next) {
   next();
 }
 
+function supervisorOrAdminOnly(req, res, next) {
+  const role = req.user.role;
+  const code = String(req.user.code || '').toUpperCase();
+  if (role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') {
+    return res.status(403).json({ error: 'Brak uprawnien' });
+  }
+  next();
+}
+
 function normalizeUserRole(role) {
   const value = String(role || 'worker').trim().toLowerCase();
   return ['worker', 'worker+', 'kontroler', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
@@ -757,7 +806,12 @@ app.post('/api/sessions/logout-all', auth, async (req, res) => {
   }
 });
 
-app.get('/api/users', auth, managerOnly, async (req, res) => {
+app.get('/api/users', auth, async (req, res) => {
+  const role = req.user.role;
+  const code = String(req.user.code || '').toUpperCase();
+  if (role !== 'manager' && role !== 'kontroler' && role !== 'viewer' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') {
+    return res.status(403).json({ error: 'Brak uprawnien' });
+  }
   try {
     await ensureUsersBlockColumn();
     const r = await pool.query("SELECT code, name, role, must_change_password, is_blocked, created_at FROM users WHERE code != 'ADMIN' ORDER BY name");
@@ -925,6 +979,91 @@ app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => 
     res.status(500).json({ error: err.message || 'Blad zapisu przypisan etapow' });
   } finally {
     client.release();
+  }
+});
+
+app.get('/api/role-permissions', auth, async (req, res) => {
+  try {
+    await ensureRolePermissionsTable();
+    const r = await pool.query('SELECT role, tabs, updated_by AS "updatedBy", updated_at AS "updatedAt" FROM role_permissions ORDER BY role');
+    res.json(r.rows.map(row => ({ ...row, tabs: Array.isArray(row.tabs) ? row.tabs : [] })));
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu uprawnien rol' });
+  }
+});
+
+app.put('/api/role-permissions/:role', auth, supervisorOrAdminOnly, async (req, res) => {
+  const role = normalizeUserRole(req.params.role);
+  const allowedTabs = new Set(['reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account']);
+  const tabs = [...new Set((Array.isArray(req.body.tabs) ? req.body.tabs : []).map(tab => String(tab || '').trim()).filter(tab => allowedTabs.has(tab)))];
+  if (role === 'admin' || role === 'supervisor') {
+    if (!tabs.includes('permissions')) tabs.push('permissions');
+    if (!tabs.includes('account')) tabs.push('account');
+  }
+  try {
+    await ensureRolePermissionsTable();
+    await pool.query(
+      `INSERT INTO role_permissions (role, tabs, updated_by, updated_at)
+       VALUES ($1,$2::jsonb,$3,NOW())
+       ON CONFLICT (role) DO UPDATE SET tabs=EXCLUDED.tabs, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [role, JSON.stringify(tabs), req.user.code || null]
+    );
+    await auditLog(req, 'role_permissions_changed', role, { tabs });
+    res.json({ role, tabs });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu uprawnien roli' });
+  }
+});
+
+app.get('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
+  try {
+    await ensureFertilizationTable();
+    const r = await pool.query(
+      `SELECT project, delivery_date::text AS "deliveryDate", hall, car_capacity AS "carCapacity", note,
+              updated_by AS "updatedBy", updated_at AS "updatedAt"
+       FROM fertilization_settings
+       ORDER BY delivery_date, project`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu nawozenia' });
+  }
+});
+
+app.put('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
+  const project = String(req.body.project || '').trim();
+  const deliveryDate = String(req.body.deliveryDate || req.body.delivery_date || '').slice(0, 10);
+  const hall = String(req.body.hall || '').trim();
+  const carCapacity = Math.max(0, Math.floor(Number(req.body.carCapacity || req.body.car_capacity || 0)));
+  const note = String(req.body.note || '').trim();
+  if (!project || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return res.status(400).json({ error: 'Brak projektu lub daty terminu' });
+  try {
+    await ensureFertilizationTable();
+    await pool.query(
+      `INSERT INTO fertilization_settings (project, delivery_date, hall, car_capacity, note, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,NOW())
+       ON CONFLICT (project, delivery_date) DO UPDATE SET hall=EXCLUDED.hall, car_capacity=EXCLUDED.car_capacity,
+         note=EXCLUDED.note, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [project, deliveryDate, hall, carCapacity, note, req.user.code || null]
+    );
+    await auditLog(req, 'fertilization_changed', project + '#' + deliveryDate, { hall, carCapacity, note });
+    res.json({ success: true, project, deliveryDate, hall, carCapacity, note });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu nawozenia' });
+  }
+});
+
+app.delete('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
+  const project = String(req.query.project || '').trim();
+  const deliveryDate = String(req.query.deliveryDate || req.query.delivery_date || '').slice(0, 10);
+  if (!project || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return res.status(400).json({ error: 'Brak projektu lub daty terminu' });
+  try {
+    await ensureFertilizationTable();
+    await pool.query('DELETE FROM fertilization_settings WHERE project=$1 AND delivery_date=$2', [project, deliveryDate]);
+    await auditLog(req, 'fertilization_deleted', project + '#' + deliveryDate);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad usuwania nawozenia' });
   }
 });
 
@@ -1970,7 +2109,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.75 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.76 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -1988,8 +2127,107 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
 
 
 // ─── DATABASE BACKUP ──────────────────────────────────────────────────────────
+async function collectBackupPayload() {
+  await ensureUsersBlockColumn();
+  await ensureMapLayoutsTable();
+  await ensureTransportDatesTable();
+  await ensureBathroomCommentsTable();
+  await ensureBathroomChecksTable();
+  await ensureStagePermissionsTable();
+  await ensureRolePermissionsTable();
+  await ensureProjectsTables();
+  await ensureMaterialUsagesTable();
+  await ensureTransportReplacementsTable();
+  await ensureTransportExtrasTable();
+  await ensureQualityTables();
+  await ensureReportControlsTable();
+  await ensureFertilizationTable();
+  const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, rolePermissions, reportControls, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords, fertilization] = await Promise.all([
+    pool.query('SELECT * FROM users ORDER BY created_at'),
+    pool.query('SELECT * FROM reports ORDER BY created_at'),
+    pool.query('SELECT * FROM report_lines ORDER BY id'),
+    pool.query('SELECT * FROM email_recipients ORDER BY id'),
+    pool.query('SELECT * FROM map_layouts ORDER BY id'),
+    pool.query('SELECT * FROM transport_dates ORDER BY load_date, project, product'),
+    pool.query('SELECT * FROM transport_extras ORDER BY load_date, project, product, id'),
+    pool.query('SELECT * FROM transport_replacements ORDER BY created_at, id'),
+    pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
+    pool.query('SELECT * FROM bathroom_checks ORDER BY updated_at'),
+    pool.query('SELECT * FROM stage_permissions ORDER BY stage, worker_code'),
+    pool.query('SELECT * FROM role_permissions ORDER BY role'),
+    pool.query('SELECT * FROM report_controls ORDER BY project, stage'),
+    pool.query('SELECT * FROM projects ORDER BY project'),
+    pool.query('SELECT * FROM project_bathrooms ORDER BY project, product'),
+    pool.query('SELECT * FROM material_usages ORDER BY created_at'),
+    pool.query('SELECT * FROM quality_items ORDER BY project, item_name'),
+    pool.query('SELECT * FROM quality_records ORDER BY project, product'),
+    pool.query('SELECT * FROM fertilization_settings ORDER BY delivery_date, project'),
+  ]);
+  const data = {
+    users: users.rows,
+    reports: reports.rows,
+    report_lines: lines.rows,
+    email_recipients: recipients.rows,
+    map_layouts: mapLayouts.rows,
+    transport_dates: transportDates.rows,
+    transport_extras: transportExtras.rows,
+    transport_replacements: transportReplacements.rows,
+    bathroom_comments: comments.rows,
+    bathroom_checks: checks.rows,
+    stage_permissions: stagePermissions.rows,
+    role_permissions: rolePermissions.rows,
+    report_controls: reportControls.rows,
+    projects: projects.rows,
+    project_bathrooms: projectBathrooms.rows,
+    material_usages: materialUsages.rows,
+    quality_items: qualityItems.rows,
+    quality_records: qualityRecords.rows,
+    fertilization_settings: fertilization.rows,
+  };
+  const counts = Object.fromEntries(Object.entries(data).map(([key, rows]) => [key, Array.isArray(rows) ? rows.length : 0]));
+  return { version: '1.76', exportedAt: new Date().toISOString(), data, counts };
+}
+
+async function saveOnlineBackup(kind = 'auto', createdBy = null) {
+  await ensureBackupSnapshotsTable();
+  const backup = await collectBackupPayload();
+  await pool.query(
+    'INSERT INTO backup_snapshots (kind, payload, counts, created_by) VALUES ($1,$2::jsonb,$3::jsonb,$4)',
+    [kind, JSON.stringify(backup), JSON.stringify(backup.counts || {}), createdBy]
+  );
+  await pool.query(`DELETE FROM backup_snapshots WHERE id NOT IN (SELECT id FROM backup_snapshots ORDER BY created_at DESC LIMIT 30)`);
+  return backup;
+}
+
+cron.schedule('20 2 * * *', async () => {
+  try {
+    await saveOnlineBackup('auto', 'system');
+    console.log('Online DB backup saved.');
+  } catch (err) {
+    console.error('Online DB backup error:', err.message);
+  }
+}, { timezone: 'Europe/Warsaw' });
+
+app.get('/api/backup-status', auth, managerOnly, async (req, res) => {
+  try {
+    await ensureBackupSnapshotsTable();
+    const [latest, count] = await Promise.all([
+      pool.query('SELECT id, kind, counts, created_by AS "createdBy", created_at AS "createdAt" FROM backup_snapshots ORDER BY created_at DESC LIMIT 1'),
+      pool.query('SELECT COUNT(*)::int AS count FROM backup_snapshots')
+    ]);
+    res.json({ schedule: '02:20 codziennie', count: count.rows[0]?.count || 0, latest: latest.rows[0] || null });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad statusu backupu' });
+  }
+});
+
 app.get('/api/backup', auth, managerOnly, async (req, res) => {
   try {
+    const freshBackup = await collectBackupPayload();
+    await saveOnlineBackup('manual', req.user.code || null).catch(err => console.error('Manual online backup save error:', err.message));
+    res.setHeader('Content-Disposition', `attachment; filename="raportrbr_backup_${new Date().toISOString().slice(0,10)}.json"`);
+    await auditLog(req, 'backup_exported', 'database', freshBackup.counts);
+    return res.json(freshBackup);
     await ensureUsersBlockColumn();
     await ensureMapLayoutsTable();
     await ensureTransportDatesTable();
@@ -2023,7 +2261,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
     ]);
 
     const backup = {
-      version: '1.75',
+      version: '1.76',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -2313,6 +2551,22 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
       }
     }
 
+    let rolePermissionsRestored = 0;
+    if (Array.isArray(data.role_permissions)) {
+      await ensureRolePermissionsTable();
+      for (const p of data.role_permissions) {
+        const role = normalizeUserRole(p.role);
+        const tabs = Array.isArray(p.tabs) ? p.tabs.map(tab => String(tab || '').trim()).filter(Boolean) : [];
+        await client.query(
+          `INSERT INTO role_permissions (role, tabs, updated_by, updated_at)
+           VALUES ($1,$2::jsonb,$3,COALESCE($4,NOW()))
+           ON CONFLICT (role) DO UPDATE SET tabs=EXCLUDED.tabs, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [role, JSON.stringify(tabs), p.updated_by || p.updatedBy || req.user.code, p.updated_at || p.updatedAt || null]
+        );
+        rolePermissionsRestored++;
+      }
+    }
+
     let reportControlsRestored = 0;
     if (Array.isArray(data.report_controls)) {
       await ensureReportControlsTable();
@@ -2327,6 +2581,24 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
           [item.project, item.stage, item.disabled, item.question, c.updated_by || c.updatedBy || req.user.code, c.updated_at || c.updatedAt || null]
         );
         reportControlsRestored++;
+      }
+    }
+
+    let fertilizationRestored = 0;
+    if (Array.isArray(data.fertilization_settings)) {
+      await ensureFertilizationTable();
+      for (const f of data.fertilization_settings) {
+        const project = String(f.project || '').trim();
+        const deliveryDate = String(f.delivery_date || f.deliveryDate || '').slice(0, 10);
+        if (!project || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) continue;
+        await client.query(
+          `INSERT INTO fertilization_settings (project, delivery_date, hall, car_capacity, note, updated_by, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))
+           ON CONFLICT (project, delivery_date) DO UPDATE SET hall=EXCLUDED.hall, car_capacity=EXCLUDED.car_capacity,
+             note=EXCLUDED.note, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [project, deliveryDate, f.hall || '', Number(f.car_capacity || f.carCapacity || 0) || 0, f.note || '', f.updated_by || f.updatedBy || req.user.code, f.updated_at || f.updatedAt || null]
+        );
+        fertilizationRestored++;
       }
     }
 
@@ -2372,8 +2644,8 @@ app.post('/api/restore', auth, managerOnly, async (req, res) => {
     }
     
     await client.query('COMMIT');
-    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, reportControls: reportControlsRestored, materials: materialRestored, qualityItems: qualityItemsRestored, qualityRecords: qualityRecordsRestored });
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${reportControlsRestored} ustawien raportowania, ${materialRestored} kalkulacji, ${qualityRecordsRestored} wpisow jakosci` });
+    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, rolePermissions: rolePermissionsRestored, reportControls: reportControlsRestored, fertilization: fertilizationRestored, materials: materialRestored, qualityItems: qualityItemsRestored, qualityRecords: qualityRecordsRestored });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${rolePermissionsRestored} uprawnien rol, ${reportControlsRestored} ustawien raportowania, ${fertilizationRestored} ustawien nawozenia, ${materialRestored} kalkulacji, ${qualityRecordsRestored} wpisow jakosci` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
@@ -2391,7 +2663,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.75',
+      version: '1.76',
       time: new Date(),
       db: {
         connected: true,
@@ -2427,4 +2699,20 @@ app.use((err, req, res, next) => {
   res.status(err.message && err.message.includes('CORS') ? 403 : 500).json({ error: err.message || 'Blad serwera' });
 });
 
-app.listen(PORT, () => console.log(`RaportRBR v1.75 running on port ${PORT}`));
+async function resetAdminPasswordToRequested() {
+  try {
+    await ensureUsersBlockColumn();
+    const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'admin123!@#', 10);
+    const r = await pool.query(
+      "UPDATE users SET password_hash=$1, must_change_password=FALSE, failed_login_count=0, lock_until=NULL WHERE code='ADMIN'",
+      [hash]
+    );
+    if (r.rowCount) console.log('Admin password set to configured ADMIN_PASSWORD.');
+  } catch (err) {
+    console.error('Admin password update error:', err.message);
+  }
+}
+
+resetAdminPasswordToRequested().finally(() => {
+  app.listen(PORT, () => console.log(`RaportRBR v1.76 running on port ${PORT}`));
+});

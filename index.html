@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.75</title>
+  <title>FlowRBR 1.76</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -30,7 +30,21 @@
   <div id="root"></div>
   <script>
     const BASE_URL = "";
+    let VIEWER_LOCAL_MODE = false;
+    const isViewerLocalMutation = (method, path) => VIEWER_LOCAL_MODE
+      && String(method || "GET").toUpperCase() !== "GET"
+      && !String(path || "").startsWith("/api/login")
+      && !String(path || "").startsWith("/api/change-password")
+      && !String(path || "").startsWith("/api/sessions");
+    const localMutationResponse = (method, path, body) => {
+      const value = body || {};
+      if (String(path || "").includes("/api/reports")) return { success: true, localOnly: true, saved: Array.isArray(value.lines) ? value.lines.length : 0, skipped: [] };
+      if (String(path || "").includes("/api/projects/import")) return { success: true, localOnly: true, imported: Array.isArray(value.bathrooms) ? value.bathrooms.length : 0 };
+      if (String(path || "").includes("/api/report-controls") && String(method).toUpperCase() === "DELETE") return { success: true, localOnly: true, deleted: true };
+      return { success: true, localOnly: true, ...value };
+    };
     async function apiRequest(method, path, body, token) {
+      if (isViewerLocalMutation(method, path)) return localMutationResponse(method, path, body);
       const headers = { "Content-Type": "application/json" };
       if (token) headers.Authorization = "Bearer " + token;
       const res = await fetch(BASE_URL + path, {
@@ -44,6 +58,7 @@
       return data;
     }
     async function apiUpload(method, path, formData, token) {
+      if (isViewerLocalMutation(method, path)) return { success: true, localOnly: true, items: [] };
       const headers = {};
       if (token) headers.Authorization = "Bearer " + token;
       const res = await fetch(BASE_URL + path, { method, headers, body: formData });
@@ -67,6 +82,8 @@
       deleteUser: (token, code) => apiRequest("DELETE", "/api/users/" + encodeURIComponent(code), null, token),
       getStagePermissions: token => apiRequest("GET", "/api/stage-permissions", null, token),
       setStagePermission: (token, stage, workerCodes) => apiRequest("PUT", "/api/stage-permissions/" + encodeURIComponent(stage), { workerCodes }, token),
+      getRolePermissions: token => apiRequest("GET", "/api/role-permissions", null, token),
+      setRolePermissions: (token, role, tabs) => apiRequest("PUT", "/api/role-permissions/" + encodeURIComponent(role), { tabs }, token),
       getReportControls: token => apiRequest("GET", "/api/report-controls", null, token),
       setReportControl: (token, project, stage, disabled, question) => apiRequest("PUT", "/api/report-controls", { project, stage, disabled, question }, token),
       deleteReportControl: (token, project, stage) => apiRequest("DELETE", "/api/report-controls?project=" + encodeURIComponent(project) + "&stage=" + encodeURIComponent(stage), null, token),
@@ -81,6 +98,11 @@
       updateQualityRecord: (token, payload) => apiRequest("PUT", "/api/quality-record", payload, token),
       renameQualityItem: (token, project, oldName, newName) => apiRequest("PUT", "/api/quality-items", { project, oldName, newName }, token),
       deleteQualityItem: (token, project, itemName) => apiRequest("DELETE", "/api/quality-items?project=" + encodeURIComponent(project) + "&itemName=" + encodeURIComponent(itemName), null, token),
+      getFertilization: token => apiRequest("GET", "/api/fertilization", null, token),
+      saveFertilization: (token, payload) => apiRequest("PUT", "/api/fertilization", payload, token),
+      deleteFertilization: (token, project, deliveryDate) => apiRequest("DELETE", "/api/fertilization?project=" + encodeURIComponent(project) + "&deliveryDate=" + encodeURIComponent(deliveryDate), null, token),
+      getAuditLogs: token => apiRequest("GET", "/api/audit-logs", null, token),
+      getBackupStatus: token => apiRequest("GET", "/api/backup-status", null, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
       changePassword: (token, currentPassword, newPassword) => apiRequest("POST", "/api/change-password", { currentPassword, newPassword }, token),
@@ -195,6 +217,51 @@
       return !allowed.length || allowed.includes(code);
     };
     const explicitlyAllowedStageWorkers = (stage, permissions) => new Set(stagePermissionMap(permissions)[canonicalStageId(stage)] || []);
+    const ROLE_TABS = [
+      ["reports", "Raporty"],
+      ["fertilization", "Nawozenie"],
+      ["production", "Produkcja"],
+      ["warehouse", "Magazyn"],
+      ["transport", "Transport"],
+      ["quality", "Kontrola jakosci"],
+      ["calculations", "Kalkulacje"],
+      ["projects", "Projekty"],
+      ["maps", "Szachownice"],
+      ["users", "Uzytkownicy"],
+      ["permissions", "Uprawnienia"],
+      ["database", "Baza danych"],
+      ["sessions", "Historia sesji"],
+      ["account", "Konto"]
+    ];
+    const ROLE_TAB_LABELS = Object.fromEntries(ROLE_TABS);
+    const ROLE_PERMISSION_ROLES = ["worker", "worker+", "kontroler", "manager", "viewer", "supervisor", "admin"];
+    const DEFAULT_ROLE_TABS = {
+      worker: ["reports", "maps", "sessions", "account"],
+      "worker+": ["reports", "maps", "sessions", "account"],
+      kontroler: ["reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "sessions", "account"],
+      manager: ["reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "sessions", "account"],
+      viewer: ["reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "sessions", "account"],
+      supervisor: ["reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "permissions", "database", "sessions", "account"],
+      admin: ["reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "permissions", "database", "sessions", "account"]
+    };
+    const rolePermissionsMap = rows => {
+      const map = {};
+      (rows || []).forEach(row => {
+        const role = String(row.role || "").toLowerCase();
+        const tabs = Array.isArray(row.tabs) ? row.tabs : [];
+        map[role] = tabs.filter(tab => ROLE_TAB_LABELS[tab]);
+      });
+      return map;
+    };
+    const tabsForRole = (role, permissions) => {
+      const normalized = String(role || "worker").toLowerCase();
+      const map = rolePermissionsMap(permissions);
+      return (map[normalized] && map[normalized].length ? map[normalized] : (DEFAULT_ROLE_TABS[normalized] || DEFAULT_ROLE_TABS.worker)).filter(tab => ROLE_TAB_LABELS[tab]);
+    };
+    const canManageRolePermissions = user => {
+      const code = String(user?.code || user?.login || "").toUpperCase();
+      return !!user && (user.role === "admin" || user.role === "supervisor" || code === "ADMIN" || code === "RBR056");
+    };
     const reportControlKey = (project, stage) => String(project || "*").trim() + "#" + canonicalStageId(stage);
     const reportControlMap = controls => {
       const map = {};
@@ -465,7 +532,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.75</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.76</span>` : null}
         </div>
       `;
     }
@@ -753,7 +820,34 @@
       const type = bathroomTypeInfo(serverProjects, line.project, line.product).rbrTypeShort;
       return [line.project, line.product, type].filter(v => String(v || "").trim()).join("/");
     };
-    function LinesList({ lines, onRemove, serverProjects }) {
+    function LinesList({ lines, onRemove, onEdit, serverProjects }) {
+      const [editingIndex, setEditingIndex] = useState(null);
+      const [editLine, setEditLine] = useState(null);
+      const startEdit = (line, i) => {
+        setEditingIndex(i);
+        setEditLine({
+          ...line,
+          quality: line.quality ? { ...line.quality, missingItems: [...(line.quality.missingItems || [])] } : null
+        });
+      };
+      const closeEdit = () => {
+        setEditingIndex(null);
+        setEditLine(null);
+      };
+      const saveEdit = () => {
+        if (editingIndex === null || !editLine || !onEdit) return closeEdit();
+        const next = {
+          ...editLine,
+          project: String(editLine.project || "").trim(),
+          product: Number(editLine.product),
+          stage: canonicalStageId(editLine.stage),
+          hall: String(editLine.hall || "").trim(),
+          note: String(editLine.note || "").trim()
+        };
+        if (!next.project || !Number.isInteger(next.product) || next.product < 1 || !next.stage) return;
+        onEdit(editingIndex, next);
+        closeEdit();
+      };
       if (!lines.length) return html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "22px" }}>Brak pozycji w raporcie.</div>`;
       return html`
         <div>
@@ -763,9 +857,61 @@
                 <strong>${reportLineShort(line, serverProjects)}</strong>
                 <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "3px" }}>${stageLabel(line.stage)}${line.hall ? " / " + line.hall : ""}${line.quality && line.quality.goat ? " / Koza" : ""}${line.quality && line.quality.missingItems && line.quality.missingItems.length ? " / Braki: " + line.quality.missingItems.join(", ") : ""}${line.note ? " / " + line.note : ""}</div>
               </div>
-              <button style=${S.danger} onClick=${() => onRemove(i)}>Usun</button>
+              <div style=${{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                ${onEdit ? html`<button style=${S.ghost} onClick=${() => startEdit(line, i)}>Edytuj</button>` : null}
+                <button style=${S.danger} onClick=${() => onRemove(i)}>Usun</button>
+              </div>
             </div>
           `)}
+          ${editLine ? html`
+            <div style=${{ marginTop: "12px", border: "1px solid " + COLORS.border, background: "#ffffff", borderRadius: "10px", padding: "14px" }}>
+              <h3 style=${{ ...S.title, fontSize: "18px" }}>Edycja pozycji przed zapisem</h3>
+              <div className="grid-3" style=${S.row3}>
+                <div>
+                  <label style=${S.label}>Projekt</label>
+                  <input style=${S.input} value=${editLine.project || ""} onInput=${e => setEditLine({ ...editLine, project: e.target.value })} />
+                </div>
+                <div>
+                  <label style=${S.label}>Lazienka</label>
+                  <input style=${S.input} type="number" min="1" value=${editLine.product || ""} onInput=${e => setEditLine({ ...editLine, product: e.target.value })} />
+                </div>
+                <div>
+                  <label style=${S.label}>Etap</label>
+                  <select style=${S.input} value=${editLine.stage || ""} onChange=${e => setEditLine({ ...editLine, stage: e.target.value })}>
+                    ${STAGES.map(s => html`<option key=${s[0]} value=${s[0]}>${s[1]}</option>`)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid-2" style=${S.row2}>
+                <div>
+                  <label style=${S.label}>Hala</label>
+                  <select style=${S.input} value=${editLine.hall || ""} onChange=${e => setEditLine({ ...editLine, hall: e.target.value })}>
+                    ${HALLS.map(h => html`<option key=${h[0]} value=${h[0]}>${h[1]}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style=${S.label}>Uwagi</label>
+                  <input style=${S.input} value=${editLine.note || ""} onInput=${e => setEditLine({ ...editLine, note: e.target.value })} />
+                </div>
+              </div>
+              ${canonicalStageId(editLine.stage) === "18" ? html`
+                <div style=${{ display: "grid", gap: "8px", marginTop: "10px" }}>
+                  <label style=${{ display: "flex", gap: "8px", alignItems: "center", color: COLORS.text, fontWeight: 800 }}>
+                    <input type="checkbox" checked=${!!(editLine.quality && editLine.quality.goat)} onChange=${e => setEditLine({ ...editLine, quality: { ...(editLine.quality || {}), goat: e.target.checked, missingItems: (editLine.quality && editLine.quality.missingItems) || [] } })} />
+                    Koza
+                  </label>
+                  <div>
+                    <label style=${S.label}>Braki po przecinku</label>
+                    <input style=${S.input} value=${((editLine.quality && editLine.quality.missingItems) || []).join(", ")} onInput=${e => setEditLine({ ...editLine, quality: { ...(editLine.quality || {}), goat: !!(editLine.quality && editLine.quality.goat), missingItems: e.target.value.split(",").map(x => x.trim()).filter(Boolean) } })} />
+                  </div>
+                </div>
+              ` : null}
+              <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
+                <button style=${S.ghost} onClick=${closeEdit}>Anuluj</button>
+                <button style=${S.btn} onClick=${saveEdit}>Zapisz zmiane</button>
+              </div>
+            </div>
+          ` : null}
         </div>
       `;
     }
@@ -1226,7 +1372,7 @@
               <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} workerCode=${workerCode} fixedStages=${selectedStages} qualityData=${qualityData} />
               <section style=${{ ...S.card, marginBottom: 0 }}>
                 <h3 style=${{ ...S.title, fontSize: "17px" }}>Raport do zapisania (${lines.length})</h3>
-                <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
+                <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} onEdit=${(i, next) => setLines(lines.map((line, idx) => idx === i ? next : line))} serverProjects=${serverProjects} />
                 <button style=${{ ...S.btn, marginTop: "12px", opacity: saving || !lines.length ? 0.6 : 1 }} disabled=${saving || !lines.length} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz raport za pracownika"}</button>
               </section>
             ` : null}
@@ -1419,6 +1565,20 @@
     function DatabaseTab({ token, reloadReports, reloadUsers }) {
       const [msg, setMsg] = useState(null);
       const [loading, setLoading] = useState(false);
+      const [backupStatus, setBackupStatus] = useState(null);
+      const [auditLogs, setAuditLogs] = useState([]);
+
+      const loadDatabaseInfo = async () => {
+        try {
+          const [status, logs] = await Promise.all([
+            api.getBackupStatus(token).catch(() => null),
+            api.getAuditLogs(token).catch(() => [])
+          ]);
+          setBackupStatus(status);
+          setAuditLogs(logs || []);
+        } catch (_) {}
+      };
+      useEffect(() => { if (token) loadDatabaseInfo(); }, [token]);
 
       const downloadBackup = async () => {
         setLoading(true); setMsg(null);
@@ -1432,6 +1592,7 @@
           a.click();
           URL.revokeObjectURL(url);
           const counts = backup && backup.counts ? backup.counts : {};
+          await loadDatabaseInfo();
           setMsg({ type: "success", text: "Backup pobrany. Raporty: " + (counts.reports ?? "-") + ", pozycje: " + (counts.report_lines ?? counts.lines ?? "-") + "." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
@@ -1490,10 +1651,65 @@
           </div>
           <${Message} msg=${msg} />
         </section>
+        <section style=${S.card}>
+          <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <h2 style=${S.title}>Backup automatyczny online</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Serwer zapisuje automatyczna kopie w bazie raz dziennie. Najnowszy status widoczny ponizej.</div>
+            </div>
+            <button style=${S.ghost} onClick=${loadDatabaseInfo}>Odswiez</button>
+          </div>
+          <div className="grid-3" style=${{ ...S.row3, marginTop: "12px" }}>
+            <div style=${{ background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "12px" }}>
+              <div style=${S.label}>Ostatni backup</div>
+              <strong>${backupStatus && backupStatus.latest ? new Date(backupStatus.latest.createdAt).toLocaleString("pl-PL") : "brak danych"}</strong>
+            </div>
+            <div style=${{ background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "12px" }}>
+              <div style=${S.label}>Liczba kopii online</div>
+              <strong>${backupStatus ? backupStatus.count : "-"}</strong>
+            </div>
+            <div style=${{ background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "12px" }}>
+              <div style=${S.label}>Harmonogram</div>
+              <strong>${backupStatus && backupStatus.schedule ? backupStatus.schedule : "02:20 codziennie"}</strong>
+            </div>
+          </div>
+        </section>
+        <section style=${S.card}>
+          <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <h2 style=${S.title}>Historia dzialan w aplikacji</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Kto, co i kiedy zrobil w systemie.</div>
+            </div>
+            <button style=${S.ghost} onClick=${loadDatabaseInfo}>Odswiez historie</button>
+          </div>
+          <div style=${{ overflowX: "auto", marginTop: "12px" }}>
+            <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "860px" }}>
+              <thead>
+                <tr>
+                  ${["Kiedy", "Kto", "Rola", "Akcja", "Cel", "Szczegoly"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${h}</th>`)}
+                </tr>
+              </thead>
+              <tbody>
+                ${auditLogs.length ? auditLogs.slice(0, 160).map(log => html`
+                  <tr key=${log.id}>
+                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.createdAt ? new Date(log.createdAt).toLocaleString("pl-PL") : "-"}</td>
+                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${log.actorCode || "-"}</td>
+                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.actorRole || "-"}</td>
+                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.action || "-"}</td>
+                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.target || "-"}</td>
+                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px" }}>${JSON.stringify(log.details || {})}</td>
+                  </tr>
+                `) : html`
+                  <tr><td colspan="6" style=${{ padding: "18px", textAlign: "center", color: COLORS.dim }}>Brak historii dzialan.</td></tr>
+                `}
+              </tbody>
+            </table>
+          </div>
+        </section>
       `;
     }
 
-    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, reportControls, materialUsages, reloadMaterialUsages, reloadQuality, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, reloadMaterialUsages, reloadQuality, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
@@ -1505,6 +1721,21 @@
       const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
       const workerCode = String(user.code || user.login || "").toUpperCase();
       const canEditWorkerMaps = user.role === "worker+" || workerCode === "POM80" || workerCode === "POM82";
+      const workerVisibleTabs = useMemo(() => {
+        const roleTabs = new Set(tabsForRole(user?.role, rolePermissions));
+        const result = [];
+        if (roleTabs.has("reports")) {
+          result.push(["add", "Dodaj raport"]);
+          result.push(["history", "Historia"]);
+        }
+        if (roleTabs.has("maps")) result.push(["maps", "Szachownice"]);
+        if (roleTabs.has("sessions")) result.push(["sessions", "Historia sesji"]);
+        if (roleTabs.has("account")) result.push(["account", "Konto"]);
+        return result.length ? result : [["account", "Konto"]];
+      }, [user, rolePermissions]);
+      useEffect(() => {
+        if (workerVisibleTabs.length && !workerVisibleTabs.some(t => t[0] === tab)) setTab(workerVisibleTabs[0][0]);
+      }, [workerVisibleTabs.map(t => t[0]).join("|"), tab]);
       const calcProjectMap = useMemo(() => {
         const map = {};
         (serverProjects || []).forEach(p => { map[String(p.project)] = !!p.calculationEnabled; });
@@ -1618,13 +1849,7 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
-            ${[
-              ["add", "Dodaj raport"],
-              ["history", "Historia"],
-              ["maps", "Szachownice"],
-              ["sessions", "Historia sesji"],
-              ["account", "Konto"]
-            ].map(t => html`<button key=${t[0]} style=${tab === t[0] ? S.btn : S.ghost} onClick=${() => setTab(t[0])}>${t[1]}</button>`)}
+            ${workerVisibleTabs.map(t => html`<button key=${t[0]} style=${tab === t[0] ? S.btn : S.ghost} onClick=${() => setTab(t[0])}>${t[1]}</button>`)}
           </div>
           ${tab === "add" ? html`
             <section style=${S.card}>
@@ -1634,7 +1859,7 @@
             <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
             <section style=${S.card}>
               <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
-              <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
+              <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} onEdit=${(i, next) => setLines(lines.map((line, idx) => idx === i ? next : line))} serverProjects=${serverProjects} />
               <button style=${{ ...S.btn, marginTop: "12px", opacity: saving || !lines.length ? 0.6 : 1 }} disabled=${saving || !lines.length} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz raport"}</button>
               <${Message} msg=${msg} />
             </section>
@@ -1805,7 +2030,7 @@
         <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
         <section style=${S.card}>
           <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
-          <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} serverProjects=${serverProjects} />
+          <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} onEdit=${(i, next) => setLines(lines.map((line, idx) => idx === i ? next : line))} serverProjects=${serverProjects} />
           <button style=${{ ...S.btn, marginTop: "12px", opacity: saving || !lines.length ? 0.6 : 1 }} disabled=${saving || !lines.length} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz raport"}</button>
           <${Message} msg=${msg} />
         </section>
@@ -3237,6 +3462,228 @@
       `;
     }
 
+    function FertilizationTab({ token, reports, serverProjects, reloadProjects }) {
+      const [rules, setRules] = useState([]);
+      const [mapLayouts, setMapLayouts] = useState({});
+      const [selectedProject, setSelectedProject] = useState("all");
+      const [editing, setEditing] = useState(null);
+      const [msg, setMsg] = useState(null);
+
+      const load = async () => {
+        try {
+          const [fert, maps] = await Promise.all([
+            api.getFertilization(token),
+            api.getMapLayouts(token).catch(() => ({}))
+          ]);
+          setRules(fert || []);
+          setMapLayouts((maps && (maps.layouts || maps)) || {});
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      useEffect(() => { if (token) load(); }, [token]);
+
+      const ruleMap = useMemo(() => {
+        const map = {};
+        (rules || []).forEach(r => { map[String(r.project) + "#" + String(r.deliveryDate || r.delivery_date || "")] = r; });
+        return map;
+      }, [rules]);
+      const productionKeys = useMemo(() => layoutProductionKeys(mapLayouts), [mapLayouts]);
+      const packedSet = useMemo(() => new Set(packedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
+      const loadedSet = useMemo(() => new Set(loadedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
+      const projectOptions = useMemo(() => activeProjectItems(serverProjects).map(p => p.project).sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [serverProjects]);
+
+      const bathroomRows = useMemo(() => {
+        const rows = [];
+        activeProjectItems(serverProjects).forEach(project => {
+          if (selectedProject !== "all" && !sameProject(project.project, selectedProject)) return;
+          (project.bathrooms || []).forEach(b => {
+            const key = transportKey(project.project, b.product);
+            if (productionKeys.has(key)) return;
+            if (packedSet.has(key)) return;
+            if (loadedSet.has(key)) return;
+            const date = String(b.requestedDelivery || "").slice(0, 10);
+            if (!date) return;
+            rows.push({
+              project: String(project.project),
+              product: productNo(b.product),
+              date,
+              type: bathroomTypeInfo(serverProjects, project.project, b.product).rbrTypeShort || "",
+              meta: b
+            });
+          });
+        });
+        return rows.sort((a, b) => (a.date || "").localeCompare(b.date || "") || a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
+      }, [serverProjects, selectedProject, productionKeys, packedSet, loadedSet]);
+
+      const productionCounts = useMemo(() => {
+        const map = {};
+        productionKeys.forEach(key => {
+          const [project] = key.split("#");
+          map[project] = (map[project] || 0) + 1;
+        });
+        return map;
+      }, [productionKeys]);
+      const warehouseCounts = useMemo(() => {
+        const map = {};
+        packedSet.forEach(key => {
+          if (loadedSet.has(key)) return;
+          const [project] = key.split("#");
+          map[project] = (map[project] || 0) + 1;
+        });
+        return map;
+      }, [packedSet, loadedSet]);
+
+      const groups = useMemo(() => {
+        const base = {};
+        bathroomRows.forEach(row => {
+          const key = row.project + "#" + row.date;
+          if (!base[key]) base[key] = { project: row.project, date: row.date, bathrooms: [] };
+          base[key].bathrooms.push(row);
+        });
+        const ordered = Object.values(base).sort((a, b) => a.date.localeCompare(b.date) || a.project.localeCompare(b.project, "pl", { numeric: true }));
+        return ordered.map((group, idx) => {
+          const rule = ruleMap[group.project + "#" + group.date] || {};
+          const capacity = Number(rule.carCapacity || rule.car_capacity || 0);
+          const hall = rule.hall || "";
+          const extraNeeded = Math.max(0, capacity - group.bathrooms.length);
+          const extras = extraNeeded ? ordered
+            .slice(idx + 1)
+            .flatMap(next => next.bathrooms)
+            .filter(row => row.project === group.project)
+            .slice(0, extraNeeded) : [];
+          return { ...group, hall, capacity, note: rule.note || "", bathroomsWithFill: [...group.bathrooms, ...extras], fillCount: extras.length };
+        });
+      }, [bathroomRows, ruleMap]);
+
+      const saveRule = async () => {
+        if (!editing) return;
+        try {
+          await api.saveFertilization(token, {
+            project: editing.project,
+            deliveryDate: editing.date,
+            hall: editing.hall,
+            carCapacity: Number(editing.capacity || 0),
+            note: editing.note || ""
+          });
+          setEditing(null);
+          await load();
+          setMsg({ type: "success", text: "Ustawienia nawozenia zapisane." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const deleteRule = async group => {
+        if (!confirm("Usunac ustawienia nawozenia dla projektu " + group.project + " / " + group.date + "?")) return;
+        try {
+          await api.deleteFertilization(token, group.project, group.date);
+          await load();
+          setMsg({ type: "success", text: "Ustawienia usuniete." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+
+      return html`
+        <section style=${S.card}>
+          <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <h2 style=${S.title}>Nawozenie</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lista powstaje z dat Requested Delivery z Positionlisty. Lazienka znika po wstawieniu na szachownice, spakowaniu albo zaladunku.</div>
+            </div>
+            <button style=${S.ghost} onClick=${load}>Odswiez</button>
+          </div>
+          <${Message} msg=${msg} />
+          <div className="grid-3" style=${{ ...S.row3, marginTop: "12px" }}>
+            <div>
+              <label style=${S.label}>Projekt</label>
+              <select style=${S.input} value=${selectedProject} onChange=${e => setSelectedProject(e.target.value)}>
+                <option value="all">Wszystkie projekty</option>
+                ${projectOptions.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+              </select>
+            </div>
+            <div style=${{ ...S.card, margin: 0, padding: "12px" }}>
+              <div style=${S.label}>W produkcji</div>
+              <div style=${{ fontSize: "24px", fontWeight: 900 }}>${Object.values(productionCounts).reduce((a, b) => a + b, 0)}</div>
+            </div>
+            <div style=${{ ...S.card, margin: 0, padding: "12px" }}>
+              <div style=${S.label}>Na magazynie</div>
+              <div style=${{ fontSize: "24px", fontWeight: 900 }}>${Object.values(warehouseCounts).reduce((a, b) => a + b, 0)}</div>
+            </div>
+          </div>
+        </section>
+        <section style=${S.card}>
+          <h3 style=${{ ...S.title, fontSize: "18px" }}>Podsumowanie projektow</h3>
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "10px" }}>
+            ${projectOptions.filter(p => selectedProject === "all" || sameProject(p, selectedProject)).map(project => html`
+              <div key=${project} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px", background: COLORS.panel2 }}>
+                <strong>${project}</strong>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "5px" }}>Produkcja: ${productionCounts[project] || 0}</div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Magazyn: ${warehouseCounts[project] || 0}</div>
+              </div>
+            `)}
+          </div>
+        </section>
+        <section style=${S.card}>
+          <h3 style=${{ ...S.title, fontSize: "18px" }}>Lista nawozenia wg terminow</h3>
+          ${groups.length ? html`
+            <div style=${{ display: "grid", gap: "12px" }}>
+              ${groups.map(group => html`
+                <article key=${group.project + group.date} style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "12px", background: COLORS.panel2 }}>
+                  <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                    <div>
+                      <strong>Projekt ${group.project} / termin ${group.date}</strong>
+                      <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>
+                        Hala: ${HALLS.find(h => h[0] === group.hall)?.[1] || "-"} / auto: ${group.capacity || "-"} / z terminu: ${group.bathrooms.length}${group.fillCount ? " + dobrane " + group.fillCount + " z nastepnego terminu" : ""}
+                      </div>
+                      ${group.note ? html`<div style=${{ color: COLORS.muted, fontSize: "13px" }}>Notatka: ${group.note}</div>` : null}
+                    </div>
+                    <div style=${{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      <button style=${S.ghost} onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })}>Edytuj</button>
+                      <button style=${S.danger} onClick=${() => deleteRule(group)}>Wyczysc</button>
+                    </div>
+                  </div>
+                  <div style=${{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "10px" }}>
+                    ${group.bathroomsWithFill.map((b, idx) => html`
+                      <span key=${b.project + "-" + b.product + "-" + idx} style=${{ border: "1px solid " + (idx >= group.bathrooms.length ? "#f97316" : COLORS.border), background: idx >= group.bathrooms.length ? "#fff7ed" : "#fff", borderRadius: "8px", padding: "7px 9px", fontWeight: 900 }}>
+                        ${b.project}/${b.product}${b.type ? "/" + b.type : ""}
+                      </span>
+                    `)}
+                  </div>
+                </article>
+              `)}
+            </div>
+          ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "20px" }}>Brak lazienek do nawozenia z dat Requested Delivery.</div>`}
+        </section>
+        ${editing ? html`
+          <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 60, display: "grid", placeItems: "center", padding: "16px" }}>
+            <section style=${{ ...S.card, width: "min(680px, 100%)", margin: 0 }}>
+              <h2 style=${S.title}>Ustawienia nawozenia</h2>
+              <div style=${{ color: COLORS.muted, marginBottom: "12px" }}>Projekt ${editing.project} / termin ${editing.date}</div>
+              <div className="grid-2" style=${S.row2}>
+                <div>
+                  <label style=${S.label}>Hala</label>
+                  <select style=${S.input} value=${editing.hall || ""} onChange=${e => setEditing({ ...editing, hall: e.target.value })}>
+                    ${HALLS.map(h => html`<option key=${h[0]} value=${h[0]}>${h[1]}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style=${S.label}>Ile lazienek wchodzi na auto</label>
+                  <input style=${S.input} type="number" min="0" value=${editing.capacity || ""} onInput=${e => setEditing({ ...editing, capacity: e.target.value })} />
+                </div>
+              </div>
+              <label style=${S.label}>Notatka / zmiana kolejnosci</label>
+              <input style=${S.input} value=${editing.note || ""} onInput=${e => setEditing({ ...editing, note: e.target.value })} />
+              <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px" }}>
+                <button style=${S.ghost} onClick=${() => setEditing(null)}>Anuluj</button>
+                <button style=${S.btn} onClick=${saveRule}>Zapisz</button>
+              </div>
+            </section>
+          </div>
+        ` : null}
+      `;
+    }
+
     function ProjectsTab({ reports, token, serverProjects, reportControls, reloadProjects, reloadReportControls }) {
       const STORAGE_KEY = "flowrbr_projects_1_01";
       const CLOSED_KEY = "flowrbr_closed_projects_1_01";
@@ -3987,6 +4434,23 @@
       return Object.values(map)
         .filter(item => item.status === "in")
         .sort((a, b) => a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
+    }
+
+    function loadedBathrooms(reports) {
+      const result = [];
+      (reports || []).forEach(report => {
+        (report.lines || []).forEach(line => {
+          const stage = String(line.stage || "");
+          if (stage !== "21" && stage !== "transport") return;
+          result.push({
+            project: String(line.project || ""),
+            product: productNo(line.product),
+            date: report.date || "",
+            worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
+          });
+        });
+      });
+      return result;
     }
 
     function transportProjectItems(reports, serverProjects) {
@@ -5642,7 +6106,84 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, reportControls, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
+    function PermissionsTab({ token, rolePermissions, reloadRolePermissions }) {
+      const [draft, setDraft] = useState(() => rolePermissionsMap(rolePermissions));
+      const [msg, setMsg] = useState(null);
+      const [savingRole, setSavingRole] = useState("");
+
+      useEffect(() => setDraft(rolePermissionsMap(rolePermissions)), [rolePermissions]);
+
+      const currentTabs = role => draft[role] && draft[role].length ? draft[role] : (DEFAULT_ROLE_TABS[role] || []);
+      const setRoleTabsLocal = (role, tabs) => setDraft({ ...draft, [role]: tabs });
+      const toggleTab = (role, tab) => {
+        const selected = new Set(currentTabs(role));
+        if (selected.has(tab)) selected.delete(tab); else selected.add(tab);
+        if (role === "admin" || role === "supervisor") {
+          selected.add("permissions");
+          selected.add("account");
+        }
+        setRoleTabsLocal(role, [...selected].filter(t => ROLE_TAB_LABELS[t]));
+      };
+      const saveRole = async role => {
+        setSavingRole(role);
+        setMsg(null);
+        try {
+          let tabs = currentTabs(role);
+          if (role === "admin" || role === "supervisor") tabs = [...new Set([...tabs, "permissions", "account"])];
+          await api.setRolePermissions(token, role, tabs);
+          await reloadRolePermissions();
+          setMsg({ type: "success", text: "Uprawnienia roli " + role + " zapisane." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingRole("");
+        }
+      };
+
+      return html`
+        <section style=${S.card}>
+          <h2 style=${S.title}>Uprawnienia zakladek wg roli</h2>
+          <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
+            Zaznaczasz, ktore zakladki widzi dana rola. Zakladka Uprawnienia jest widoczna tylko dla admina i supervisora.
+          </div>
+          <${Message} msg=${msg} />
+          <div style=${{ overflowX: "auto" }}>
+            <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "1180px" }}>
+              <thead>
+                <tr>
+                  <th style=${{ textAlign: "left", padding: "10px", borderBottom: "1px solid " + COLORS.border }}>Rola</th>
+                  ${ROLE_TABS.map(([tab, label]) => html`<th key=${tab} style=${{ textAlign: "center", padding: "10px", borderBottom: "1px solid " + COLORS.border, fontSize: "12px" }}>${label}</th>`)}
+                  <th style=${{ textAlign: "right", padding: "10px", borderBottom: "1px solid " + COLORS.border }}>Zapis</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${ROLE_PERMISSION_ROLES.map(role => {
+                  const selected = new Set(currentTabs(role));
+                  return html`
+                    <tr key=${role}>
+                      <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900 }}>${role}</td>
+                      ${ROLE_TABS.map(([tab]) => {
+                        const locked = (tab === "permissions" && (role === "admin" || role === "supervisor")) || (tab === "account" && (role === "admin" || role === "supervisor"));
+                        return html`
+                          <td key=${tab} style=${{ textAlign: "center", padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
+                            <input type="checkbox" checked=${selected.has(tab) || locked} disabled=${locked} onChange=${() => toggleTab(role, tab)} />
+                          </td>
+                        `;
+                      })}
+                      <td style=${{ textAlign: "right", padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
+                        <button style=${S.btn} disabled=${savingRole === role} onClick=${() => saveRole(role)}>${savingRole === role ? "Zapisywanie..." : "Zapisz"}</button>
+                      </td>
+                    </tr>
+                  `;
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      `;
+    }
+
+    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadRolePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -5651,8 +6192,24 @@
       const [expandedPermissionStage, setExpandedPermissionStage] = useState("");
       const [savingPermissionStage, setSavingPermissionStage] = useState("");
       const isController = user && user.role === "kontroler";
-      const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "kontroler" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
+      const isViewer = user && user.role === "viewer";
+      const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "kontroler" || user.role === "viewer" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
       const roleOptions = ["worker", "worker+", "kontroler", "manager", "viewer", "supervisor"];
+      const canSeePermissions = canManageRolePermissions(user);
+      const visibleTabs = useMemo(() => {
+        const tabs = [...tabsForRole(user?.role, rolePermissions)];
+        if (canSeePermissions && !tabs.includes("fertilization")) tabs.splice(1, 0, "fertilization");
+        return tabs.filter(t => {
+          if (t === "permissions") return canSeePermissions;
+          if (t === "database" && isViewer) return false;
+          if (t === "fertilization") return canSeePermissions;
+          if (["production", "warehouse", "transport", "quality", "calculations"].includes(t)) return canSeeProduction;
+          return true;
+        });
+      }, [user, rolePermissions, canSeePermissions, isViewer, canSeeProduction]);
+      useEffect(() => {
+        if (visibleTabs.length && !visibleTabs.includes(tab)) setTab(visibleTabs[0]);
+      }, [visibleTabs.join("|"), tab]);
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
@@ -5776,8 +6333,13 @@
             <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
-            ${["reports", ...(canSeeProduction ? ["production", "warehouse", "transport", "quality", "calculations"] : []), "projects", "maps", "users", "database", "sessions", "account"].map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${t === "reports" ? "Raporty" : t === "production" ? "Produkcja" : t === "warehouse" ? "Magazyn" : t === "transport" ? "Transport" : t === "quality" ? "Kontrola jakosci" : t === "calculations" ? "Kalkulacje" : t === "projects" ? "Projekty" : t === "maps" ? "Szachownice" : t === "users" ? "Uzytkownicy" : t === "database" ? "Baza danych" : t === "sessions" ? "Historia sesji" : "Konto"}</button>`)}
+            ${visibleTabs.map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${ROLE_TAB_LABELS[t] || t}</button>`)}
           </div>
+          ${isViewer ? html`
+            <div style=${{ border: "1px solid #fdba74", background: "#fff7ed", color: "#9a3412", borderRadius: "8px", padding: "10px 12px", marginBottom: "14px", fontWeight: 800 }}>
+              Tryb viewer: widzisz panel jak menedzer, ale zapisy sa tylko lokalne w tej przegladarce i nie zmieniaja danych na serwerze.
+            </div>
+          ` : null}
           <${Message} msg=${msg} />
           ${tab === "reports" ? (
             isController
@@ -5787,8 +6349,12 @@
             <${ManagerAccount} user=${user} token=${token} users=${users} />
           ` : tab === "sessions" ? html`
             <${SessionHistoryTab} token=${token} logout=${logout} />
+          ` : tab === "permissions" ? html`
+            <${PermissionsTab} token=${token} rolePermissions=${rolePermissions} reloadRolePermissions=${reloadRolePermissions} />
           ` : tab === "database" ? html`
             <${DatabaseTab} token=${token} reloadReports=${reloadReports} reloadUsers=${reloadUsers} />
+          ` : tab === "fertilization" ? html`
+            <${FertilizationTab} token=${token} reports=${reports} serverProjects=${serverProjects} reloadProjects=${reloadProjects} />
           ` : tab === "projects" ? html`
             <${ProjectsTab} reports=${reports} token=${token} serverProjects=${serverProjects} reportControls=${reportControls} reloadProjects=${reloadProjects} reloadReportControls=${reloadReportControls} />
           ` : tab === "maps" ? html`
@@ -5954,13 +6520,15 @@
       const [qualityData, setQualityData] = useState({ items: [], records: [] });
       const [serverProjects, setServerProjects] = useState([]);
       const [stagePermissions, setStagePermissions] = useState([]);
+      const [rolePermissions, setRolePermissions] = useState([]);
       const [reportControls, setReportControls] = useState([]);
       const [materialUsages, setMaterialUsages] = useState([]);
       const [loaded, setLoaded] = useState(false);
 
       const logout = () => {
+        VIEWER_LOCAL_MODE = false;
         localStorage.removeItem("rrbr_token");
-        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setReportControls([]); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
+        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setRolePermissions([]); setReportControls([]); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
       };
       const decodeToken = t => {
         try {
@@ -5973,7 +6541,7 @@
       };
       const isManagerLike = u => {
         const code = (u && (u.code || u.login) || "").toUpperCase();
-        return !!u && (u.role === "admin" || u.role === "manager" || u.role === "kontroler" || u.role === "supervisor" || code === "RBR056");
+        return !!u && (u.role === "admin" || u.role === "manager" || u.role === "kontroler" || u.role === "viewer" || u.role === "supervisor" || code === "RBR056");
       };
       const reloadReports = async (t = token) => {
         const serverReports = (await api.getReports(t)).map(normalizeReport);
@@ -6036,6 +6604,14 @@
           setStagePermissions([]);
         }
       };
+      const reloadRolePermissions = async (t = token) => {
+        try {
+          const rows = await api.getRolePermissions(t);
+          setRolePermissions(rows || []);
+        } catch (_) {
+          setRolePermissions([]);
+        }
+      };
       const reloadReportControls = async (t = token) => {
         try {
           const rows = await api.getReportControls(t);
@@ -6051,6 +6627,7 @@
             const restored = decodeToken(token);
             if (restored) {
               setUser(restored);
+              VIEWER_LOCAL_MODE = restored.role === "viewer";
               try {
                 await reloadReports(token);
                 await reloadProjects(token);
@@ -6060,6 +6637,7 @@
                 await reloadBathroomChecks(token);
                 await reloadQuality(token);
                 await reloadStagePermissions(token);
+                await reloadRolePermissions(token);
                 await reloadReportControls(token);
                 await reloadMaterialUsages(token);
                 if (isManagerLike(restored)) await reloadUsers(token);
@@ -6076,6 +6654,7 @@
         localStorage.setItem("rrbr_token", newToken);
         setToken(newToken);
         setUser(userData);
+        VIEWER_LOCAL_MODE = userData.role === "viewer";
         await reloadReports(newToken);
         await reloadProjects(newToken);
         await reloadTransportDates(newToken);
@@ -6084,6 +6663,7 @@
         await reloadBathroomChecks(newToken);
         await reloadQuality(newToken);
         await reloadStagePermissions(newToken);
+        await reloadRolePermissions(newToken);
         await reloadReportControls(newToken);
         await reloadMaterialUsages(newToken);
         if (isManagerLike(userData)) await reloadUsers(newToken);
@@ -6108,8 +6688,8 @@
               </section>
             </main>
           ` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadReportControls=${() => reloadReportControls()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadRolePermissions=${() => reloadRolePermissions()} reloadReportControls=${() => reloadReportControls()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }
