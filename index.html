@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.71</title>
+  <title>FlowRBR 1.75</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -465,7 +465,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.71</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.75</span>` : null}
         </div>
       `;
     }
@@ -4023,6 +4023,7 @@
     }
 
     function QualityControlTab({ qualityData, token, reports, transportDates, serverProjects, reloadQuality }) {
+      const [qualityTab, setQualityTab] = useState("records");
       const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all" });
       const [itemProject, setItemProject] = useState("all");
       const [itemEdits, setItemEdits] = useState({});
@@ -4076,6 +4077,7 @@
         if (filters.missing !== "all" && filters.missing !== "any" && !state.openMissing.includes(filters.missing)) return false;
         return true;
       }).sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || productNo(a.product) - productNo(b.product)), [records, filters, qualityData, warehouseSet, loadedSet]);
+      const goatVisible = useMemo(() => visible.filter(record => !!record.goat), [visible]);
       const updateRecord = async (record, patch) => {
         const key = transportKey(record.project, record.product);
         setSavingKey(key); setMsg(null);
@@ -4181,7 +4183,18 @@
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
-          <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "14px" }}>
+          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "14px" }}>
+            ${[
+              ["records", "Wpisy kontroli", visible.length],
+              ["goats", "Kozy", goatVisible.length],
+              ["missingList", "Lista brakow", editableItems.length]
+            ].map(tab => html`
+              <button key=${tab[0]} style=${qualityTab === tab[0] ? S.btn : S.ghost} onClick=${() => setQualityTab(tab[0])}>
+                ${tab[1]} (${tab[2]})
+              </button>
+            `)}
+          </div>
+          ${qualityTab === "missingList" ? html`<div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "14px" }}>
             <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "10px", flexWrap: "wrap" }}>
               <div>
                 <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "4px" }}>Lista brakow</h3>
@@ -4232,8 +4245,32 @@
                 </table>
               </div>
             ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "16px" }}>Brak zapisanych nazw brakow.</div>`}
-          </div>
-          <div style=${{ display: "grid", gap: "10px" }}>
+          </div>` : null}
+          ${qualityTab === "goats" ? html`
+            <div style=${{ display: "grid", gap: "10px" }}>
+              ${goatVisible.map(record => {
+                const state = qualityStateFor(qualityData, record.project, record.product);
+                const key = transportKey(record.project, record.product);
+                return html`
+                  <article key=${"goat-" + key} style=${{ border: "1px solid " + (state.goatActive ? "#fb923c" : "#86efac"), borderRadius: "8px", background: state.goatActive ? "#fff7ed" : "#f0fdf4", padding: "12px" }}>
+                    <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "start", flexWrap: "wrap" }}>
+                      <div>
+                        <strong>${qualityIcon("goat")} Projekt ${record.project} / Laz. ${record.product}</strong>
+                        <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>
+                          ${state.goatActive ? "Koza otwarta" : "Koza zrobiona"}${record.workerName || record.workerCode ? " / " + (record.workerName || record.workerCode) : ""}
+                        </div>
+                      </div>
+                      <button style=${record.goatDone ? S.ghost : S.btn} disabled=${savingKey === key} onClick=${() => updateRecord(record, { goatDone: !record.goatDone })}>
+                        ${record.goatDone ? "Cofnij koze" : "Koza zrobiona"}
+                      </button>
+                    </div>
+                  </article>
+                `;
+              })}
+              ${goatVisible.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "22px" }}>Brak lazienek z koza dla wybranych filtrow.</div>`}
+            </div>
+          ` : null}
+          ${qualityTab === "records" ? html`<div style=${{ display: "grid", gap: "10px" }}>
             ${visible.map(record => {
               const state = qualityStateFor(qualityData, record.project, record.product);
               const missing = Array.isArray(record.missingItems) ? record.missingItems : [];
@@ -4269,7 +4306,7 @@
               `;
             })}
             ${visible.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "22px" }}>Brak wpisow kontroli jakosci.</div>`}
-          </div>
+          </div>` : null}
         </section>
       `;
     }
