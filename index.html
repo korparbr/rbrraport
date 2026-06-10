@@ -247,6 +247,27 @@
       ["account", "Konto"]
     ];
     const ROLE_TAB_LABELS = Object.fromEntries(ROLE_TABS);
+    const VIEWER_DA_LABELS = {
+      reports: "Rapporter",
+      production: "Produktion",
+      warehouse: "Lager",
+      transport: "Transport",
+      quality: "Kvalitetskontrol",
+      calculations: "Beregninger",
+      projects: "Projekter",
+      maps: "Tavler",
+      users: "Brugere",
+      sessions: "Sessionshistorik",
+      account: "Konto",
+      managerPanel: "Managerpanel",
+      reportsCount: "rapporter",
+      usersCount: "brugere",
+      logout: "Log ud",
+      language: "Sprog",
+      viewerNotice: "Viewer-tilstand: du ser panelet som en manager, men gemte ændringer er kun lokale i denne browser og ændrer ikke data på serveren."
+    };
+    const viewerText = (lang, key, fallback) => lang === "da" ? (VIEWER_DA_LABELS[key] || fallback || key) : (fallback || key);
+    const viewerTabLabel = (lang, tab) => lang === "da" ? (VIEWER_DA_LABELS[tab] || ROLE_TAB_LABELS[tab] || tab) : (ROLE_TAB_LABELS[tab] || tab);
     const ROLE_PERMISSION_ROLES = ["worker", "worker+", "kontroler", "manager", "viewer", "supervisor", "admin"];
     const DEFAULT_ROLE_TABS = {
       worker: ["reports", "maps", "sessions", "account"],
@@ -2192,6 +2213,7 @@
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const WIDTH_KEY = "flowrbr_maps_widths_1_7";
       const START_KEY = "flowrbr_maps_starts_1_71";
+      const VIEWER_CHECKS_KEY = "flowrbr_viewer_local_checks_1_8";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
       const [mapFilterProject, setMapFilterProject] = useState("all");
@@ -2222,6 +2244,14 @@
       });
       const [photos, setPhotos] = useState(() => {
         try { return JSON.parse(localStorage.getItem(PHOTO_KEY) || "{}"); } catch (_) { return {}; }
+      });
+      const [viewerLocalChecks, setViewerLocalChecks] = useState(() => {
+        try {
+          const rows = JSON.parse(localStorage.getItem(VIEWER_CHECKS_KEY) || "[]");
+          return Array.isArray(rows) ? rows : [];
+        } catch (_) {
+          return [];
+        }
       });
 
       const halls = [
@@ -2454,13 +2484,43 @@
         }));
         return set;
       }, [reports]);
-      const bathroomChecksByKey = useMemo(() => {
+      const effectiveBathroomChecks = useMemo(() => {
+        if (!VIEWER_LOCAL_MODE) return bathroomChecks || [];
         const map = {};
         (bathroomChecks || []).forEach(c => {
           map[bathroomKey(c.project, c.product) + "#" + String(c.checkType || "tiling")] = c;
         });
+        (viewerLocalChecks || []).forEach(c => {
+          map[bathroomKey(c.project, c.product) + "#" + String(c.checkType || "tiling")] = c;
+        });
+        return Object.values(map);
+      }, [bathroomChecks, viewerLocalChecks]);
+      const saveViewerLocalCheck = (project, product, checkType, checked, status, comment = "") => {
+        const key = bathroomKey(project, product) + "#" + String(checkType || "tiling");
+        const row = {
+          id: "viewer-local-" + key,
+          project: String(project || "").trim(),
+          product: productNo(product),
+          checkType,
+          checked: !!checked,
+          status: status || (checked ? "checked" : "pending"),
+          comment: String(comment || "").trim(),
+          localOnly: true,
+          updatedAt: new Date().toISOString()
+        };
+        setViewerLocalChecks(prev => {
+          const next = [...(prev || []).filter(c => bathroomKey(c.project, c.product) + "#" + String(c.checkType || "tiling") !== key), row];
+          try { localStorage.setItem(VIEWER_CHECKS_KEY, JSON.stringify(next)); } catch (_) {}
+          return next;
+        });
+      };
+      const bathroomChecksByKey = useMemo(() => {
+        const map = {};
+        (effectiveBathroomChecks || []).forEach(c => {
+          map[bathroomKey(c.project, c.product) + "#" + String(c.checkType || "tiling")] = c;
+        });
         return map;
-      }, [bathroomChecks]);
+      }, [effectiveBathroomChecks]);
       const sampleAutoKeys = useMemo(() => {
         const firstByType = {};
         currentLayout.forEach((cell, index) => {
@@ -2479,11 +2539,11 @@
       }, [currentLayout, serverProjects, selectedHall.rows]);
       const sampleExplicitByKey = useMemo(() => {
         const map = {};
-        (bathroomChecks || []).forEach(c => {
+        (effectiveBathroomChecks || []).forEach(c => {
           if (String(c.checkType || "") === "sample") map[bathroomKey(c.project, c.product)] = c;
         });
         return map;
-      }, [bathroomChecks]);
+      }, [effectiveBathroomChecks]);
       const sampleEnabledForCell = cell => {
         if (!cell) return false;
         const key = bathroomKey(cell.project, cell.product);
@@ -2533,6 +2593,10 @@
       const setTilingCheck = async status => {
         if (!selectedCell || !canAddComments) return;
         setMsg(null);
+        if (VIEWER_LOCAL_MODE) {
+          saveViewerLocalCheck(selectedCell.project, selectedCell.product, "tiling", status === "checked", status, tilingCheckComment);
+          return setMsg({ type: "success", text: "Kontrola zapisana lokalnie w trybie viewer." });
+        }
         try {
           await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "tiling", status === "checked", status, tilingCheckComment);
           await reloadBathroomChecks();
@@ -2545,6 +2609,10 @@
         if (!selectedCell || !canAddComments) return;
         if (status === "rework" && !helmetCheckComment.trim()) return setMsg({ type: "error", text: "Przy poprawce kasku wpisz komentarz." });
         setMsg(null);
+        if (VIEWER_LOCAL_MODE) {
+          saveViewerLocalCheck(selectedCell.project, selectedCell.product, "entry", status === "checked", status, helmetCheckComment);
+          return setMsg({ type: "success", text: "Kask zapisany lokalnie w trybie viewer." });
+        }
         try {
           await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "entry", status === "checked", status, helmetCheckComment);
           await reloadBathroomChecks();
@@ -2556,6 +2624,10 @@
       const setSampleCheck = async enabled => {
         if (!selectedCell || !canAddComments) return;
         setMsg(null);
+        if (VIEWER_LOCAL_MODE) {
+          saveViewerLocalCheck(selectedCell.project, selectedCell.product, "sample", !!enabled, enabled ? "checked" : "pending");
+          return setMsg({ type: "success", text: enabled ? "Gwiazdka zapisana lokalnie w trybie viewer." : "Gwiazdka wylaczona lokalnie w trybie viewer." });
+        }
         try {
           await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "sample", !!enabled, enabled ? "checked" : "pending");
           await reloadBathroomChecks();
@@ -6651,6 +6723,9 @@
       const [draftStagePermissions, setDraftStagePermissions] = useState({});
       const isController = user && user.role === "kontroler";
       const isViewer = user && user.role === "viewer";
+      const [viewerLang, setViewerLang] = useState(() => {
+        try { return localStorage.getItem("flowrbr_viewer_lang") || "pl"; } catch (_) { return "pl"; }
+      });
       const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "kontroler" || user.role === "viewer" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
       const roleOptions = ["worker", "worker+", "kontroler", "manager", "viewer", "supervisor"];
       const canSeePermissions = canManageRolePermissions(user);
@@ -6668,6 +6743,10 @@
       useEffect(() => {
         if (visibleTabs.length && !visibleTabs.includes(tab)) setTab(visibleTabs[0]);
       }, [visibleTabs.join("|"), tab]);
+      const changeViewerLang = lang => {
+        setViewerLang(lang);
+        try { localStorage.setItem("flowrbr_viewer_lang", lang); } catch (_) {}
+      };
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.name || "").localeCompare(String(b.name || ""), "pl", { numeric: true }) || String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
@@ -6803,17 +6882,28 @@
         <main style=${mainStyle}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
             <div>
-              <h1 style=${{ ...S.title, marginBottom: "4px" }}>Panel menedzera</h1>
-              <div style=${{ color: COLORS.muted }}>${reports.length} raportow / ${users.length} uzytkownikow</div>
+              <h1 style=${{ ...S.title, marginBottom: "4px" }}>${isViewer ? viewerText(viewerLang, "managerPanel", "Panel menedzera") : "Panel menedzera"}</h1>
+              <div style=${{ color: COLORS.muted }}>${reports.length} ${isViewer ? viewerText(viewerLang, "reportsCount", "raportow") : "raportow"} / ${users.length} ${isViewer ? viewerText(viewerLang, "usersCount", "uzytkownikow") : "uzytkownikow"}</div>
             </div>
-            <button style=${S.ghost} onClick=${logout}>Wyloguj</button>
+            <div style=${{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+              ${isViewer ? html`
+                <label style=${{ display: "flex", gap: "6px", alignItems: "center", color: COLORS.muted, fontSize: "13px", fontWeight: 800 }}>
+                  ${viewerText(viewerLang, "language", "Jezyk")}
+                  <select style=${{ ...S.input, width: "110px", padding: "8px 10px" }} value=${viewerLang} onChange=${e => changeViewerLang(e.target.value)}>
+                    <option value="pl">Polski</option>
+                    <option value="da">Dansk</option>
+                  </select>
+                </label>
+              ` : null}
+              <button style=${S.ghost} onClick=${logout}>${isViewer ? viewerText(viewerLang, "logout", "Wyloguj") : "Wyloguj"}</button>
+            </div>
           </div>
           <div className="tabs" style=${{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
-            ${visibleTabs.map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${ROLE_TAB_LABELS[t] || t}</button>`)}
+            ${visibleTabs.map(t => html`<button key=${t} style=${t === tab ? S.btn : S.ghost} onClick=${() => setTab(t)}>${isViewer ? viewerTabLabel(viewerLang, t) : (ROLE_TAB_LABELS[t] || t)}</button>`)}
           </div>
           ${isViewer ? html`
             <div style=${{ border: "1px solid #fdba74", background: "#fff7ed", color: "#9a3412", borderRadius: "8px", padding: "10px 12px", marginBottom: "14px", fontWeight: 800 }}>
-              Tryb viewer: widzisz panel jak menedzer, ale zapisy sa tylko lokalne w tej przegladarce i nie zmieniaja danych na serwerze.
+              ${viewerText(viewerLang, "viewerNotice", "Tryb viewer: widzisz panel jak menedzer, ale zapisy sa tylko lokalne w tej przegladarce i nie zmieniaja danych na serwerze.")}
             </div>
           ` : null}
           <${Message} msg=${msg} />
