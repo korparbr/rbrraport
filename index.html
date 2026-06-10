@@ -82,6 +82,8 @@
       deleteUser: (token, code) => apiRequest("DELETE", "/api/users/" + encodeURIComponent(code), null, token),
       getStagePermissions: token => apiRequest("GET", "/api/stage-permissions", null, token),
       setStagePermission: (token, stage, workerCodes) => apiRequest("PUT", "/api/stage-permissions/" + encodeURIComponent(stage), { workerCodes }, token),
+      getMyStagePreferences: token => apiRequest("GET", "/api/my-stage-preferences", null, token),
+      saveMyStagePreferences: (token, visibleStages) => apiRequest("PUT", "/api/my-stage-preferences", { visibleStages }, token),
       getRolePermissions: token => apiRequest("GET", "/api/role-permissions", null, token),
       setRolePermissions: (token, role, tabs) => apiRequest("PUT", "/api/role-permissions/" + encodeURIComponent(role), { tabs }, token),
       getReportControls: token => apiRequest("GET", "/api/report-controls", null, token),
@@ -602,7 +604,7 @@
       `;
     }
 
-    function LineEditor({ reports, lines, onChange, serverProjects, stagePermissions, stagePermissionsReady, stagePermissionsError, reportControls, workerCode, fixedStages, qualityData }) {
+    function LineEditor({ reports, lines, onChange, serverProjects, visibleStageIds, reportControls, workerCode, fixedStages, qualityData }) {
       const [stages, setStages] = useState([]);
       const [project, setProject] = useState("");
       const [selectedProducts, setSelectedProducts] = useState([]);
@@ -614,6 +616,7 @@
       const [qualityNewMissing, setQualityNewMissing] = useState("");
 
       const effectiveStages = fixedStages && fixedStages.length ? fixedStages : stages;
+      const visibleStageSet = useMemo(() => Array.isArray(visibleStageIds) ? new Set(visibleStageIds.map(canonicalStageId)) : null, [JSON.stringify(visibleStageIds || null)]);
       useEffect(() => {
         if (fixedStages && fixedStages.length) {
           setStages(fixedStages);
@@ -622,9 +625,8 @@
         }
       }, [JSON.stringify(fixedStages || [])]);
       const allowedStages = useMemo(() => {
-        if (!fixedStages?.length && stagePermissionsReady === false) return [];
-        return STAGES.filter(s => isStageAllowedForWorker(s[0], workerCode, stagePermissions) && !reportControlFor(reportControls, "*", s[0]).disabled);
-      }, [stagePermissions, reportControls, workerCode, fixedStages, stagePermissionsReady]);
+        return STAGES.filter(s => (!visibleStageSet || visibleStageSet.has(canonicalStageId(s[0]))) && !reportControlFor(reportControls, "*", s[0]).disabled);
+      }, [visibleStageSet, reportControls]);
       const reportProjects = useMemo(() => activeProjectItems(serverProjects).filter(item => item.count > 0), [serverProjects]);
       const reportCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
       const max = project ? reportCounts[project] || 0 : 0;
@@ -641,7 +643,7 @@
       const isUsedProduct = product => effectiveStages.length > 0 && effectiveStages.every(stage => usedInCurrentReport.has(stage + "#" + product));
       const requiresHall = false;
       const toggleStage = id => {
-        if (!isStageAllowedForWorker(id, workerCode, stagePermissions)) return setMsg({ type: "error", text: "Ten etap jest ukryty dla tego pracownika." });
+        if (visibleStageSet && !visibleStageSet.has(canonicalStageId(id))) return setMsg({ type: "error", text: "Ten etap jest ukryty w ustawieniach konta." });
         if (reportControlFor(reportControls, "*", id).disabled) return setMsg({ type: "error", text: "Ten etap jest aktualnie wylaczony z raportowania." });
         setStages(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
         if (id === "5" && stages.includes("5")) setHall("");
@@ -700,16 +702,6 @@
                   ${fixedStages.map(stage => stageLabel(stage)).join(", ")}
                 </div>
               ` : html`
-              ${stagePermissionsReady === false ? html`
-                <div style=${{ border: "1px solid #fdba74", background: "#fff7ed", color: "#9a3412", borderRadius: "8px", padding: "10px", fontSize: "13px", fontWeight: 800 }}>
-                  Trwa pobieranie listy etapow albo backend nie udostepnil ukrytych etapow. Odswiez aplikacje; jesli komunikat zostaje, podmien server.js.
-                </div>
-              ` : null}
-              ${stagePermissionsError ? html`
-                <div style=${{ border: "1px solid #fca5a5", background: "#fef2f2", color: "#991b1b", borderRadius: "8px", padding: "10px", fontSize: "13px", fontWeight: 800, marginBottom: "8px" }}>
-                  Nie pobrano ukrytych etapow: ${stagePermissionsError}
-                </div>
-              ` : null}
               <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "7px", maxHeight: "190px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
                 ${allowedStages.map(s => {
                   const selected = stages.includes(s[0]);
@@ -1161,6 +1153,68 @@
       `;
     }
 
+    function StagePreferenceBox({ token, userStagePreferences, reloadUserStagePreferences }) {
+      const saved = Array.isArray(userStagePreferences?.visibleStages) ? userStagePreferences.visibleStages.map(canonicalStageId) : null;
+      const [selected, setSelected] = useState(saved || STAGES.map(s => s[0]));
+      const [saving, setSaving] = useState(false);
+      const [msg, setMsg] = useState(null);
+      useEffect(() => {
+        setSelected(Array.isArray(userStagePreferences?.visibleStages) ? userStagePreferences.visibleStages.map(canonicalStageId) : STAGES.map(s => s[0]));
+      }, [JSON.stringify(userStagePreferences || {})]);
+      const selectedSet = new Set(selected.map(canonicalStageId));
+      const toggle = stage => {
+        const id = canonicalStageId(stage);
+        setSelected(prev => prev.map(canonicalStageId).includes(id) ? prev.filter(s => canonicalStageId(s) !== id) : [...prev, id]);
+      };
+      const save = async () => {
+        if (!selected.length) return setMsg({ type: "error", text: "Zostaw przynajmniej jeden widoczny etap." });
+        setSaving(true); setMsg(null);
+        try {
+          await api.saveMyStagePreferences(token, selected);
+          if (reloadUserStagePreferences) await reloadUserStagePreferences();
+          setMsg({ type: "success", text: "Widoczne etapy zapisane." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSaving(false);
+        }
+      };
+      return html`
+        <section style=${{ ...S.card, marginTop: "16px" }}>
+          <h3 style=${{ ...S.title, fontSize: "18px" }}>Widoczne etapy w dodawaniu raportu</h3>
+          <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "10px" }}>
+            Zaznacz etapy, ktore chcesz widziec na swojej liscie podczas dodawania raportu.
+          </div>
+          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
+            <button style=${S.ghost} disabled=${saving} onClick=${() => setSelected(STAGES.map(s => s[0]))}>Zaznacz wszystkie</button>
+            <button style=${S.ghost} disabled=${saving} onClick=${() => setSelected([])}>Wyczysc</button>
+            <button style=${{ ...S.btn, opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz etapy"}</button>
+            <span style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "center" }}>Widoczne: ${selected.length} / ${STAGES.length}</span>
+          </div>
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: "7px", maxHeight: "320px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
+            ${STAGES.map(stage => {
+              const checked = selectedSet.has(canonicalStageId(stage[0]));
+              return html`
+                <button key=${stage[0]} type="button" disabled=${saving} onClick=${() => toggle(stage[0])} style=${{
+                  border: "1px solid " + (checked ? "#86efac" : "#fdba74"),
+                  borderRadius: "8px",
+                  background: checked ? "#ecfdf5" : "#fff7ed",
+                  color: checked ? "#166534" : "#9a3412",
+                  padding: "9px",
+                  textAlign: "left",
+                  fontWeight: 800
+                }}>
+                  ${stage[1]}<br />
+                  <span style=${{ fontSize: "12px", fontWeight: 900 }}>${checked ? "Widoczny" : "Ukryty"}</span>
+                </button>
+              `;
+            })}
+          </div>
+          <${Message} msg=${msg} />
+        </section>
+      `;
+    }
+
     function SessionHistoryTab({ token, logout }) {
       const [sessions, setSessions] = useState([]);
       const [loading, setLoading] = useState(true);
@@ -1596,7 +1650,7 @@
       `;
     }
 
-    function ManagerAccount({ user, token, users }) {
+    function ManagerAccount({ user, token, users, userStagePreferences, reloadUserStagePreferences }) {
       return html`
         <section style=${S.card}>
           <h2 style=${S.title}>Konto</h2>
@@ -1606,6 +1660,7 @@
             <div>Rola: <strong style=${{ color: COLORS.text }}>${user.role || "manager"}</strong></div>
           </div>
           <${ChangePasswordBox} token=${token} />
+          ${["worker", "worker+", "kontroler"].includes(user.role || "") ? html`<${StagePreferenceBox} token=${token} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />` : null}
         </section>
       `;
     }
@@ -1746,7 +1801,7 @@
       `;
     }
 
-    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, stagePermissionsReady, stagePermissionsError, rolePermissions, reportControls, materialUsages, reloadMaterialUsages, reloadQuality, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, userStagePreferences, reloadUserStagePreferences, reloadMaterialUsages, reloadQuality, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
@@ -1894,7 +1949,7 @@
               <label style=${S.label}>Data raportu</label>
               <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
             </section>
-            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} stagePermissionsReady=${stagePermissionsReady} stagePermissionsError=${stagePermissionsError} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
+            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} visibleStageIds=${userStagePreferences && userStagePreferences.visibleStages} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
             <section style=${S.card}>
               <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
               <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} onEdit=${(i, next) => setLines(lines.map((line, idx) => idx === i ? next : line))} serverProjects=${serverProjects} />
@@ -1916,6 +1971,7 @@
                 <div>Rola: <strong style=${{ color: COLORS.text }}>${user.role || "worker"}</strong></div>
               </div>
               <${ChangePasswordBox} token=${token} />
+              <${StagePreferenceBox} token=${token} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />
               <button style=${{ ...S.ghost, marginTop: "14px" }} onClick=${logout}>Wyloguj</button>
             </section>
           `}
@@ -1954,7 +2010,7 @@
       `;
     }
 
-    function SelfReportTab({ user, token, reports, serverProjects, stagePermissions, stagePermissionsReady, stagePermissionsError, reportControls, qualityData, materialUsages, reloadReports, reloadMaterialUsages, reloadQuality }) {
+    function SelfReportTab({ user, token, reports, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, userStagePreferences, reloadReports, reloadMaterialUsages, reloadQuality }) {
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
       const [msg, setMsg] = useState(null);
@@ -2066,7 +2122,7 @@
           <label style=${S.label}>Data raportu</label>
           <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
         </section>
-        <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} stagePermissions=${stagePermissions} stagePermissionsReady=${stagePermissionsReady} stagePermissionsError=${stagePermissionsError} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
+        <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} visibleStageIds=${userStagePreferences && userStagePreferences.visibleStages} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
         <section style=${S.card}>
           <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
           <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} onEdit=${(i, next) => setLines(lines.map((line, idx) => idx === i ? next : line))} serverProjects=${serverProjects} />
@@ -6561,7 +6617,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, stagePermissionsReady, stagePermissionsError, rolePermissions, reportControls, materialUsages, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadRolePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, userStagePreferences, reloadUserStagePreferences, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadRolePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -6744,10 +6800,10 @@
           <${Message} msg=${msg} />
           ${tab === "reports" ? (
             isController
-              ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} stagePermissionsReady=${stagePermissionsReady} stagePermissionsError=${stagePermissionsError} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
+              ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} userStagePreferences=${userStagePreferences} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
               : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
           ) : tab === "account" ? html`
-            <${ManagerAccount} user=${user} token=${token} users=${users} />
+            <${ManagerAccount} user=${user} token=${token} users=${users} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />
           ` : tab === "sessions" ? html`
             <${SessionHistoryTab} token=${token} logout=${logout} />
           ` : tab === "permissions" ? html`
@@ -6928,17 +6984,16 @@
       const [qualityData, setQualityData] = useState({ items: [], records: [] });
       const [serverProjects, setServerProjects] = useState([]);
       const [stagePermissions, setStagePermissions] = useState([]);
-      const [stagePermissionsReady, setStagePermissionsReady] = useState(false);
-      const [stagePermissionsError, setStagePermissionsError] = useState("");
       const [rolePermissions, setRolePermissions] = useState([]);
       const [reportControls, setReportControls] = useState([]);
+      const [userStagePreferences, setUserStagePreferences] = useState({ visibleStages: null });
       const [materialUsages, setMaterialUsages] = useState([]);
       const [loaded, setLoaded] = useState(false);
 
       const logout = () => {
         VIEWER_LOCAL_MODE = false;
         localStorage.removeItem("rrbr_token");
-        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setStagePermissionsReady(false); setStagePermissionsError(""); setRolePermissions([]); setReportControls([]); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
+        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setRolePermissions([]); setReportControls([]); setUserStagePreferences({ visibleStages: null }); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
       };
       const decodeToken = t => {
         try {
@@ -7007,16 +7062,19 @@
         }
       };
       const reloadStagePermissions = async (t = token) => {
-        setStagePermissionsReady(false);
-        setStagePermissionsError("");
         try {
           const rows = await api.getStagePermissions(t);
           setStagePermissions(rows || []);
-          setStagePermissionsReady(true);
         } catch (_) {
           setStagePermissions([]);
-          setStagePermissionsReady(false);
-          setStagePermissionsError(_.message || "brak dostepu do /api/stage-permissions");
+        }
+      };
+      const reloadUserStagePreferences = async (t = token) => {
+        try {
+          const data = await api.getMyStagePreferences(t);
+          setUserStagePreferences(data || { visibleStages: null });
+        } catch (_) {
+          setUserStagePreferences({ visibleStages: null });
         }
       };
       const reloadRolePermissions = async (t = token) => {
@@ -7052,6 +7110,7 @@
                 await reloadBathroomChecks(token);
                 await reloadQuality(token);
                 await reloadStagePermissions(token);
+                await reloadUserStagePreferences(token);
                 await reloadRolePermissions(token);
                 await reloadReportControls(token);
                 await reloadMaterialUsages(token);
@@ -7078,6 +7137,7 @@
         await reloadBathroomChecks(newToken);
         await reloadQuality(newToken);
         await reloadStagePermissions(newToken);
+        await reloadUserStagePreferences(newToken);
         await reloadRolePermissions(newToken);
         await reloadReportControls(newToken);
         await reloadMaterialUsages(newToken);
@@ -7103,8 +7163,8 @@
               </section>
             </main>
           ` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} stagePermissionsReady=${stagePermissionsReady} stagePermissionsError=${stagePermissionsError} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadRolePermissions=${() => reloadRolePermissions()} reloadReportControls=${() => reloadReportControls()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} stagePermissionsReady=${stagePermissionsReady} stagePermissionsError=${stagePermissionsError} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${() => reloadUserStagePreferences()} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadRolePermissions=${() => reloadRolePermissions()} reloadReportControls=${() => reloadReportControls()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${() => reloadUserStagePreferences()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }

@@ -314,6 +314,16 @@ async function ensureStagePermissionsTable() {
   `);
 }
 
+async function ensureUserStagePreferencesTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_stage_preferences (
+      user_code TEXT PRIMARY KEY REFERENCES users(code) ON DELETE CASCADE,
+      visible_stages JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
 async function ensureRolePermissionsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS role_permissions (
@@ -1026,6 +1036,40 @@ app.put('/api/stage-permissions/:stage', auth, requireTab('users'), managerOnly,
     res.status(500).json({ error: err.message || 'Blad zapisu przypisan etapow' });
   } finally {
     client.release();
+  }
+});
+
+app.get('/api/my-stage-preferences', auth, requireTab('reports'), async (req, res) => {
+  try {
+    await ensureUserStagePreferencesTable();
+    const r = await pool.query(
+      `SELECT visible_stages AS "visibleStages", updated_at AS "updatedAt"
+       FROM user_stage_preferences WHERE user_code=$1`,
+      [req.user.code]
+    );
+    if (!r.rows.length) return res.json({ visibleStages: null, updatedAt: null });
+    const stages = Array.isArray(r.rows[0].visibleStages) ? r.rows[0].visibleStages : [];
+    res.json({ visibleStages: stages.map(normalizeStageId).filter(Boolean), updatedAt: r.rows[0].updatedAt });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu widocznych etapow' });
+  }
+});
+
+app.put('/api/my-stage-preferences', auth, requireTab('reports'), async (req, res) => {
+  try {
+    await ensureUserStagePreferencesTable();
+    const raw = Array.isArray(req.body?.visibleStages) ? req.body.visibleStages : [];
+    const visibleStages = [...new Set(raw.map(normalizeStageId).filter(Boolean))];
+    await pool.query(
+      `INSERT INTO user_stage_preferences (user_code, visible_stages, updated_at)
+       VALUES ($1,$2::jsonb,NOW())
+       ON CONFLICT (user_code) DO UPDATE SET visible_stages=EXCLUDED.visible_stages, updated_at=NOW()`,
+      [req.user.code, JSON.stringify(visibleStages)]
+    );
+    await auditLog(req, 'my_stage_preferences_changed', req.user.code, { visibleStages });
+    res.json({ success: true, visibleStages });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu widocznych etapow' });
   }
 });
 
@@ -2192,6 +2236,7 @@ async function collectBackupPayload() {
   await ensureBathroomCommentsTable();
   await ensureBathroomChecksTable();
   await ensureStagePermissionsTable();
+  await ensureUserStagePreferencesTable();
   await ensureRolePermissionsTable();
   await ensureProjectsTables();
   await ensureMaterialUsagesTable();
@@ -2200,7 +2245,7 @@ async function collectBackupPayload() {
   await ensureQualityTables();
   await ensureReportControlsTable();
   await ensureFertilizationTable();
-  const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, rolePermissions, reportControls, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords, fertilization] = await Promise.all([
+  const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, userStagePreferences, rolePermissions, reportControls, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords, fertilization] = await Promise.all([
     pool.query('SELECT * FROM users ORDER BY created_at'),
     pool.query('SELECT * FROM reports ORDER BY created_at'),
     pool.query('SELECT * FROM report_lines ORDER BY id'),
@@ -2212,6 +2257,7 @@ async function collectBackupPayload() {
     pool.query('SELECT * FROM bathroom_comments ORDER BY created_at'),
     pool.query('SELECT * FROM bathroom_checks ORDER BY updated_at'),
     pool.query('SELECT * FROM stage_permissions ORDER BY stage, worker_code'),
+    pool.query('SELECT * FROM user_stage_preferences ORDER BY user_code'),
     pool.query('SELECT * FROM role_permissions ORDER BY role'),
     pool.query('SELECT * FROM report_controls ORDER BY project, stage'),
     pool.query('SELECT * FROM projects ORDER BY project'),
@@ -2233,6 +2279,7 @@ async function collectBackupPayload() {
     bathroom_comments: comments.rows,
     bathroom_checks: checks.rows,
     stage_permissions: stagePermissions.rows,
+    user_stage_preferences: userStagePreferences.rows,
     role_permissions: rolePermissions.rows,
     report_controls: reportControls.rows,
     projects: projects.rows,
@@ -2608,6 +2655,25 @@ app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, 
           [stage, workerCode, p.updated_by || p.updatedBy || req.user.code, p.updated_at || p.updatedAt || null]
         );
         stagePermissionsRestored++;
+      }
+    }
+
+    let userStagePreferencesRestored = 0;
+    if (Array.isArray(data.user_stage_preferences)) {
+      await ensureUserStagePreferencesTable();
+      for (const p of data.user_stage_preferences) {
+        const userCode = String(p.user_code || p.userCode || '').trim().toUpperCase();
+        if (!userCode) continue;
+        const visibleStages = Array.isArray(p.visible_stages || p.visibleStages)
+          ? (p.visible_stages || p.visibleStages).map(normalizeStageId).filter(Boolean)
+          : [];
+        await client.query(
+          `INSERT INTO user_stage_preferences (user_code, visible_stages, updated_at)
+           VALUES ($1,$2::jsonb,COALESCE($3,NOW()))
+           ON CONFLICT (user_code) DO UPDATE SET visible_stages=EXCLUDED.visible_stages, updated_at=EXCLUDED.updated_at`,
+          [userCode, JSON.stringify([...new Set(visibleStages)]), p.updated_at || p.updatedAt || null]
+        );
+        userStagePreferencesRestored++;
       }
     }
 
