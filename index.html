@@ -3855,7 +3855,8 @@
       }, [serverProjects, selectedProject, selectedCount]);
       const hasProjectFilterOptions = selectedFilterOptions.type.length || selectedFilterOptions.ventilation.length || selectedFilterOptions.walls.length;
       const visibleProducts = useMemo(() => {
-        const products = Array.from({ length: selectedCount }, (_, i) => i + 1);
+        const importedProducts = ((selectedProjectInfo && selectedProjectInfo.bathrooms) || []).map(b => productNo(b.product)).filter(Boolean);
+        const products = [...new Set([...Array.from({ length: selectedCount }, (_, i) => i + 1), ...importedProducts])].sort((a, b) => a - b);
         return products.filter(product => {
           const meta = bathroomMetaMap(serverProjects)[transportKey(selectedProject, product)] || {};
           const values = {
@@ -3867,7 +3868,7 @@
             && (projectFilters.ventilation === "all" || values.ventilation === projectFilters.ventilation)
             && (projectFilters.walls === "all" || values.walls === projectFilters.walls);
         });
-      }, [serverProjects, selectedProject, selectedCount, projectFilters]);
+      }, [serverProjects, selectedProject, selectedCount, selectedProjectInfo, projectFilters]);
       const bathroomStates = useMemo(() => {
         const states = {};
         if (!selectedProject) return states;
@@ -3891,6 +3892,21 @@
         });
         return states;
       }, [reports, selectedProject, mapLayouts]);
+      const assemblyDateByProduct = useMemo(() => {
+        const map = {};
+        if (!selectedProject) return map;
+        (reports || []).forEach(report => {
+          (report.lines || []).forEach(line => {
+            if (!sameProject(line.project, selectedProject)) return;
+            if (String(line.stage) !== "4") return;
+            const product = productNo(line.product);
+            const date = report.date || "";
+            if (!product || !date) return;
+            if (!map[product] || date < map[product]) map[product] = date;
+          });
+        });
+        return map;
+      }, [reports, selectedProject]);
       const warehouseSummary = useMemo(() => {
         const summary = Object.fromEntries(warehouses.map(w => [w.id, 0]));
         if (!selectedProject || !selectedCount) return summary;
@@ -4252,24 +4268,35 @@
                 Ten projekt nie ma danych typu, wentylacji lub scian z importu Excela.
               </div>
             `}
-            <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(10, 1fr)", gap: "8px" }}>
+            <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "8px" }}>
+              Positionlista projektu z oznaczeniem magazynu/statusu i data skrecania z raportu etapu 4.
+            </div>
+            <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(116px, 1fr))", gap: "8px" }}>
               ${visibleProducts.map(product => {
                 const state = bathroomStates[product] || { id: "projekt" };
                 const wh = warehouseById(state.id);
                 const type = bathroomTypeInfo(serverProjects, selectedProject, product);
+                const assemblyDate = assemblyDateByProduct[product] || "";
                 return html`
                   <button key=${product} onClick=${() => setSelectedBathroom({ project: selectedProject, product })} title=${wh.label + (state.date ? " / " + state.date : "") + (type.hasExcelMeta ? " / " + type.label : "")} style=${{
-                    minHeight: "46px",
+                    minHeight: "86px",
                     border: "1px solid " + COLORS.border,
                     borderRadius: "9px",
                     background: wh.color,
                     color: wh.text,
-                    display: "grid",
-                    placeItems: "center",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "space-between",
+                    alignItems: "stretch",
+                    gap: "4px",
+                    padding: "8px",
                     fontWeight: 900,
-                    cursor: "pointer"
+                    cursor: "pointer",
+                    textAlign: "left"
                   }}>
-                    <span>${type.rbrTypeShort ? product + "/" + type.rbrTypeShort : product}</span>
+                    <span style=${{ fontSize: "18px", lineHeight: 1.05 }}>${type.rbrTypeShort ? product + "/" + type.rbrTypeShort : product}</span>
+                    <span style=${{ fontSize: "11px", opacity: 0.9 }}>${wh.label}${state.date ? " / " + state.date : ""}</span>
+                    <span style=${{ fontSize: "11px", opacity: 0.9 }}>Skr.: ${assemblyDate || "-"}</span>
                   </button>
                 `;
               })}
@@ -4290,7 +4317,9 @@
                     ["Typ", selectedBathroomInfo.type.rbrTypeShort],
                     ["Ventilation Variant", selectedBathroomInfo.meta.ventilationVariant],
                     ["Visible High Walls", selectedBathroomInfo.meta.visibleHighWalls],
-                    ["Requested Delivery", selectedBathroomInfo.meta.requestedDelivery]
+                    ["Requested Delivery", selectedBathroomInfo.meta.requestedDelivery],
+                    ["Data skrecania", assemblyDateByProduct[selectedBathroom.product] || "-"],
+                    ["Magazyn/status", warehouseById((bathroomStates[selectedBathroom.product] || { id: "projekt" }).id).label]
                   ].map(item => html`
                     <div key=${item[0]} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
                       <div style=${{ color: COLORS.dim, fontSize: "11px", fontWeight: 800 }}>${item[0]}</div>
