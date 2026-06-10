@@ -101,7 +101,17 @@
       getFertilization: token => apiRequest("GET", "/api/fertilization", null, token),
       saveFertilization: (token, payload) => apiRequest("PUT", "/api/fertilization", payload, token),
       deleteFertilization: (token, project, deliveryDate) => apiRequest("DELETE", "/api/fertilization?project=" + encodeURIComponent(project) + "&deliveryDate=" + encodeURIComponent(deliveryDate), null, token),
-      getAuditLogs: token => apiRequest("GET", "/api/audit-logs", null, token),
+      downloadAuditLogs: async token => {
+        const headers = {};
+        if (token) headers.Authorization = "Bearer " + token;
+        const res = await fetch(BASE_URL + "/api/audit-logs", { headers });
+        if (!res.ok) {
+          let data = null;
+          try { data = await res.json(); } catch (_) {}
+          throw new Error((data && data.error) || "Blad pobierania historii");
+        }
+        return res.blob();
+      },
       getBackupStatus: token => apiRequest("GET", "/api/backup-status", null, token),
       getBackup: token => apiRequest("GET", "/api/backup", null, token),
       restoreBackup: (token, data) => apiRequest("POST", "/api/restore", { data }, token),
@@ -1566,16 +1576,11 @@
       const [msg, setMsg] = useState(null);
       const [loading, setLoading] = useState(false);
       const [backupStatus, setBackupStatus] = useState(null);
-      const [auditLogs, setAuditLogs] = useState([]);
 
       const loadDatabaseInfo = async () => {
         try {
-          const [status, logs] = await Promise.all([
-            api.getBackupStatus(token).catch(() => null),
-            api.getAuditLogs(token).catch(() => [])
-          ]);
+          const status = await api.getBackupStatus(token).catch(() => null);
           setBackupStatus(status);
-          setAuditLogs(logs || []);
         } catch (_) {}
       };
       useEffect(() => { if (token) loadDatabaseInfo(); }, [token]);
@@ -1624,6 +1629,23 @@
         };
         reader.onerror = () => setMsg({ type: "error", text: "Nie mozna odczytac pliku backupu." });
         reader.readAsText(file);
+      };
+      const downloadAuditLogs = async () => {
+        setLoading(true); setMsg(null);
+        try {
+          const blob = await api.downloadAuditLogs(token);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "flowrbr_historia_dzialan_" + today() + ".csv";
+          a.click();
+          URL.revokeObjectURL(url);
+          setMsg({ type: "success", text: "Historia dzialan pobrana do pliku CSV. W bazie zostaje tylko ostatnie 60 dni." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setLoading(false);
+        }
       };
 
       return html`
@@ -1678,32 +1700,9 @@
           <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
             <div>
               <h2 style=${S.title}>Historia dzialan w aplikacji</h2>
-              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Kto, co i kiedy zrobil w systemie.</div>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Historia jest trzymana przez 60 dni i pobierana jako plik CSV.</div>
             </div>
-            <button style=${S.ghost} onClick=${loadDatabaseInfo}>Odswiez historie</button>
-          </div>
-          <div style=${{ overflowX: "auto", marginTop: "12px" }}>
-            <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "860px" }}>
-              <thead>
-                <tr>
-                  ${["Kiedy", "Kto", "Rola", "Akcja", "Cel", "Szczegoly"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${h}</th>`)}
-                </tr>
-              </thead>
-              <tbody>
-                ${auditLogs.length ? auditLogs.slice(0, 160).map(log => html`
-                  <tr key=${log.id}>
-                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.createdAt ? new Date(log.createdAt).toLocaleString("pl-PL") : "-"}</td>
-                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${log.actorCode || "-"}</td>
-                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.actorRole || "-"}</td>
-                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.action || "-"}</td>
-                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${log.target || "-"}</td>
-                    <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px" }}>${JSON.stringify(log.details || {})}</td>
-                  </tr>
-                `) : html`
-                  <tr><td colspan="6" style=${{ padding: "18px", textAlign: "center", color: COLORS.dim }}>Brak historii dzialan.</td></tr>
-                `}
-              </tbody>
-            </table>
+            <button style=${S.btn} disabled=${loading} onClick=${downloadAuditLogs}>Pobierz historie CSV</button>
           </div>
         </section>
       `;
@@ -2092,6 +2091,8 @@
       const [aiDetected, setAiDetected] = useState([]);
       const [aiLoading, setAiLoading] = useState(false);
       const [msg, setMsg] = useState(null);
+      const [pdfPickerOpen, setPdfPickerOpen] = useState(false);
+      const [pdfHallSelection, setPdfHallSelection] = useState({ betonowanie: true, namiot1: false, namiot2: false });
       const [newComment, setNewComment] = useState("");
       const [tilingCheckComment, setTilingCheckComment] = useState("");
       const [helmetCheckComment, setHelmetCheckComment] = useState("");
@@ -2473,200 +2474,257 @@
         const num = parseInt(full, 16);
         return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
       };
-      const exportMapPdf = () => {
-        if (selectedHall.future) return setMsg({ type: "warning", text: "Hala ISO bedzie dodana w przyszlosci." });
+      const mapDataForHall = hallId => {
+        const hallDef = halls.find(h => h.id === hallId) || halls[0];
+        if (hallDef.future) return null;
+        const saved = (layouts[hallId] || []).filter(cell => !isRemovedFromMap(cell));
+        const byCell = {};
+        saved.forEach(cell => { byCell[cellKey(cell)] = cell; });
+        const minOccupied = saved.reduce((min, cell) => {
+          const col = Number(cell.col || 0);
+          return col > 0 ? Math.min(min, col) : min;
+        }, hallDef.cols + 1);
+        const maxStart = minOccupied <= hallDef.cols ? minOccupied : hallDef.cols;
+        const start = Math.max(1, Math.min(Number(mapStarts[hallId]) || 1, maxStart));
+        const columns = Array.from({ length: Math.max(1, hallDef.cols - start + 1) }, (_, i) => start + i);
+        return { hallDef, cells: saved, byCell, start, columns, mapDate: mapDates[hallId] || "" };
+      };
+      const openPdfPicker = () => {
+        setPdfHallSelection(prev => {
+          const next = { ...prev };
+          if (!Object.values(next).some(Boolean)) next[hall] = true;
+          return next;
+        });
+        setPdfPickerOpen(true);
+      };
+      const exportMapPdf = (hallIds = null) => {
+        const selectedIds = (hallIds || Object.entries(pdfHallSelection).filter(([, checked]) => checked).map(([id]) => id))
+          .filter(id => {
+            const h = halls.find(item => item.id === id);
+            return h && !h.future;
+          });
+        if (!selectedIds.length) return setMsg({ type: "warning", text: "Wybierz co najmniej jedna szachownice do PDF." });
         try {
           const { jsPDF } = window.jspdf;
           const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
           const pageW = doc.internal.pageSize.getWidth();
           const pageH = doc.internal.pageSize.getHeight();
-          const margin = 8;
-          let y = 10;
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(15);
-          const title = "Szachownica - " + selectedHall.label;
-          doc.text(title, margin, y);
-          if (selectedHallDate) {
-            doc.setFont("helvetica", "normal");
-            doc.setFontSize(9);
-            doc.text("Data: " + selectedHallDate, margin + doc.getTextWidth(title) + 8, y);
-          }
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(8);
-          doc.text("Wygenerowano: " + today(), pageW - margin - 42, y);
-          y += 7;
-
-          let lx = margin;
-          stageColors.filter(s => !s.hiddenLegend).forEach(s => {
-            const rgb = hexToRgb(s.color);
-            doc.setFillColor(rgb[0], rgb[1], rgb[2]);
-            doc.setDrawColor(150, 160, 175);
-            doc.rect(lx, y - 4, 5, 4, "FD");
-            doc.setTextColor(20, 30, 45);
-            doc.text(s.label, lx + 6, y - 1);
-            lx += Math.min(40, 8 + s.label.length * 1.8);
-            if (lx > pageW - 50) { lx = margin; y += 6; }
-          });
-          y += 6;
-          const pdfTransportLegend = [
-            { label: "dzisiaj", color: "#111827", text: "#fff" },
-            { label: "jutro", color: "#dc2626", text: "#fff" },
-            { label: "pojutrze", color: "#f97316", text: "#111827" },
-            { label: "za 3 dni", color: "#fde047", text: "#111827" },
-            { label: "4-6 dni", color: "#7c3aed", text: "#fff" },
-            { label: "7-8 dni", color: "#2563eb", text: "#fff" },
-            { label: "9-12 dni", color: "#16a34a", text: "#fff" },
-            { label: "13-16 dni", color: "#99f6e4", text: "#134e4a" }
-          ];
-          lx = margin;
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(7);
-          doc.setTextColor(20, 30, 45);
-          doc.text("Zaladunek:", lx, y);
-          lx += 18;
-          pdfTransportLegend.forEach(item => {
-            const rgb = hexToRgb(item.color);
-            const textRgb = hexToRgb(item.text);
-            doc.setFillColor(rgb[0], rgb[1], rgb[2]);
-            doc.circle(lx + 2, y - 1.5, 2.2, "F");
-            doc.setTextColor(textRgb[0], textRgb[1], textRgb[2]);
+          const margin = 7;
+          const hex = color => hexToRgb(color);
+          const drawLegend = (yStart, hallDef, mapDate) => {
+            let y = yStart;
             doc.setFont("helvetica", "bold");
-            doc.setFontSize(5.5);
-            doc.text("!", lx + 1.3, y);
+            doc.setFontSize(15);
+            const title = "Szachownica - " + hallDef.label;
             doc.setTextColor(20, 30, 45);
+            doc.text(title, margin, y);
             doc.setFont("helvetica", "normal");
-            doc.setFontSize(6.2);
-            doc.text(item.label, lx + 5, y);
-            lx += 17 + item.label.length * 1.4;
-            if (lx > pageW - 30) { lx = margin; y += 5; }
-          });
-          y += 6;
-          lx = margin;
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(7);
-          doc.setTextColor(20, 30, 45);
-          doc.text("Znaczniki:", lx, y);
-          lx += 18;
-          doc.setFillColor(239, 68, 68); doc.circle(lx + 2, y - 1.5, 2, "F"); doc.text("komentarz", lx + 6, y); lx += 30;
-          doc.setFillColor(34, 197, 94); doc.circle(lx + 2, y - 1.5, 2, "F"); doc.text("komentarz zrobiony", lx + 6, y); lx += 43;
-          doc.setDrawColor(249, 115, 22); doc.rect(lx, y - 4, 4, 4, "S"); doc.text("kontrola", lx + 6, y); lx += 28;
-          doc.setDrawColor(22, 163, 74); doc.setFillColor(220, 252, 231); doc.rect(lx, y - 4, 4, 4, "FD"); doc.text(String.fromCharCode(10003), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("sprawdzona", lx + 6, y); lx += 33;
-          doc.setDrawColor(220, 38, 38); doc.setFillColor(254, 226, 226); doc.rect(lx, y - 4, 4, 4, "FD"); doc.setTextColor(153, 27, 27); doc.text(String.fromCharCode(10005), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("poprawka", lx + 6, y); lx += 31;
-          doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.circle(lx + 2, y - 2, 2.3, "FD"); doc.setTextColor(51, 65, 85); doc.setFont("helvetica", "bold"); doc.text("K", lx + 0.8, y - 0.5); doc.setFont("helvetica", "normal"); doc.setTextColor(20, 30, 45); doc.text("kask", lx + 6, y);
-          y += 6;
+            doc.setFontSize(8.5);
+            if (mapDate) doc.text("Data szachownicy: " + mapDate, margin + doc.getTextWidth(title) + 8, y);
+            doc.text("Wygenerowano: " + today(), pageW - margin - 43, y);
+            y += 7;
 
-          const rowHeader = 8;
-          const gap = 1;
-          const pdfMapCols = Math.max(1, visibleMapCols || selectedHall.cols);
-          const availableW = pageW - margin * 2 - rowHeader - (pdfMapCols - 1) * gap;
-          const availableH = pageH - y - margin - (selectedHall.rows.length - 1) * gap;
-          const cellW = Math.min(selectedHall.rows.length <= 2 ? 30 : 24, availableW / pdfMapCols);
-          const cellH = Math.min(selectedHall.rows.length <= 2 ? 32 : 23, availableH / Math.max(1, selectedHall.rows.length));
-          const infoFont = selectedHall.rows.length <= 2 ? 8.2 : 7.2;
-          const stageFont = selectedHall.rows.length <= 2 ? 6.5 : 5.8;
-          const colorH = Math.max(14, cellH * 0.68);
-          const gridW = rowHeader + pdfMapCols * cellW + (pdfMapCols - 1) * gap;
-          const startX = Math.max(margin, (pageW - gridW) / 2);
-          doc.setFontSize(7);
-          doc.setTextColor(65, 75, 90);
-          selectedHall.rows.forEach((row, rowIndex) => {
-            const cy = y + rowIndex * (cellH + gap);
-            doc.setFont("helvetica", "bold");
-            doc.text(row, startX + 2, cy + cellH / 2);
-            for (const col of visibleMapColumns.length ? visibleMapColumns : Array.from({ length: pdfMapCols }, (_, i) => i + 1)) {
-              const cell = layoutByCell[row + "-" + col];
-              const st = styleForCell(cell);
-              const bg = hexToRgb(st.background);
-              const tx = hexToRgb(st.color);
-              const visibleIndex = (visibleMapColumns.length ? visibleMapColumns.indexOf(col) : col - 1);
-              const x = startX + rowHeader + visibleIndex * (cellW + gap);
+            let lx = margin;
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(6.5);
+            stageColors.filter(s => !s.hiddenLegend).forEach(s => {
+              const rgb = hex(s.color);
+              doc.setFillColor(rgb[0], rgb[1], rgb[2]);
               doc.setDrawColor(150, 160, 175);
-              if (cell) {
+              doc.roundedRect(lx, y - 4, 5, 4, 0.7, 0.7, "FD");
+              doc.setTextColor(20, 30, 45);
+              doc.text(s.short || s.label, lx + 6, y - 0.8);
+              lx += Math.min(31, 9 + String(s.short || s.label).length * 1.55);
+              if (lx > pageW - 35) { lx = margin; y += 5.2; }
+            });
+            y += 5.5;
+
+            const pdfTransportLegend = [
+              { label: "dzisiaj", color: "#111827", text: "#fff" },
+              { label: "jutro", color: "#dc2626", text: "#fff" },
+              { label: "pojutrze", color: "#f97316", text: "#111827" },
+              { label: "za 3 dni", color: "#fde047", text: "#111827" },
+              { label: "4-6 dni", color: "#7c3aed", text: "#fff" },
+              { label: "7-8 dni", color: "#2563eb", text: "#fff" },
+              { label: "9-12 dni", color: "#16a34a", text: "#fff" },
+              { label: "13-16 dni", color: "#99f6e4", text: "#134e4a" }
+            ];
+            lx = margin;
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(6.5);
+            doc.setTextColor(20, 30, 45);
+            doc.text("Zaladunek:", lx, y);
+            lx += 18;
+            pdfTransportLegend.forEach(item => {
+              const rgb = hex(item.color);
+              const textRgb = hex(item.text);
+              doc.setFillColor(rgb[0], rgb[1], rgb[2]);
+              doc.circle(lx + 2, y - 1.7, 2.1, "F");
+              doc.setTextColor(textRgb[0], textRgb[1], textRgb[2]);
+              doc.setFont("helvetica", "bold");
+              doc.setFontSize(5.5);
+              doc.text("!", lx + 1.3, y - 0.1);
+              doc.setTextColor(20, 30, 45);
+              doc.setFont("helvetica", "normal");
+              doc.setFontSize(6.1);
+              doc.text(item.label, lx + 5, y);
+              lx += 16 + item.label.length * 1.22;
+              if (lx > pageW - 28) { lx = margin; y += 5; }
+            });
+            y += 5.3;
+
+            lx = margin;
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(6.4);
+            doc.setTextColor(20, 30, 45);
+            doc.text("Znaczniki:", lx, y);
+            lx += 18;
+            doc.setFillColor(239, 68, 68); doc.circle(lx + 2, y - 1.5, 2, "F"); doc.text("komentarz", lx + 6, y); lx += 29;
+            doc.setFillColor(34, 197, 94); doc.circle(lx + 2, y - 1.5, 2, "F"); doc.text("kom. zrobiony", lx + 6, y); lx += 35;
+            doc.setDrawColor(249, 115, 22); doc.setFillColor(255, 255, 255); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.text("kontrola", lx + 6, y); lx += 26;
+            doc.setDrawColor(22, 163, 74); doc.setFillColor(220, 252, 231); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.text(String.fromCharCode(10003), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("sprawdz.", lx + 6, y); lx += 25;
+            doc.setDrawColor(220, 38, 38); doc.setFillColor(254, 226, 226); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.setTextColor(153, 27, 27); doc.text(String.fromCharCode(10005), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("poprawka", lx + 6, y); lx += 30;
+            doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.circle(lx + 2, y - 2, 2.3, "FD"); doc.setTextColor(51, 65, 85); doc.setFont("helvetica", "bold"); doc.text("K", lx + 0.8, y - 0.5); doc.setFont("helvetica", "normal"); doc.setTextColor(20, 30, 45); doc.text("kask", lx + 6, y); lx += 20;
+            doc.setTextColor(245, 158, 11); doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.text(String.fromCharCode(9733), lx, y); doc.setTextColor(20, 30, 45); doc.setFont("helvetica", "normal"); doc.setFontSize(6.4); doc.text("musztrowka", lx + 5, y);
+            return y + 5.5;
+          };
+          const drawHall = (hallId, pageIndex) => {
+            const data = mapDataForHall(hallId);
+            if (!data) return;
+            if (pageIndex > 0) doc.addPage("a4", "landscape");
+            const { hallDef, byCell, columns, mapDate } = data;
+            let y = drawLegend(10, hallDef, mapDate);
+            const rowHeader = 8;
+            const gap = 1.1;
+            const colCount = Math.max(1, columns.length);
+            const availableW = pageW - margin * 2 - rowHeader - (colCount - 1) * gap;
+            const availableH = pageH - y - margin - 5 - (hallDef.rows.length - 1) * gap;
+            const cellW = Math.min(hallDef.rows.length <= 2 ? 30.5 : 12.6, availableW / colCount);
+            const cellH = Math.min(hallDef.rows.length <= 2 ? 56 : 24.5, availableH / Math.max(1, hallDef.rows.length));
+            const colorH = Math.max(cellH * 0.68, hallDef.rows.length <= 2 ? 34 : 15.5);
+            const gridW = rowHeader + colCount * cellW + (colCount - 1) * gap;
+            const startX = Math.max(margin, (pageW - gridW) / 2);
+            doc.setFontSize(7);
+            doc.setTextColor(65, 75, 90);
+            columns.forEach((col, index) => {
+              const x = startX + rowHeader + index * (cellW + gap);
+              doc.setFont("helvetica", "bold");
+              doc.setFontSize(6.5);
+              doc.text(String(col), x + cellW / 2 - doc.getTextWidth(String(col)) / 2, y - 1.2);
+            });
+            hallDef.rows.forEach((row, rowIndex) => {
+              const cy = y + rowIndex * (cellH + gap);
+              doc.setFont("helvetica", "bold");
+              doc.setFontSize(8);
+              doc.setTextColor(65, 75, 90);
+              doc.text(row, startX + 2, cy + cellH / 2);
+              columns.forEach((col, visibleIndex) => {
+                const cell = byCell[row + "-" + col];
+                const x = startX + rowHeader + visibleIndex * (cellW + gap);
+                doc.setDrawColor(203, 213, 225);
+                doc.setFillColor(255, 255, 255);
+                doc.roundedRect(x, cy, cellW, cellH, 1.4, 1.4, "FD");
+                if (!cell) return;
+                const st = styleForCell(cell);
+                const bg = hex(st.background);
+                const tx = hex(st.color);
                 const bKey = bathroomKey(cell.project, cell.product);
                 const loadDate = loadDateByBathroom[transportKey(cell.project, cell.product)];
                 const alert = transportAlert(loadDate);
                 const commentStatus = commentStatusByBathroom[bKey];
                 const needsTilingCheck = tilingByBathroom.has(bKey);
                 const tilingCheck = needsTilingCheck ? bathroomChecksByKey[bKey + "#tiling"] : null;
-                const tileCheckStatus = checkStatus(tilingCheck);
-                const tileCheckStyle = checkStatusStyle(tileCheckStatus);
+                const tileCheckStyle = checkStatusStyle(checkStatus(tilingCheck));
                 const helmetCheck = bathroomChecksByKey[bKey + "#entry"];
-                const helmetStatus = checkStatus(helmetCheck);
-                const helmetStyle = helmetStatusStyle(helmetStatus);
+                const helmetStyle = helmetStatusStyle(checkStatus(helmetCheck));
+                const qState = qualityStateFor(qualityData, cell.project, cell.product);
+                const typeInfo = bathroomTypeInfo(serverProjects, cell.project, cell.product);
+                const productLabel = typeInfo.rbrTypeShort ? cell.product + "/" + typeInfo.rbrTypeShort : String(cell.product);
+                const sampleEnabled = sampleEnabledForCell(cell);
                 doc.setFillColor(bg[0], bg[1], bg[2]);
-                doc.rect(x, cy, cellW, colorH, "F");
+                doc.roundedRect(x, cy, cellW, colorH, 1.4, 1.4, "F");
                 doc.setFillColor(255, 255, 255);
-                doc.rect(x, cy + colorH, cellW, cellH - colorH, "F");
-                doc.rect(x, cy, cellW, cellH, "S");
+                doc.rect(x, cy + colorH, cellW, Math.max(0.1, cellH - colorH), "F");
+                doc.setDrawColor(203, 213, 225);
+                doc.roundedRect(x, cy, cellW, cellH, 1.4, 1.4, "S");
+
                 doc.setTextColor(tx[0], tx[1], tx[2]);
                 doc.setFont("helvetica", "bold");
-                doc.setFontSize(infoFont);
-                const label = st.label.replace("Ceramika podlogi", "Ceramika podl.").replace("Montaz sanit.", "Montaz sanit.");
-                doc.text(String(cell.project), x + 1, cy + 4.2);
-                doc.text("Laz. " + cell.product, x + 1, cy + 8.4);
-                doc.setFont("helvetica", "normal");
+                const large = hallDef.rows.length <= 2;
+                const projectFont = large ? 10.4 : 6.6;
+                const productFont = large ? 9.4 : 6.2;
+                const stageFont = large ? 7.6 : 5.2;
+                doc.setFontSize(projectFont);
+                doc.text(String(cell.project), x + cellW / 2, cy + (large ? 9 : 5.2), { align: "center" });
+                doc.setFontSize(productFont);
+                doc.text(productLabel, x + cellW / 2, cy + (large ? 17 : 10.2), { align: "center" });
                 doc.setFontSize(stageFont);
-                doc.text(doc.splitTextToSize(label, cellW - 2).slice(0, 2), x + 1, cy + 12.2);
+                const stageLines = doc.splitTextToSize(st.shortLabel || st.label || "Brak", cellW - 2).slice(0, large ? 2 : 1);
+                doc.text(stageLines, x + cellW / 2, cy + (large ? 25 : 15), { align: "center" });
+
                 if (alert) {
-                  const ar = hexToRgb(alert.color);
-                  const atr = hexToRgb(alert.text);
+                  const ar = hex(alert.color);
+                  const atr = hex(alert.text);
                   doc.setFillColor(ar[0], ar[1], ar[2]);
-                  doc.circle(x + cellW - 2.6, cy + 2.8, 2.5, "F");
+                  doc.circle(x + cellW - (large ? 3.6 : 2.7), cy + (large ? 4.2 : 3.1), large ? 3.3 : 2.4, "F");
                   doc.setTextColor(atr[0], atr[1], atr[2]);
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(7);
-                  doc.text("!", x + cellW - 3.4, cy + 4.9);
+                  doc.setFontSize(large ? 9 : 6.5);
+                  doc.text("!", x + cellW - (large ? 4.8 : 3.5), cy + (large ? 7.2 : 5.2));
+                }
+                if (sampleEnabled) {
+                  doc.setTextColor(245, 158, 11);
+                  doc.setFont("helvetica", "bold");
+                  doc.setFontSize(large ? 11 : 8);
+                  doc.text(String.fromCharCode(9733), x + 1.2, cy + (large ? 5.8 : 4.6));
                 }
                 if (commentStatus) {
                   doc.setFillColor(commentStatus.open ? 239 : 34, commentStatus.open ? 68 : 197, commentStatus.open ? 68 : 94);
-                  doc.circle(x + cellW - 3.4, cy + cellH - 3.4, 2, "F");
-                }
-                if (helmetCheck || cell) {
-                  const hsBg = hexToRgb(helmetStyle.bg);
-                  const hsBorder = hexToRgb(helmetStyle.border);
-                  const hsText = hexToRgb(helmetStyle.color);
-                  doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
-                  doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
-                  doc.circle(x + cellW / 2, cy + cellH - 3.4, 2.5, "FD");
-                  doc.setTextColor(hsText[0], hsText[1], hsText[2]);
-                  doc.setFont("helvetica", "bold");
-                  doc.setFontSize(5.6);
-                  doc.text("K", x + cellW / 2 - 1.1, cy + cellH - 1.7);
+                  doc.circle(x + cellW - (large ? 4.3 : 3.2), cy + cellH - (large ? 4.6 : 3.2), large ? 2.9 : 2.1, "F");
                 }
                 if (needsTilingCheck) {
-                  const csBg = hexToRgb(tileCheckStyle.bg);
-                  const csBorder = hexToRgb(tileCheckStyle.border);
-                  const csText = hexToRgb(tileCheckStyle.color);
+                  const csBg = hex(tileCheckStyle.bg);
+                  const csBorder = hex(tileCheckStyle.border);
+                  const csText = hex(tileCheckStyle.color);
+                  const size = large ? 7.2 : 4.6;
                   doc.setDrawColor(csBorder[0], csBorder[1], csBorder[2]);
                   doc.setFillColor(csBg[0], csBg[1], csBg[2]);
-                  doc.rect(x + 1.1, cy + cellH - 5.8, 5, 5, "FD");
+                  doc.rect(x + 1.2, cy + cellH - size - 1.5, size, size, "FD");
                   if (tileCheckStyle.mark) {
                     doc.setTextColor(csText[0], csText[1], csText[2]);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(6.6);
-                    doc.text(tileCheckStyle.mark, x + 2, cy + cellH - 2);
+                    doc.setFontSize(large ? 8 : 5.5);
+                    doc.text(tileCheckStyle.mark, x + 2.2, cy + cellH - 2.3);
                   }
                 }
-              } else if (rowIndex === 0) {
-                doc.setFillColor(255, 255, 255);
-                doc.rect(x, cy, cellW, cellH, "S");
-                doc.setTextColor(65, 75, 90);
-                doc.setFont("helvetica", "normal");
-                doc.setFontSize(5);
-                doc.text(String(col), x + cellW / 2 - 1, cy - 1);
-              } else {
-                doc.setFillColor(255, 255, 255);
-                doc.rect(x, cy, cellW, cellH, "S");
-              }
-            }
-          });
-          doc.save("flowrbr_szachownica_" + hall + "_" + today() + ".pdf");
-          setMsg({ type: "success", text: "PDF szachownicy wygenerowany." });
+                const hsBg = hex(helmetStyle.bg);
+                const hsBorder = hex(helmetStyle.border);
+                const hsText = hex(helmetStyle.color);
+                doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
+                doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
+                doc.circle(x + cellW / 2, cy + cellH - (large ? 4.5 : 3.2), large ? 3.4 : 2.35, "FD");
+                doc.setTextColor(hsText[0], hsText[1], hsText[2]);
+                doc.setFont("helvetica", "bold");
+                doc.setFontSize(large ? 7.2 : 5);
+                doc.text("K", x + cellW / 2 - (large ? 1.4 : 1), cy + cellH - (large ? 2.2 : 1.5));
+                if (qState.goatActive || qState.missingActive) {
+                  doc.setFont("helvetica", "bold");
+                  doc.setFontSize(large ? 7.2 : 4.8);
+                  doc.setTextColor(20, 30, 45);
+                  const icons = (qState.goatActive ? "G" : "") + (qState.missingActive ? " B" : "");
+                  doc.text(icons.trim(), x + cellW - (large ? 11 : 7), cy + cellH - (large ? 10 : 7));
+                }
+              });
+            });
+          };
+          selectedIds.forEach((id, index) => drawHall(id, index));
+          doc.save("flowrbr_szachownice_" + selectedIds.join("_") + "_" + today() + ".pdf");
+          setPdfPickerOpen(false);
+          setMsg({ type: "success", text: "PDF szachownicy wygenerowany: " + selectedIds.length + " str." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
-      };
-      const addManual = () => {
+      };      const addManual = () => {
         if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik nie moze modyfikowac map." });
         if (selectedHall.future) return;
         const row = manual.row;
@@ -2871,7 +2929,7 @@
               </div>
             </div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <button style=${S.btn} onClick=${exportMapPdf}>Generuj PDF</button>
+              <button style=${S.btn} onClick=${openPdfPicker}>Generuj PDF</button>
               ${canEditMaps ? html`
                 <label style=${S.ghost}>
                   Wgraj zdjecie podgladu
@@ -2881,6 +2939,29 @@
               ` : null}
             </div>
           </div>
+          ${pdfPickerOpen ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 70, display: "grid", placeItems: "center", padding: "16px" }}>
+              <section style=${{ ...S.card, width: "min(520px, 100%)", margin: 0 }}>
+                <h2 style=${S.title}>Wybierz szachownice do PDF</h2>
+                <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
+                  PDF bedzie wygenerowany poziomo. Kazda zaznaczona hala trafi na osobna strone.
+                </div>
+                <div style=${{ display: "grid", gap: "8px" }}>
+                  ${halls.filter(h => !h.future).map(h => html`
+                    <label key=${h.id} style=${{ ...S.ghost, display: "flex", alignItems: "center", justifyContent: "flex-start", gap: "10px" }}>
+                      <input type="checkbox" checked=${!!pdfHallSelection[h.id]} onChange=${e => setPdfHallSelection({ ...pdfHallSelection, [h.id]: e.target.checked })} />
+                      <span>${h.label}</span>
+                      <span style=${{ color: COLORS.muted, fontSize: "12px" }}>${(layouts[h.id] || []).filter(cell => !isRemovedFromMap(cell)).length} lazienek</span>
+                    </label>
+                  `)}
+                </div>
+                <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px", flexWrap: "wrap" }}>
+                  <button style=${S.ghost} onClick=${() => setPdfPickerOpen(false)}>Anuluj</button>
+                  <button style=${S.btn} onClick=${() => exportMapPdf()}>Generuj PDF</button>
+                </div>
+              </section>
+            </div>
+          ` : null}
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
             ${halls.map(h => html`<button key=${h.id} style=${hall === h.id ? S.btn : S.ghost} onClick=${() => { setHall(h.id); setManual({ row: h.rows[0] || "F", col: String(mapStarts[h.id] || 1), project: "", product: "", placedDate: today() }); }}>${h.label}</button>`)}
           </div>
@@ -6698,3 +6779,4 @@
   </script>
 </body>
 </html>
+

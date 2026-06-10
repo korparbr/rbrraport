@@ -13,9 +13,16 @@ const { sendDailyReport } = require('./mailer');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'raportrbr-dev-secret';
+const JWT_SECRET = String(process.env.JWT_SECRET || '');
+if (JWT_SECRET.length < 32) {
+  throw new Error('JWT_SECRET musi byc ustawiony w .env i miec minimum 32 znaki.');
+}
 const LOGIN_LOCK_MAX = Number(process.env.LOGIN_LOCK_MAX || 5);
 const LOGIN_LOCK_MINUTES = Number(process.env.LOGIN_LOCK_MINUTES || 15);
+const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
 // ─── DATABASE CONNECTION WITH RESILIENCE ─────────────────────────────────────
 const pool = new Pool({
@@ -59,7 +66,16 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
   next();
 });
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.includes(origin) || (origin === 'null' && ALLOWED_ORIGINS.includes('null'))) {
+      return callback(null, true);
+    }
+    return callback(new Error('CORS: niedozwolony adres aplikacji'));
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '50mb' }));
 
 const rateBuckets = new Map();
@@ -261,6 +277,7 @@ async function ensureAuditLogsTable() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query("CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC)");
 }
 
 async function auditLog(req, action, target, details = {}) {
@@ -279,6 +296,7 @@ async function auditLog(req, action, target, details = {}) {
         JSON.stringify(details || {})
       ]
     );
+    await pool.query("DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '60 days'");
   } catch (err) {
     console.error('Audit log error:', err.message);
   }
@@ -343,6 +361,16 @@ async function ensureBackupSnapshotsTable() {
     )
   `);
   await pool.query("CREATE INDEX IF NOT EXISTS idx_backup_snapshots_created_at ON backup_snapshots(created_at DESC)");
+}
+
+async function ensureAppSettingsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 async function ensureReportControlsTable() {
@@ -675,6 +703,36 @@ function supervisorOrAdminOnly(req, res, next) {
   next();
 }
 
+const DEFAULT_ROLE_TABS = {
+  worker: ['reports', 'maps', 'sessions', 'account'],
+  'worker+': ['reports', 'maps', 'sessions', 'account'],
+  kontroler: ['reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
+  manager: ['reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
+  viewer: ['reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
+  supervisor: ['reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account'],
+  admin: ['reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account']
+};
+
+async function roleHasTab(role, tab) {
+  const normalized = normalizeUserRole(role);
+  if ((normalized === 'admin' || normalized === 'supervisor') && (tab === 'permissions' || tab === 'database' || tab === 'fertilization')) return true;
+  await ensureRolePermissionsTable();
+  const r = await pool.query('SELECT tabs FROM role_permissions WHERE role=$1', [normalized]);
+  const tabs = r.rows.length && Array.isArray(r.rows[0].tabs) ? r.rows[0].tabs : (DEFAULT_ROLE_TABS[normalized] || DEFAULT_ROLE_TABS.worker);
+  return tabs.includes(tab);
+}
+
+function requireTab(tab) {
+  return async (req, res, next) => {
+    try {
+      if (await roleHasTab(req.user.role, tab)) return next();
+      return res.status(403).json({ error: 'Brak uprawnien do zakladki: ' + tab });
+    } catch (err) {
+      return res.status(500).json({ error: 'Nie udalo sie sprawdzic uprawnien zakladki' });
+    }
+  };
+}
+
 function normalizeUserRole(role) {
   const value = String(role || 'worker').trim().toLowerCase();
   return ['worker', 'worker+', 'kontroler', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
@@ -806,7 +864,7 @@ app.post('/api/sessions/logout-all', auth, async (req, res) => {
   }
 });
 
-app.get('/api/users', auth, async (req, res) => {
+app.get('/api/users', auth, requireTab('users'), async (req, res) => {
   const role = req.user.role;
   const code = String(req.user.code || '').toUpperCase();
   if (role !== 'manager' && role !== 'kontroler' && role !== 'viewer' && role !== 'supervisor' && role !== 'admin' && code !== 'ADMIN' && code !== 'RBR056') {
@@ -819,7 +877,7 @@ app.get('/api/users', auth, async (req, res) => {
   } catch { res.status(500).json({ error: 'Błąd serwera' }); }
 });
 
-app.post('/api/users', auth, managerOnly, async (req, res) => {
+app.post('/api/users', auth, requireTab('users'), managerOnly, async (req, res) => {
   const { code, name, password } = req.body;
   const userCode = String(code || '').trim().toUpperCase();
   const role = normalizeUserRole(req.body.role);
@@ -841,7 +899,7 @@ app.post('/api/users', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.put('/api/users/:code/role', auth, managerOnly, async (req, res) => {
+app.put('/api/users/:code/role', auth, requireTab('users'), managerOnly, async (req, res) => {
   const code = String(req.params.code || '').toUpperCase();
   const role = normalizeUserRole(req.body.role);
   const requesterCode = String(req.user.code || '').toUpperCase();
@@ -864,7 +922,7 @@ app.put('/api/users/:code/role', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.put('/api/users/:code/reset-password', auth, managerOnly, async (req, res) => {
+app.put('/api/users/:code/reset-password', auth, requireTab('users'), managerOnly, async (req, res) => {
   await ensureUsersBlockColumn();
   // Check if target user is a manager - only supervisor/admin can reset managers
   const target = await pool.query('SELECT role FROM users WHERE code=$1', [req.params.code]);
@@ -879,7 +937,7 @@ app.put('/api/users/:code/reset-password', auth, managerOnly, async (req, res) =
   res.json({ success: true });
 });
 
-app.put('/api/users/:code/block', auth, managerOnly, async (req, res) => {
+app.put('/api/users/:code/block', auth, requireTab('users'), managerOnly, async (req, res) => {
   const code = String(req.params.code || '').toUpperCase();
   const blocked = !!req.body.blocked;
   if (!code || code === 'ADMIN') return res.status(400).json({ error: 'Nieprawidłowy użytkownik' });
@@ -899,7 +957,7 @@ app.put('/api/users/:code/block', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
+app.delete('/api/users/:code', auth, requireTab('users'), managerOnly, async (req, res) => {
   const code = String(req.params.code || '').toUpperCase();
   const requesterCode = String(req.user.code || '').toUpperCase();
   if (!code || code === 'ADMIN') return res.status(400).json({ error: 'Nieprawidlowy uzytkownik' });
@@ -916,18 +974,33 @@ app.delete('/api/users/:code', auth, managerOnly, async (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/audit-logs', auth, managerOnly, async (req, res) => {
+app.get('/api/audit-logs', auth, requireTab('database'), managerOnly, async (req, res) => {
   try {
     await ensureAuditLogsTable();
-    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    await pool.query("DELETE FROM audit_logs WHERE created_at < NOW() - INTERVAL '60 days'");
     const r = await pool.query(
       `SELECT id, actor_code AS "actorCode", actor_role AS "actorRole", action, target, ip, user_agent AS "userAgent", details, created_at AS "createdAt"
        FROM audit_logs
+       WHERE created_at >= NOW() - INTERVAL '60 days'
        ORDER BY created_at DESC
-       LIMIT $1`,
-      [limit]
+       LIMIT 20000`
     );
-    res.json(r.rows);
+    const esc = value => '"' + String(value == null ? '' : value).replace(/"/g, '""') + '"';
+    const header = ['id', 'createdAt', 'actorCode', 'actorRole', 'action', 'target', 'ip', 'userAgent', 'details'];
+    const rows = r.rows.map(row => [
+      row.id,
+      row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+      row.actorCode,
+      row.actorRole,
+      row.action,
+      row.target,
+      row.ip,
+      row.userAgent,
+      JSON.stringify(row.details || {})
+    ].map(esc).join(';'));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="flowrbr_historia_dzialan_${new Date().toISOString().slice(0,10)}.csv"`);
+    res.send([header.map(esc).join(';'), ...rows].join('\n'));
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad odczytu audytu' });
   }
@@ -947,7 +1020,7 @@ app.get('/api/stage-permissions', auth, async (req, res) => {
   }
 });
 
-app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => {
+app.put('/api/stage-permissions/:stage', auth, requireTab('users'), managerOnly, async (req, res) => {
   const stage = normalizeStageId(req.params.stage);
   const workerCodes = Array.isArray(req.body.workerCodes) ? req.body.workerCodes : [];
   const normalized = [...new Set(workerCodes.map(code => String(code || '').trim().toUpperCase()).filter(Boolean))];
@@ -982,7 +1055,7 @@ app.put('/api/stage-permissions/:stage', auth, managerOnly, async (req, res) => 
   }
 });
 
-app.get('/api/role-permissions', auth, async (req, res) => {
+app.get('/api/role-permissions', auth, requireTab('permissions'), async (req, res) => {
   try {
     await ensureRolePermissionsTable();
     const r = await pool.query('SELECT role, tabs, updated_by AS "updatedBy", updated_at AS "updatedAt" FROM role_permissions ORDER BY role');
@@ -992,7 +1065,7 @@ app.get('/api/role-permissions', auth, async (req, res) => {
   }
 });
 
-app.put('/api/role-permissions/:role', auth, supervisorOrAdminOnly, async (req, res) => {
+app.put('/api/role-permissions/:role', auth, requireTab('permissions'), supervisorOrAdminOnly, async (req, res) => {
   const role = normalizeUserRole(req.params.role);
   const allowedTabs = new Set(['reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account']);
   const tabs = [...new Set((Array.isArray(req.body.tabs) ? req.body.tabs : []).map(tab => String(tab || '').trim()).filter(tab => allowedTabs.has(tab)))];
@@ -1015,7 +1088,7 @@ app.put('/api/role-permissions/:role', auth, supervisorOrAdminOnly, async (req, 
   }
 });
 
-app.get('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
+app.get('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdminOnly, async (req, res) => {
   try {
     await ensureFertilizationTable();
     const r = await pool.query(
@@ -1030,7 +1103,7 @@ app.get('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
   }
 });
 
-app.put('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
+app.put('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdminOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const deliveryDate = String(req.body.deliveryDate || req.body.delivery_date || '').slice(0, 10);
   const hall = String(req.body.hall || '').trim();
@@ -1053,7 +1126,7 @@ app.put('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
   }
 });
 
-app.delete('/api/fertilization', auth, supervisorOrAdminOnly, async (req, res) => {
+app.delete('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdminOnly, async (req, res) => {
   const project = String(req.query.project || '').trim();
   const deliveryDate = String(req.query.deliveryDate || req.query.delivery_date || '').slice(0, 10);
   if (!project || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return res.status(400).json({ error: 'Brak projektu lub daty terminu' });
@@ -1088,7 +1161,7 @@ app.get('/api/projects', auth, async (req, res) => {
   }
 });
 
-app.post('/api/projects', auth, managerOnly, async (req, res) => {
+app.post('/api/projects', auth, requireTab('projects'), managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const count = Number(req.body.count);
   if (!project || !Number.isInteger(count) || count < 1) return res.status(400).json({ error: 'Brak numeru projektu lub ilosci lazienek' });
@@ -1107,7 +1180,7 @@ app.post('/api/projects', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.put('/api/projects/:project', auth, managerOnly, async (req, res) => {
+app.put('/api/projects/:project', auth, requireTab('projects'), managerOnly, async (req, res) => {
   const project = String(req.params.project || '').trim();
   const count = Number(req.body.count);
   const closed = req.body.closed == null ? null : !!req.body.closed;
@@ -1137,7 +1210,7 @@ app.put('/api/projects/:project', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
+app.post('/api/projects/import', auth, requireTab('projects'), managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const sourceFile = String(req.body.sourceFile || req.body.importSource || '').trim();
   const bathrooms = Array.isArray(req.body.bathrooms) ? req.body.bathrooms : [];
@@ -1191,7 +1264,7 @@ app.post('/api/projects/import', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.get('/api/material-usages', auth, async (req, res) => {
+app.get('/api/material-usages', auth, requireTab('calculations'), async (req, res) => {
   try {
     await ensureMaterialUsagesTable();
     const r = await pool.query(
@@ -1206,7 +1279,7 @@ app.get('/api/material-usages', auth, async (req, res) => {
   }
 });
 
-app.post('/api/material-usages', auth, async (req, res) => {
+app.post('/api/material-usages', auth, requireTab('reports'), async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
   const stage = String(req.body.stage || '').trim();
@@ -1232,7 +1305,7 @@ app.post('/api/material-usages', auth, async (req, res) => {
   }
 });
 
-app.delete('/api/material-usages/:id', auth, managerOnly, async (req, res) => {
+app.delete('/api/material-usages/:id', auth, requireTab('calculations'), managerOnly, async (req, res) => {
   try {
     await ensureMaterialUsagesTable();
     const r = await pool.query('DELETE FROM material_usages WHERE id=$1 RETURNING id, project, product, stage, type_key', [req.params.id]);
@@ -1245,7 +1318,7 @@ app.delete('/api/material-usages/:id', auth, managerOnly, async (req, res) => {
 });
 
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
-app.get('/api/quality', auth, async (req, res) => {
+app.get('/api/quality', auth, requireTab('quality'), async (req, res) => {
   try {
     await ensureQualityTables();
     const items = await pool.query(
@@ -1263,7 +1336,7 @@ app.get('/api/quality', auth, async (req, res) => {
   }
 });
 
-app.put('/api/quality-record', auth, managerOnly, async (req, res) => {
+app.put('/api/quality-record', auth, requireTab('quality'), managerOnly, async (req, res) => {
   try {
     await ensureQualityTables();
     const project = String(req.body?.project || '').trim();
@@ -1288,7 +1361,7 @@ app.put('/api/quality-record', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.put('/api/quality-items', auth, managerOnly, async (req, res) => {
+app.put('/api/quality-items', auth, requireTab('quality'), managerOnly, async (req, res) => {
   const project = String(req.body?.project || '').trim();
   const oldName = String(req.body?.oldName || '').trim();
   const newName = String(req.body?.newName || '').trim();
@@ -1331,7 +1404,7 @@ app.put('/api/quality-items', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.delete('/api/quality-items', auth, managerOnly, async (req, res) => {
+app.delete('/api/quality-items', auth, requireTab('quality'), managerOnly, async (req, res) => {
   const project = String(req.query?.project || '').trim();
   const itemName = String(req.query?.itemName || '').trim();
   if (!project || !itemName) return res.status(400).json({ error: 'Brak projektu lub nazwy braku' });
@@ -1361,7 +1434,7 @@ app.delete('/api/quality-items', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.get('/api/reports', auth, async (req, res) => {
+app.get('/api/reports', auth, requireTab('reports'), async (req, res) => {
   try {
     const isManager = true;
     const q = `
@@ -1378,7 +1451,7 @@ app.get('/api/reports', auth, async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Błąd serwera' }); }
 });
 
-app.post('/api/reports', auth, async (req, res) => {
+app.post('/api/reports', auth, requireTab('reports'), async (req, res) => {
   const { date, lines } = req.body;
   if (!date || !lines?.length) return res.status(400).json({ error: 'Brak danych' });
   const client = await pool.connect();
@@ -1448,7 +1521,7 @@ app.post('/api/reports', auth, async (req, res) => {
   } finally { client.release(); }
 });
 
-app.delete('/api/report-lines/:id', auth, async (req, res) => {
+app.delete('/api/report-lines/:id', auth, requireTab('reports'), async (req, res) => {
   try {
     // Worker can only delete their own lines, manager can delete any
     const actorCode = String(req.user.code || '').toUpperCase();
@@ -1472,7 +1545,7 @@ app.delete('/api/report-lines/:id', auth, async (req, res) => {
 });
 
 
-app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
+app.delete('/api/reports/:id', auth, requireTab('reports'), managerOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     await ensureMaterialUsagesTable();
@@ -1514,7 +1587,7 @@ app.delete('/api/reports/:id', auth, managerOnly, async (req, res) => {
 });
 
 // Manager adds report on behalf of a worker
-app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
+app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, async (req, res) => {
   const { workerCode, date, lines } = req.body;
   if (!workerCode || !date || !lines?.length) return res.status(400).json({ error: 'Brak danych' });
   if (req.user.role === 'kontroler' && String(workerCode || '').toUpperCase() !== String(req.user.code || '').toUpperCase()) {
@@ -1568,7 +1641,7 @@ app.post('/api/reports/as-worker', auth, managerOnly, async (req, res) => {
 });
 
 // ─── EMAIL RECIPIENTS ─────────────────────────────────────────────────────────
-app.get('/api/maps-layouts', auth, async (req, res) => {
+app.get('/api/maps-layouts', auth, requireTab('maps'), async (req, res) => {
   try {
     await ensureMapLayoutsTable();
     const r = await pool.query("SELECT layouts, photos, map_dates, map_widths, map_starts FROM map_layouts WHERE id='main'");
@@ -1586,7 +1659,7 @@ app.get('/api/maps-layouts', auth, async (req, res) => {
   }
 });
 
-app.put('/api/maps-layouts', auth, canManageMaps, async (req, res) => {
+app.put('/api/maps-layouts', auth, requireTab('maps'), canManageMaps, async (req, res) => {
   try {
     await ensureMapLayoutsTable();
     const layouts = normalizeMapLayouts(req.body?.layouts || {});
@@ -1607,7 +1680,7 @@ app.put('/api/maps-layouts', auth, canManageMaps, async (req, res) => {
   }
 });
 
-app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
+app.put('/api/maps-photos', auth, requireTab('maps'), canManageMaps, async (req, res) => {
   try {
     await ensureMapLayoutsTable();
     const photos = normalizeMapPhotos(req.body?.photos || {});
@@ -1625,7 +1698,7 @@ app.put('/api/maps-photos', auth, canManageMaps, async (req, res) => {
   }
 });
 
-app.get('/api/report-controls', auth, async (req, res) => {
+app.get('/api/report-controls', auth, requireTab('projects'), async (req, res) => {
   try {
     await ensureReportControlsTable();
     const r = await pool.query(
@@ -1639,7 +1712,7 @@ app.get('/api/report-controls', auth, async (req, res) => {
   }
 });
 
-app.put('/api/report-controls', auth, managerOnly, async (req, res) => {
+app.put('/api/report-controls', auth, requireTab('projects'), managerOnly, async (req, res) => {
   const item = normalizeReportControlInput(req.body || {});
   if (!item.stage) return res.status(400).json({ error: 'Wybierz etap' });
   try {
@@ -1663,7 +1736,7 @@ app.put('/api/report-controls', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.delete('/api/report-controls', auth, managerOnly, async (req, res) => {
+app.delete('/api/report-controls', auth, requireTab('projects'), managerOnly, async (req, res) => {
   const item = normalizeReportControlInput(req.query || {});
   if (!item.stage) return res.status(400).json({ error: 'Wybierz etap' });
   try {
@@ -1676,7 +1749,7 @@ app.delete('/api/report-controls', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.get('/api/transport-dates', auth, async (req, res) => {
+app.get('/api/transport-dates', auth, requireTab('transport'), async (req, res) => {
   try {
     await ensureTransportDatesTable();
     await ensureTransportExtrasTable();
@@ -1702,7 +1775,7 @@ app.get('/api/transport-dates', auth, async (req, res) => {
   }
 });
 
-app.get('/api/transport-replacements', auth, async (req, res) => {
+app.get('/api/transport-replacements', auth, requireTab('transport'), async (req, res) => {
   try {
     await ensureTransportReplacementsTable();
     const r = await pool.query(
@@ -1805,7 +1878,7 @@ app.put('/api/bathroom-checks', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
+app.put('/api/transport-dates', auth, requireTab('transport'), managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
   const loadDate = String(req.body.loadDate || '').trim();
@@ -1862,7 +1935,7 @@ app.put('/api/transport-dates', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.post('/api/transport-extra', auth, managerOnly, async (req, res) => {
+app.post('/api/transport-extra', auth, requireTab('transport'), managerOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
   const loadDate = String(req.body.loadDate || '').trim();
@@ -1896,7 +1969,7 @@ app.post('/api/transport-extra', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.delete('/api/transport-extra/:id', auth, managerOnly, async (req, res) => {
+app.delete('/api/transport-extra/:id', auth, requireTab('transport'), managerOnly, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Nieprawidlowy wpis transportu' });
   try {
@@ -1910,7 +1983,7 @@ app.delete('/api/transport-extra/:id', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.post('/api/transport-replacements', auth, managerOnly, async (req, res) => {
+app.post('/api/transport-replacements', auth, requireTab('transport'), managerOnly, async (req, res) => {
   const mode = String(req.body.mode || '').trim().toLowerCase();
   const project = String(req.body.project || '').trim();
   const fromProduct = Number(req.body.fromProduct);
@@ -2208,7 +2281,7 @@ cron.schedule('20 2 * * *', async () => {
   }
 }, { timezone: 'Europe/Warsaw' });
 
-app.get('/api/backup-status', auth, managerOnly, async (req, res) => {
+app.get('/api/backup-status', auth, requireTab('database'), managerOnly, async (req, res) => {
   try {
     await ensureBackupSnapshotsTable();
     const [latest, count] = await Promise.all([
@@ -2221,7 +2294,7 @@ app.get('/api/backup-status', auth, managerOnly, async (req, res) => {
   }
 });
 
-app.get('/api/backup', auth, managerOnly, async (req, res) => {
+app.get('/api/backup', auth, requireTab('database'), managerOnly, async (req, res) => {
   try {
     const freshBackup = await collectBackupPayload();
     await saveOnlineBackup('manual', req.user.code || null).catch(err => console.error('Manual online backup save error:', err.message));
@@ -2314,7 +2387,7 @@ app.get('/api/backup', auth, managerOnly, async (req, res) => {
 });
 
 // ─── DATABASE RESTORE ─────────────────────────────────────────────────────────
-app.post('/api/restore', auth, managerOnly, async (req, res) => {
+app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, res) => {
   const { data } = req.body;
   if (!data?.reports || !data?.report_lines) return res.status(400).json({ error: 'Nieprawidłowy format backupu' });
   
@@ -2699,20 +2772,35 @@ app.use((err, req, res, next) => {
   res.status(err.message && err.message.includes('CORS') ? 403 : 500).json({ error: err.message || 'Blad serwera' });
 });
 
-async function resetAdminPasswordToRequested() {
+async function ensureInitialAdminAccount() {
   try {
     await ensureUsersBlockColumn();
-    const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'admin123!@#', 10);
-    const r = await pool.query(
-      "UPDATE users SET password_hash=$1, must_change_password=FALSE, failed_login_count=0, lock_until=NULL WHERE code='ADMIN'",
+    await ensureAppSettingsTable();
+    const existing = await pool.query("SELECT code FROM users WHERE code='ADMIN'");
+    const hardened = await pool.query("SELECT key FROM app_settings WHERE key='admin_initial_hardening_done'");
+    if (existing.rows.length) {
+      if (!hardened.rows.length) {
+        await pool.query("UPDATE users SET must_change_password=TRUE WHERE code='ADMIN'");
+        await pool.query("INSERT INTO app_settings (key, value) VALUES ('admin_initial_hardening_done', $1::jsonb) ON CONFLICT (key) DO NOTHING", [JSON.stringify({ at: new Date().toISOString(), mode: 'existing_admin_force_change' })]);
+        console.log('Existing ADMIN account marked for password change once.');
+      }
+      return;
+    }
+    const initialPassword = process.env.ADMIN_INITIAL_PASSWORD || 'admin123!@#';
+    const hash = await bcrypt.hash(initialPassword, 10);
+    await pool.query(
+      `INSERT INTO users (code, name, password_hash, must_change_password, role)
+       VALUES ('ADMIN','Administrator',$1,TRUE,'admin')`,
       [hash]
     );
-    if (r.rowCount) console.log('Admin password set to configured ADMIN_PASSWORD.');
+    await pool.query("INSERT INTO app_settings (key, value) VALUES ('admin_initial_hardening_done', $1::jsonb) ON CONFLICT (key) DO NOTHING", [JSON.stringify({ at: new Date().toISOString(), mode: 'created_admin' })]);
+    console.log('Initial ADMIN account created. Password must be changed after first login.');
   } catch (err) {
-    console.error('Admin password update error:', err.message);
+    console.error('Initial admin setup error:', err.message);
   }
 }
 
-resetAdminPasswordToRequested().finally(() => {
+ensureInitialAdminAccount().finally(() => {
   app.listen(PORT, () => console.log(`RaportRBR v1.76 running on port ${PORT}`));
 });
+
