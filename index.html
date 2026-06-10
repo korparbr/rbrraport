@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.79</title>
+  <title>FlowRBR 1.8</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -570,7 +570,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.79</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.8</span>` : null}
         </div>
       `;
     }
@@ -691,7 +691,6 @@
         if (requiresHall && !hall) return setMsg({ type: "error", text: "Dla tego etapu wybierz hale." });
         const blocked = effectiveStages.filter(stage => reportControlFor(reportControls, project, stage).disabled);
         if (blocked.length) return setMsg({ type: "error", text: "Raportowanie wylaczone dla: " + blocked.map(stageLabel).join(", ") + "." });
-        if (isQualityStage && !qualityGoat && !qualityMissing.length) return setMsg({ type: "error", text: "Dla kontroli jakosci wybierz Koza albo co najmniej jeden brak." });
         const quality = isQualityStage ? { goat: qualityGoat, missingItems: qualityMissing } : null;
         const next = selectedProducts
           .sort((a, b) => a - b)
