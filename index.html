@@ -471,6 +471,8 @@
       date: r.date || r.report_date || r.reportDate || "",
       workerLogin: r.workerLogin || r.worker_code || r.workerCode || r.code || "",
       workerName: r.workerName || r.worker_name || r.workerName || r.name || "",
+      createdBy: r.createdBy || r.created_by || r.createdByCode || "",
+      createdByName: r.createdByName || r.created_by_name || r.createdByUserName || "",
       lines: getReportLines(r).map(l => ({
         ...l,
         project: String(l.project ?? l.project_id ?? l.projectId ?? l.order_no ?? l.orderNo ?? "").trim(),
@@ -931,6 +933,11 @@
         const u = (users || []).find(x => (x.code || x.login) === code);
         return u ? u.name : code;
       };
+      const reportCreator = r => {
+        const code = r.createdBy || r.created_by || r.workerLogin || r.worker_code || "";
+        const name = r.createdByName || r.created_by_name || workerName(code);
+        return [name, code && name !== code ? code : ""].filter(Boolean).join(" / ");
+      };
       if (!reports.length) return html`<section style=${S.card}><div style=${{ color: COLORS.dim, textAlign: "center", padding: "24px" }}>Brak raportow.</div></section>`;
       return html`
         <section style=${S.card}>
@@ -941,6 +948,7 @@
                 <div>
                   <strong>${r.date}</strong>
                   ${showWorker ? html`<span style=${{ color: COLORS.muted }}> / ${r.workerName || workerName(r.workerLogin)}</span>` : null}
+                  <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>Dodane przez: ${reportCreator(r) || "-"}</div>
                 </div>
                 ${onDelete && r.id ? html`<button style=${S.danger} onClick=${() => onDelete(r.id)}>Usun raport</button>` : null}
               </div>
@@ -966,6 +974,7 @@
       const months = useMemo(() => [...new Set(reports.map(r => (r.date || "").slice(0, 7)).filter(Boolean))].sort().reverse(), [reports]);
       const projects = useMemo(() => [...new Set(reports.flatMap(r => (r.lines || []).map(l => l.project)).filter(Boolean))].sort(), [reports]);
       const stages = useMemo(() => [...new Set(reports.flatMap(r => (r.lines || []).map(l => l.stage)).filter(Boolean))].sort((a, b) => stageLabel(a).localeCompare(stageLabel(b))), [reports]);
+      const reportCreator = report => report.createdByName || report.created_by_name || report.createdBy || report.created_by || report.workerName || report.workerLogin || "-";
 
       const filteredReports = useMemo(() => reports
         .filter(r => !month || (r.date || "").startsWith(month))
@@ -1014,6 +1023,8 @@
             doc.text("Data: " + report.date, 12, y);
             y += 6;
             doc.setFont("helvetica", "normal");
+            doc.text("Dodane przez: " + reportCreator(report), 16, y);
+            y += 5;
             report.lines.forEach(line => {
               if (y > 282) { doc.addPage(); y = 14; }
               const txt = "Projekt " + line.project + " / Laz. " + line.product + " / " + stageLabel(line.stage) + (line.hall ? " / " + line.hall : "") + (line.note ? " / " + line.note : "");
@@ -1440,7 +1451,9 @@
         reportId: report.id,
         date: report.date || "",
         workerLogin: report.workerLogin || report.worker_code || "",
-        workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || "")
+        workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || ""),
+        createdBy: report.createdBy || report.created_by || report.workerLogin || report.worker_code || "",
+        createdByName: report.createdByName || report.created_by_name || workerName(report.createdBy || report.created_by || report.workerLogin || report.worker_code || "")
       }))), [reports, users]);
       const workers = useMemo(() => [...new Set(allLines.map(l => l.workerLogin).filter(Boolean))].sort(), [allLines]);
       const projects = useMemo(() => [...new Set(allLines.map(l => l.project).filter(Boolean))].sort(), [allLines]);
@@ -1464,7 +1477,9 @@
         ...line,
         date: report.date || "",
         workerLogin: report.workerLogin || report.worker_code || "",
-        workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || "")
+        workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || ""),
+        createdBy: report.createdBy || report.created_by || report.workerLogin || report.worker_code || "",
+        createdByName: report.createdByName || report.created_by_name || workerName(report.createdBy || report.created_by || report.workerLogin || report.worker_code || "")
       }))), [filteredReports, users]);
 
       const clearFilters = () => {
@@ -1481,11 +1496,13 @@
       };
       const exportCsv = () => {
         try {
-          const header = ["Data", "Pracownik kod", "Pracownik", "Zlecenie", "Lazienka", "Etap", "Hala", "Uwagi"];
+          const header = ["Data", "Pracownik kod", "Pracownik", "Dodane przez kod", "Dodane przez", "Zlecenie", "Lazienka", "Etap", "Hala", "Uwagi"];
           const rows = filteredLines.map(line => [
             line.date,
             line.workerLogin,
             line.workerName,
+            line.createdBy,
+            line.createdByName,
             line.project,
             line.product,
             stageLabel(line.stage),
@@ -3547,6 +3564,7 @@
       const [rules, setRules] = useState([]);
       const [mapLayouts, setMapLayouts] = useState({});
       const [selectedProject, setSelectedProject] = useState("all");
+      const [detailProject, setDetailProject] = useState("");
       const [editing, setEditing] = useState(null);
       const [msg, setMsg] = useState(null);
 
@@ -3614,6 +3632,31 @@
         });
         return map;
       }, [packedSet, loadedSet]);
+      const assemblyDateByKey = useMemo(() => {
+        const map = {};
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          if (String(line.stage || "") !== "4") return;
+          const key = transportKey(line.project, line.product);
+          const date = report.date || "";
+          if (!map[key] || date < map[key]) map[key] = date;
+        }));
+        return map;
+      }, [reports]);
+      const detailProjectInfo = useMemo(() => (serverProjects || []).find(p => sameProject(p.project, detailProject)) || null, [serverProjects, detailProject]);
+      const detailProducts = useMemo(() => {
+        if (!detailProjectInfo) return [];
+        const count = Number(detailProjectInfo.count || 0);
+        const imported = (detailProjectInfo.bathrooms || []).map(b => productNo(b.product)).filter(Boolean);
+        return [...new Set([...Array.from({ length: count }, (_, i) => i + 1), ...imported])]
+          .sort((a, b) => a - b);
+      }, [detailProjectInfo]);
+      const detailStatus = product => {
+        const key = transportKey(detailProject, product);
+        if (loadedSet.has(key)) return { id: "wyslane", label: "Wyslane", ...warehousePalette("wyslane") };
+        if (packedSet.has(key)) return { id: "magazyn", label: "Magazyn", ...warehousePalette("magazyn") };
+        if (productionKeys.has(key)) return { id: "produkcja", label: "Produkcja", ...warehousePalette("produkcja") };
+        return { id: "rolling", label: "Rolling", ...warehousePalette("rolling") };
+      };
 
       const groups = useMemo(() => {
         const base = {};
@@ -3697,14 +3740,56 @@
           <h3 style=${{ ...S.title, fontSize: "18px" }}>Podsumowanie projektow</h3>
           <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "10px" }}>
             ${projectOptions.filter(p => selectedProject === "all" || sameProject(p, selectedProject)).map(project => html`
-              <div key=${project} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px", background: COLORS.panel2 }}>
+              <button key=${project} type="button" onClick=${() => setDetailProject(detailProject && sameProject(detailProject, project) ? "" : project)} style=${{ textAlign: "left", border: "1px solid " + (detailProject && sameProject(detailProject, project) ? COLORS.accent : COLORS.border), borderRadius: "8px", padding: "10px", background: detailProject && sameProject(detailProject, project) ? "#eef4ff" : COLORS.panel2, cursor: "pointer", color: COLORS.text }}>
                 <strong>${project}</strong>
                 <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "5px" }}>Produkcja: ${productionCounts[project] || 0}</div>
                 <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Magazyn: ${warehouseCounts[project] || 0}</div>
-              </div>
+              </button>
             `)}
           </div>
         </section>
+        ${detailProjectInfo ? html`
+          <section style=${S.card}>
+            <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", flexWrap: "wrap", marginBottom: "12px" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Positionlista projektu ${detailProject}</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>
+                  ${detailProjectInfo.importedFromExcel ? "Plik: " + (detailProjectInfo.importSource || "brak nazwy") : "Projekt dodany standardowo"}
+                </div>
+              </div>
+              <button style=${S.ghost} onClick=${() => setDetailProject("")}>Zamknij</button>
+            </div>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+              ${[
+                ["rolling", "Rolling"],
+                ["produkcja", "Produkcja"],
+                ["magazyn", "Magazyn"],
+                ["wyslane", "Wyslane"]
+              ].map(([id, label]) => {
+                const wh = warehousePalette(id);
+                return html`<span key=${id} style=${{ background: wh.color, color: wh.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>${label}</span>`;
+              })}
+            </div>
+            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(142px, 1fr))", gap: "8px" }}>
+              ${detailProducts.map(product => {
+                const meta = bathroomMetaMap(serverProjects)[transportKey(detailProject, product)] || {};
+                const type = bathroomTypeInfo(serverProjects, detailProject, product);
+                const status = detailStatus(product);
+                const assemblyDate = assemblyDateByKey[transportKey(detailProject, product)] || "";
+                return html`
+                  <div key=${product} title=${type.label} style=${{ background: status.color, color: status.text, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "9px", minHeight: "104px" }}>
+                    <div style=${{ fontWeight: 900, fontSize: "15px" }}>${detailProject}/${product}${type.rbrTypeShort ? "/" + type.rbrTypeShort : ""}</div>
+                    <div style=${{ fontSize: "12px", fontWeight: 900, marginTop: "5px" }}>${status.label}</div>
+                    <div style=${{ fontSize: "12px", marginTop: "4px" }}>Skr.: ${assemblyDate || "-"}</div>
+                    ${meta.requestedDelivery ? html`<div style=${{ fontSize: "12px" }}>Wys.: ${String(meta.requestedDelivery).slice(0, 10)}</div>` : null}
+                    ${meta.ventilationVariant || meta.visibleHighWalls ? html`<div style=${{ fontSize: "11px", marginTop: "3px" }}>${[meta.ventilationVariant, meta.visibleHighWalls].filter(Boolean).join(" / ")}</div>` : null}
+                  </div>
+                `;
+              })}
+            </div>
+            ${detailProducts.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "18px" }}>Brak lazienek w positionliscie.</div>`}
+          </section>
+        ` : null}
         <section style=${S.card}>
           <h3 style=${{ ...S.title, fontSize: "18px" }}>Lista nawozenia wg terminow</h3>
           ${groups.length ? html`
@@ -4598,7 +4683,7 @@
 
     function QualityControlTab({ qualityData, token, reports, transportDates, serverProjects, reloadQuality }) {
       const [qualityTab, setQualityTab] = useState("records");
-      const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all", packFrom: "", packTo: "" });
+      const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all", hasMissing: "all", worker: "all", packFrom: "", packTo: "" });
       const [itemProject, setItemProject] = useState("all");
       const [itemEdits, setItemEdits] = useState({});
       const [msg, setMsg] = useState(null);
@@ -4623,6 +4708,20 @@
         return map;
       }, [reports]);
       const warehouseSet = useMemo(() => new Set(packedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
+      const qualityReportMap = useMemo(() => {
+        const map = {};
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          if (String(line.stage || "") !== "18") return;
+          const key = transportKey(line.project, line.product);
+          const date = report.date || "";
+          const workerCode = report.workerLogin || report.worker_code || "";
+          const workerName = report.workerName || report.worker_name || workerCode || "";
+          if (!map[key] || date >= map[key].date) {
+            map[key] = { date, workerCode, workerName };
+          }
+        }));
+        return map;
+      }, [reports]);
       const loadedSet = useMemo(() => {
         const set = new Set();
         (reports || []).forEach(report => (report.lines || []).forEach(line => {
@@ -4640,6 +4739,10 @@
         ...qualityItems.map(item => String(item.itemName || "").trim()).filter(Boolean),
         ...records.flatMap(record => Array.isArray(record.missingItems) ? record.missingItems : []).map(item => String(item || "").trim()).filter(Boolean)
       ])].sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [qualityItems, records]);
+      const qualityWorkers = useMemo(() => [...new Map(Object.values(qualityReportMap)
+        .filter(item => item.workerCode || item.workerName)
+        .map(item => [String(item.workerCode || item.workerName), item])).values()]
+        .sort((a, b) => String(a.workerName || a.workerCode).localeCompare(String(b.workerName || b.workerCode), "pl", { numeric: true })), [qualityReportMap]);
       const editableItems = useMemo(() => qualityItems
         .filter(item => itemProject === "all" || sameProject(item.project, itemProject))
         .sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || String(a.itemName || "").localeCompare(String(b.itemName || ""), "pl", { numeric: true })), [qualityItems, itemProject]);
@@ -4660,17 +4763,22 @@
         const isOpen = state.goatActive || state.missingActive;
         const key = transportKey(record.project, record.product);
         const packDate = (packingDateMap[key] && packingDateMap[key].date) || "";
+        const missingCount = Array.isArray(record.missingItems) ? record.missingItems.length : 0;
+        const qualityReport = qualityReportMap[key] || {};
         if (filters.project !== "all" && !sameProject(record.project, filters.project)) return false;
         if (filters.status === "open" && !isOpen) return false;
         if (filters.status === "done" && isOpen) return false;
         if (filters.location === "warehouse" && !warehouseSet.has(key)) return false;
         if (filters.location === "loaded" && !loadedSet.has(key)) return false;
+        if (filters.hasMissing === "with" && !missingCount) return false;
+        if (filters.hasMissing === "without" && missingCount) return false;
+        if (filters.worker !== "all" && String(qualityReport.workerCode || qualityReport.workerName || "") !== filters.worker) return false;
         if (filters.missing === "any" && !state.openMissing.length) return false;
         if (filters.missing !== "all" && filters.missing !== "any" && !state.openMissing.includes(filters.missing)) return false;
         if (filters.packFrom && (!packDate || packDate < filters.packFrom)) return false;
         if (filters.packTo && (!packDate || packDate > filters.packTo)) return false;
         return true;
-      }).sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || productNo(a.product) - productNo(b.product)), [records, filters, qualityData, warehouseSet, loadedSet, packingDateMap]);
+      }).sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || productNo(a.product) - productNo(b.product)), [records, filters, qualityData, warehouseSet, loadedSet, packingDateMap, qualityReportMap]);
       const goatVisible = useMemo(() => visible.filter(record => !!record.goat), [visible]);
       const updateRecord = async (record, patch) => {
         const key = transportKey(record.project, record.product);
@@ -4775,6 +4883,21 @@
               </select>
             </div>
             <div>
+              <label style=${S.label}>Czy ma braki</label>
+              <select style=${S.input} value=${filters.hasMissing} onChange=${e => setFilters({ ...filters, hasMissing: e.target.value })}>
+                <option value="all">Wszystkie</option>
+                <option value="with">Z brakami</option>
+                <option value="without">Bez brakow</option>
+              </select>
+            </div>
+            <div>
+              <label style=${S.label}>Wykonal kontrole</label>
+              <select style=${S.input} value=${filters.worker} onChange=${e => setFilters({ ...filters, worker: e.target.value })}>
+                <option value="all">Wszyscy</option>
+                ${qualityWorkers.map(worker => html`<option key=${worker.workerCode || worker.workerName} value=${worker.workerCode || worker.workerName}>${worker.workerName || worker.workerCode}${worker.workerCode && worker.workerName && worker.workerCode !== worker.workerName ? " (" + worker.workerCode + ")" : ""}</option>`)}
+              </select>
+            </div>
+            <div>
               <label style=${S.label}>Data pakowania od</label>
               <input type="date" style=${S.input} value=${filters.packFrom} onChange=${e => setFilters({ ...filters, packFrom: e.target.value })} />
             </div>
@@ -4854,6 +4977,7 @@
                 const state = qualityStateFor(qualityData, record.project, record.product);
                 const key = transportKey(record.project, record.product);
                 const packing = packingDateMap[key] || {};
+                const qReport = qualityReportMap[key] || {};
                 return html`
                   <article key=${"goat-" + key} style=${{ border: "1px solid " + (state.goatActive ? "#fb923c" : "#86efac"), borderRadius: "8px", background: state.goatActive ? "#fff7ed" : "#f0fdf4", padding: "12px" }}>
                     <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "start", flexWrap: "wrap" }}>
@@ -4861,6 +4985,7 @@
                         <strong>${qualityIcon("goat")} Projekt ${record.project} / Laz. ${record.product}</strong>
                         <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>
                           ${state.goatActive ? "Koza otwarta" : "Koza zrobiona"}${record.workerName || record.workerCode ? " / " + (record.workerName || record.workerCode) : ""}
+                          <br />Kontrola: ${qReport.date || "-"}${qReport.workerName || qReport.workerCode ? " / " + (qReport.workerName || qReport.workerCode) : ""}
                           ${packing.date ? html`<br />Pakowanie: ${packing.date}${packing.worker ? " / " + packing.worker : ""}` : html`<br />Pakowanie: -`}
                         </div>
                       </div>
@@ -4881,6 +5006,7 @@
               const resolved = new Set(Array.isArray(record.resolvedItems) ? record.resolvedItems : []);
               const key = transportKey(record.project, record.product);
               const packing = packingDateMap[key] || {};
+              const qReport = qualityReportMap[key] || {};
               return html`
                 <article key=${key} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
                   <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "start", flexWrap: "wrap" }}>
@@ -4889,6 +5015,7 @@
                       <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>
                         ${state.goatActive ? qualityIcon("goat") + " Koza otwarta" : record.goat ? "Koza zrobiona" : "Bez kozy"}
                         ${missing.length ? " / " + qualityIcon("missing") + " braki: " + state.openMissing.length + " otwarte" : ""}
+                        <br />Kontrola: ${qReport.date || "-"}${qReport.workerName || qReport.workerCode ? " / " + (qReport.workerName || qReport.workerCode) : ""}
                         ${packing.date ? html`<br />Pakowanie: ${packing.date}${packing.worker ? " / " + packing.worker : ""}` : html`<br />Pakowanie: -`}
                       </div>
                     </div>

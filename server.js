@@ -250,6 +250,10 @@ async function ensureUserSessionsTable() {
   await pool.query("CREATE INDEX IF NOT EXISTS idx_user_sessions_user_code ON user_sessions(user_code)");
 }
 
+async function ensureReportsCreatedByColumn() {
+  await pool.query("ALTER TABLE reports ADD COLUMN IF NOT EXISTS created_by TEXT");
+}
+
 async function ensureAuditLogsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS audit_logs (
@@ -1423,17 +1427,25 @@ app.delete('/api/quality-items', auth, requireTab('quality'), managerOnly, async
 
 app.get('/api/reports', auth, requireTab('reports'), async (req, res) => {
   try {
+    await ensureReportsCreatedByColumn();
     const isManager = true;
     const q = `
-      SELECT r.id, r.worker_code, u.name as worker_name, r.report_date::text as date, r.created_at,
+      SELECT r.id, r.worker_code, u.name as worker_name, r.created_by, cu.name as created_by_name, r.report_date::text as date, r.created_at,
         json_agg(json_build_object('id',rl.id,'project',rl.project,'product',rl.product,
           'stage',rl.stage,'contractor',rl.contractor_code,'note',rl.note) ORDER BY rl.id) as lines
       FROM reports r JOIN users u ON r.worker_code=u.code JOIN report_lines rl ON rl.report_id=r.id
+      LEFT JOIN users cu ON r.created_by=cu.code
       ${isManager ? '' : 'WHERE r.worker_code=$1'}
-      GROUP BY r.id, u.name ORDER BY r.report_date DESC, r.created_at DESC`;
+      GROUP BY r.id, u.name, cu.name ORDER BY r.report_date DESC, r.created_at DESC`;
     const r = await pool.query(q, isManager ? [] : [req.user.code]);
     // Normalize for frontend
-    const rows = r.rows.map(row => ({ ...row, workerLogin: row.worker_code, workerName: row.worker_name }));
+    const rows = r.rows.map(row => ({
+      ...row,
+      workerLogin: row.worker_code,
+      workerName: row.worker_name,
+      createdBy: row.created_by || row.worker_code,
+      createdByName: row.created_by_name || row.worker_name
+    }));
     res.json(rows);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Błąd serwera' }); }
 });
@@ -1443,6 +1455,7 @@ app.post('/api/reports', auth, requireTab('reports'), async (req, res) => {
   if (!date || !lines?.length) return res.status(400).json({ error: 'Brak danych' });
   const client = await pool.connect();
   try {
+    await ensureReportsCreatedByColumn();
     await client.query('BEGIN');
     const forbidden = await forbiddenStagesForWorker(client, req.user.code, lines);
     if (forbidden.length) {
@@ -1454,7 +1467,7 @@ app.post('/api/reports', auth, requireTab('reports'), async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: `Raportowanie wylaczone dla: ${disabled.map(line => `${line.project}/laz.${line.product}/${line.stage}`).join(', ')}` });
     }
-    const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [req.user.code, date]);
+    const r = await client.query('INSERT INTO reports (worker_code, report_date, created_by) VALUES ($1,$2,$3) RETURNING id', [req.user.code, date, req.user.code]);
     const reportId = r.rows[0].id;
 
     const skipped = [];
@@ -1582,6 +1595,7 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
   }
   const client = await pool.connect();
   try {
+    await ensureReportsCreatedByColumn();
     await client.query('BEGIN');
     const forbidden = await forbiddenStagesForWorker(client, workerCode, lines);
     if (forbidden.length) {
@@ -1593,7 +1607,7 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
       await client.query('ROLLBACK');
       return res.status(403).json({ error: `Raportowanie wylaczone dla: ${disabled.map(line => `${line.project}/laz.${line.product}/${line.stage}`).join(', ')}` });
     }
-    const r = await client.query('INSERT INTO reports (worker_code, report_date) VALUES ($1,$2) RETURNING id', [workerCode, date]);
+    const r = await client.query('INSERT INTO reports (worker_code, report_date, created_by) VALUES ($1,$2,$3) RETURNING id', [workerCode, date, req.user.code]);
     const reportId = r.rows[0].id;
     const skipped = [], saved = [];
     for (const line of lines) {
@@ -2189,6 +2203,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
 // ─── DATABASE BACKUP ──────────────────────────────────────────────────────────
 async function collectBackupPayload() {
   await ensureUsersBlockColumn();
+  await ensureReportsCreatedByColumn();
   await ensureMapLayoutsTable();
   await ensureTransportDatesTable();
   await ensureBathroomCommentsTable();
@@ -2289,6 +2304,7 @@ app.get('/api/backup', auth, requireTab('database'), managerOnly, async (req, re
     await auditLog(req, 'backup_exported', 'database', freshBackup.counts);
     return res.json(freshBackup);
     await ensureUsersBlockColumn();
+    await ensureReportsCreatedByColumn();
     await ensureMapLayoutsTable();
     await ensureTransportDatesTable();
     await ensureBathroomCommentsTable();
@@ -2380,6 +2396,7 @@ app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, 
   
   const client = await pool.connect();
   try {
+    await ensureReportsCreatedByColumn();
     await client.query('BEGIN');
     
     // Restore reports (skip existing)
@@ -2388,8 +2405,8 @@ app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, 
       const exists = await client.query('SELECT id FROM reports WHERE id=$1', [r.id]);
       if (exists.rows.length === 0) {
         await client.query(
-          'INSERT INTO reports (id, worker_code, report_date, created_at) VALUES ($1,$2,$3,$4)',
-          [r.id, r.worker_code, r.report_date, r.created_at]
+          'INSERT INTO reports (id, worker_code, report_date, created_at, created_by) VALUES ($1,$2,$3,$4,$5)',
+          [r.id, r.worker_code, r.report_date, r.created_at, r.created_by || r.createdBy || r.worker_code]
         );
         added++;
       }
@@ -2762,6 +2779,7 @@ app.use((err, req, res, next) => {
 async function ensureInitialAdminAccount() {
   try {
     await ensureUsersBlockColumn();
+    await ensureReportsCreatedByColumn();
     await ensureAppSettingsTable();
     const existing = await pool.query("SELECT code FROM users WHERE code='ADMIN'");
     const hardened = await pool.query("SELECT key FROM app_settings WHERE key='admin_initial_hardening_done'");
