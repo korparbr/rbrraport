@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.8</title>
+  <title>FlowRBR 1.81</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -592,7 +592,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.8</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.81</span>` : null}
         </div>
       `;
     }
@@ -735,7 +735,7 @@
                   ${fixedStages.map(stage => stageLabel(stage)).join(", ")}
                 </div>
               ` : html`
-              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "7px", maxHeight: "190px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(238px, 1fr))", gap: "9px", maxHeight: "238px", overflowY: "auto", padding: "10px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
                 ${allowedStages.map(s => {
                   const selected = stages.includes(s[0]);
                   return html`
@@ -744,8 +744,9 @@
                       borderRadius: "8px",
                       background: selected ? COLORS.accent : COLORS.panel,
                       color: selected ? "#fff" : COLORS.text,
-                      padding: "8px",
-                      fontSize: "12px",
+                      minHeight: "50px",
+                      padding: "10px",
+                      fontSize: "15px",
                       fontWeight: 800,
                       textAlign: "left",
                       cursor: "pointer"
