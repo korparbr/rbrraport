@@ -19,27 +19,6 @@ if (JWT_SECRET.length < 32) {
 }
 const LOGIN_LOCK_MAX = Number(process.env.LOGIN_LOCK_MAX || 5);
 const LOGIN_LOCK_MINUTES = Number(process.env.LOGIN_LOCK_MINUTES || 15);
-const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map(origin => origin.trim())
-  .filter(Boolean);
-const ALLOW_PRIVATE_NETWORK_ORIGINS = String(process.env.ALLOW_PRIVATE_NETWORK_ORIGINS || 'true').toLowerCase() === 'true';
-function isPrivateNetworkOrigin(origin) {
-  if (!ALLOW_PRIVATE_NETWORK_ORIGINS) return false;
-  try {
-    const url = new URL(origin);
-    const host = url.hostname;
-    return (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host.startsWith('192.168.') ||
-      host.startsWith('10.') ||
-      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
-    );
-  } catch (_) {
-    return false;
-  }
-}
 
 // ─── DATABASE CONNECTION WITH RESILIENCE ─────────────────────────────────────
 const pool = new Pool({
@@ -83,16 +62,7 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
   next();
 });
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin) || (origin === 'null' && ALLOWED_ORIGINS.includes('null')) || isPrivateNetworkOrigin(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error('CORS: niedozwolony adres aplikacji'));
-  },
-  credentials: true
-}));
+app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const rateBuckets = new Map();
