@@ -753,7 +753,19 @@ function assertRoleAllowedForCode(code, role, res) {
 }
 
 async function forbiddenStagesForWorker(client, workerCode, lines) {
-  return [];
+  const code = String(workerCode || '').trim().toUpperCase();
+  const stages = [...new Set((lines || []).map(line => normalizeStageId(line.stage)).filter(Boolean))];
+  if (!code || !stages.length) return [];
+  await ensureStagePermissionsTable();
+  const r = await client.query(
+    `SELECT CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END AS stage, array_agg(UPPER(worker_code)) AS workers
+     FROM stage_permissions
+     GROUP BY CASE WHEN LOWER(stage)='transport' THEN 'transport' ELSE stage END`
+  );
+  return stages.filter(stage => {
+    const row = r.rows.find(item => normalizeStageId(item.stage) === stage);
+    return !!(row && Array.isArray(row.workers) && row.workers.length && !row.workers.includes(code));
+  });
 }
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
@@ -1487,7 +1499,7 @@ app.post('/api/reports', auth, requireTab('reports'), async (req, res) => {
     const forbidden = await forbiddenStagesForWorker(client, req.user.code, lines);
     if (forbidden.length) {
       await client.query('ROLLBACK');
-      return res.status(403).json({ error: `Nie masz uprawnien do raportowania etapow: ${forbidden.join(', ')}` });
+      return res.status(403).json({ error: `Brak uprawnien do raportu na etapie: ${forbidden.map(stage => stage).join(', ')}` });
     }
     const disabled = await disabledReportControlsForLines(client, lines);
     if (disabled.length) {
@@ -1627,7 +1639,7 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
     const forbidden = await forbiddenStagesForWorker(client, workerCode, lines);
     if (forbidden.length) {
       await client.query('ROLLBACK');
-      return res.status(403).json({ error: `Pracownik nie ma uprawnien do raportowania etapow: ${forbidden.join(', ')}` });
+      return res.status(403).json({ error: `Brak uprawnien do raportu dla tego pracownika na etapie: ${forbidden.map(stage => stage).join(', ')}` });
     }
     const disabled = await disabledReportControlsForLines(client, lines);
     if (disabled.length) {

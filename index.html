@@ -313,6 +313,18 @@
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const productNo = value => Number(value);
     const transportKey = (project, product) => String(project || "").trim() + "#" + productNo(product);
+    const stagePrefStorageKey = code => "flowrbr_visible_stages_" + String(code || "").toUpperCase();
+    const readLocalStagePreferences = code => {
+      try {
+        const value = JSON.parse(localStorage.getItem(stagePrefStorageKey(code)) || "null");
+        return Array.isArray(value) ? value.map(canonicalStageId).filter(Boolean) : null;
+      } catch (_) {
+        return null;
+      }
+    };
+    const writeLocalStagePreferences = (code, stages) => {
+      try { localStorage.setItem(stagePrefStorageKey(code), JSON.stringify((stages || []).map(canonicalStageId).filter(Boolean))); } catch (_) {}
+    };
     const daysUntil = date => {
       if (!date) return null;
       const base = new Date(today() + "T00:00:00");
@@ -1153,7 +1165,7 @@
       `;
     }
 
-    function StagePreferenceBox({ token, userStagePreferences, reloadUserStagePreferences }) {
+    function StagePreferenceBox({ token, user, userStagePreferences, reloadUserStagePreferences }) {
       const saved = Array.isArray(userStagePreferences?.visibleStages) ? userStagePreferences.visibleStages.map(canonicalStageId) : null;
       const [selected, setSelected] = useState(saved || STAGES.map(s => s[0]));
       const [saving, setSaving] = useState(false);
@@ -1171,6 +1183,7 @@
         setSaving(true); setMsg(null);
         try {
           await api.saveMyStagePreferences(token, selected);
+          writeLocalStagePreferences(user?.code || user?.login, selected);
           if (reloadUserStagePreferences) await reloadUserStagePreferences();
           setMsg({ type: "success", text: "Widoczne etapy zapisane." });
         } catch (e) {
@@ -1185,6 +1198,11 @@
           <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "10px" }}>
             Zaznacz etapy, ktore chcesz widziec na swojej liscie podczas dodawania raportu.
           </div>
+          ${userStagePreferences?.localOnly ? html`
+            <div style=${{ border: "1px solid #fdba74", background: "#fff7ed", color: "#9a3412", borderRadius: "8px", padding: "9px", fontSize: "13px", fontWeight: 800, marginBottom: "10px" }}>
+              Uzywana jest lokalna kopia ustawien. Po podmianie server.js kliknij ponownie Zapisz etapy, zeby wyslac je na serwer.
+            </div>
+          ` : null}
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
             <button style=${S.ghost} disabled=${saving} onClick=${() => setSelected(STAGES.map(s => s[0]))}>Zaznacz wszystkie</button>
             <button style=${S.ghost} disabled=${saving} onClick=${() => setSelected([])}>Wyczysc</button>
@@ -1660,7 +1678,7 @@
             <div>Rola: <strong style=${{ color: COLORS.text }}>${user.role || "manager"}</strong></div>
           </div>
           <${ChangePasswordBox} token=${token} />
-          ${["worker", "worker+", "kontroler"].includes(user.role || "") ? html`<${StagePreferenceBox} token=${token} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />` : null}
+          ${["worker", "worker+", "kontroler"].includes(user.role || "") ? html`<${StagePreferenceBox} token=${token} user=${user} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />` : null}
         </section>
       `;
     }
@@ -1971,7 +1989,7 @@
                 <div>Rola: <strong style=${{ color: COLORS.text }}>${user.role || "worker"}</strong></div>
               </div>
               <${ChangePasswordBox} token=${token} />
-              <${StagePreferenceBox} token=${token} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />
+              <${StagePreferenceBox} token=${token} user=${user} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />
               <button style=${{ ...S.ghost, marginTop: "14px" }} onClick=${logout}>Wyloguj</button>
             </section>
           `}
@@ -6648,16 +6666,12 @@
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.name || "").localeCompare(String(b.name || ""), "pl", { numeric: true }) || String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
-      const hiddenWorkersForStage = stage => {
+      const allowedWorkersForStage = stage => {
         const key = canonicalStageId(stage);
         const source = draftStagePermissions[key] || permissionMap[key] || [];
         return new Set(source.map(code => String(code).toUpperCase()));
       };
       const allWorkerCodes = useMemo(() => workerUsers.map(w => String(w.code || w.login || "").toUpperCase()).filter(Boolean), [workerUsers]);
-      const visibleWorkersForStage = stage => {
-        const hidden = hiddenWorkersForStage(stage);
-        return new Set(allWorkerCodes.filter(code => !hidden.has(code)));
-      };
       const visibleUsers = useMemo(() => (users || []).filter(u => {
         const code = String(u.code || u.login || "");
         const role = u.role || "worker";
@@ -6767,13 +6781,13 @@
       };
       const toggleStageWorker = (stage, code) => {
         const key = canonicalStageId(stage);
-        const hidden = hiddenWorkersForStage(stage);
+        const allowed = allowedWorkersForStage(stage);
         const normalized = String(code || "").toUpperCase();
-        if (hidden.has(normalized)) hidden.delete(normalized); else hidden.add(normalized);
-        setDraftStagePermissions(prev => ({ ...prev, [key]: [...hidden] }));
+        if (allowed.has(normalized)) allowed.delete(normalized); else allowed.add(normalized);
+        setDraftStagePermissions(prev => ({ ...prev, [key]: [...allowed] }));
         setMsg(null);
       };
-      const setDraftHiddenWorkers = (stage, codes) => {
+      const setDraftAllowedWorkers = (stage, codes) => {
         const key = canonicalStageId(stage);
         setDraftStagePermissions(prev => ({ ...prev, [key]: [...new Set((codes || []).map(code => String(code || "").toUpperCase()).filter(Boolean))] }));
         setMsg(null);
@@ -6844,31 +6858,30 @@
             <section style=${S.card}>
               <h2 style=${S.title}>Przypisanie etapow do pracownikow</h2>
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
-                Najszybciej: kliknij Ukryj wszystkim, a potem klikaj pracownikow, ktorym etap ma sie odkryc w panelu dodawania raportu.
+                Tu ustawiasz, kto ma uprawnienie do zapisania raportu na danym etapie. Jezeli etap nie ma zaznaczonych osob, zapisac moze kazdy.
               </div>
               <div style=${{ overflowX: "auto" }}>
                 <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "680px" }}>
                   <thead>
                     <tr>
-                      ${["Etap", "Ukryty dla", "Akcje"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "10px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${h}</th>`)}
+                      ${["Etap", "Kto moze zapisac", "Akcje"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "10px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${h}</th>`)}
                     </tr>
                   </thead>
                   <tbody>
                     ${permissionStages.map(stageRow => {
                       const stage = stageRow[0];
-                      const hidden = hiddenWorkersForStage(stage);
-                      const visible = visibleWorkersForStage(stage);
+                      const allowed = allowedWorkersForStage(stage);
                       const expanded = expandedPermissionStage === stage;
                       const saving = savingPermissionStage === stage;
                       const allCodes = allWorkerCodes;
-                      const visibleCount = visible.size;
+                      const allowedCount = allowed.size;
                       const dirty = Object.prototype.hasOwnProperty.call(draftStagePermissions, canonicalStageId(stage));
                       return html`
                         <tr key=${stage}>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${stageLabel(stage)}</td>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
-                            <span style=${{ ...S.badge, background: visibleCount ? "#ecfdf5" : "#fff7ed", color: visibleCount ? "#166534" : "#9a3412", borderColor: visibleCount ? "#86efac" : "#fdba74" }}>
-                              ${visibleCount === allCodes.length ? "Widoczny dla wszystkich" : visibleCount ? "Widoczny dla: " + visibleCount : "Ukryty dla wszystkich"}
+                            <span style=${{ ...S.badge, background: allowedCount ? "#ecfdf5" : "#f8fafc", color: allowedCount ? "#166534" : COLORS.muted, borderColor: allowedCount ? "#86efac" : COLORS.border }}>
+                              ${allowedCount ? "Uprawnieni: " + allowedCount : "Bez ograniczen"}
                             </span>
                             ${dirty ? html`<span style=${{ marginLeft: "8px", color: COLORS.accent, fontSize: "12px", fontWeight: 900 }}>niezapisane</span>` : null}
                           </td>
@@ -6882,35 +6895,35 @@
                           <tr key=${stage + "-workers"}>
                             <td colSpan="3" style=${{ padding: "12px", borderBottom: "1px solid " + COLORS.border, background: COLORS.soft }}>
                               <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
-                                <button style=${S.ghost} disabled=${saving} onClick=${() => setDraftHiddenWorkers(stage, [])}>Odkryj wszystkim</button>
-                                <button style=${S.ghost} disabled=${saving} onClick=${() => setDraftHiddenWorkers(stage, allCodes)}>Ukryj wszystkim</button>
-                                <button style=${{ ...S.btn, opacity: !dirty || saving ? 0.6 : 1 }} disabled=${!dirty || saving} onClick=${() => saveStageWorkers(stage, [...hidden])}>${saving ? "Zapisywanie..." : "Zapisz"}</button>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => setDraftAllowedWorkers(stage, [])}>Bez ograniczen</button>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => setDraftAllowedWorkers(stage, allCodes)}>Zaznacz wszystkich</button>
+                                <button style=${{ ...S.btn, opacity: !dirty || saving ? 0.6 : 1 }} disabled=${!dirty || saving} onClick=${() => saveStageWorkers(stage, [...allowed])}>${saving ? "Zapisywanie..." : "Zapisz"}</button>
                                 <button style=${S.ghost} disabled=${!dirty || saving} onClick=${() => setDraftStagePermissions(prev => { const next = { ...prev }; delete next[canonicalStageId(stage)]; return next; })}>Anuluj zmiany</button>
                               </div>
                               <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px" }}>
                                 ${workerUsers.map(w => {
                                   const code = String(w.code || w.login || "").toUpperCase();
-                                  const isVisible = visible.has(code);
+                                  const canSave = allowed.has(code);
                                   return html`
                                     <button key=${stage + "-" + code} style=${{
-                                      border: "1px solid " + (isVisible ? "#86efac" : "#fdba74"),
+                                      border: "1px solid " + (canSave ? "#86efac" : COLORS.border),
                                       borderRadius: "8px",
-                                      background: isVisible ? "#ecfdf5" : "#fff7ed",
-                                      color: isVisible ? "#166534" : "#9a3412",
+                                      background: canSave ? "#ecfdf5" : "#fff",
+                                      color: canSave ? "#166534" : COLORS.text,
                                       padding: "9px",
                                       textAlign: "left",
                                       fontWeight: 800,
                                       opacity: saving ? 0.6 : 1
                                     }} disabled=${saving} onClick=${() => toggleStageWorker(stage, code)}>
                                       ${w.name || code}<br />
-                                      <span style=${{ fontSize: "12px", fontWeight: 900 }}>${isVisible ? "Widoczny - kliknij, zeby ukryc" : "Ukryty - kliknij, zeby odkryc"}</span><br />
+                                      <span style=${{ fontSize: "12px", fontWeight: 900 }}>${canSave ? "Moze zapisac" : "Bez zaznaczenia"}</span><br />
                                       <span style=${{ fontSize: "12px", fontWeight: 700, opacity: 0.85 }}>${code}</span>
                                     </button>
                                   `;
                                 })}
                               </div>
                               <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "10px" }}>
-                                Zieloni pracownicy widza etap po zalogowaniu. Pomaranczowi nie widza etapu w dodawaniu raportu.
+                                Jezeli zaznaczysz kogokolwiek, tylko zieloni pracownicy beda mogli zapisac raport na tym etapie. Pozostali dostana komunikat: brak uprawnien do raportu.
                               </div>
                             </td>
                           </tr>
@@ -7069,12 +7082,20 @@
           setStagePermissions([]);
         }
       };
-      const reloadUserStagePreferences = async (t = token) => {
+      const reloadUserStagePreferences = async (t = token, codeOverride = null) => {
+        const code = codeOverride || user?.code || user?.login || "";
         try {
           const data = await api.getMyStagePreferences(t);
-          setUserStagePreferences(data || { visibleStages: null });
+          if (Array.isArray(data?.visibleStages)) {
+            writeLocalStagePreferences(code, data.visibleStages);
+            setUserStagePreferences(data);
+          } else {
+            const local = readLocalStagePreferences(code);
+            setUserStagePreferences(local ? { visibleStages: local, localOnly: true } : { visibleStages: null });
+          }
         } catch (_) {
-          setUserStagePreferences({ visibleStages: null });
+          const local = readLocalStagePreferences(code);
+          setUserStagePreferences(local ? { visibleStages: local, localOnly: true } : { visibleStages: null });
         }
       };
       const reloadRolePermissions = async (t = token) => {
@@ -7110,7 +7131,7 @@
                 await reloadBathroomChecks(token);
                 await reloadQuality(token);
                 await reloadStagePermissions(token);
-                await reloadUserStagePreferences(token);
+                await reloadUserStagePreferences(token, restored.code || restored.login);
                 await reloadRolePermissions(token);
                 await reloadReportControls(token);
                 await reloadMaterialUsages(token);
@@ -7137,7 +7158,7 @@
         await reloadBathroomChecks(newToken);
         await reloadQuality(newToken);
         await reloadStagePermissions(newToken);
-        await reloadUserStagePreferences(newToken);
+        await reloadUserStagePreferences(newToken, userData.code || userData.login);
         await reloadRolePermissions(newToken);
         await reloadReportControls(newToken);
         await reloadMaterialUsages(newToken);
