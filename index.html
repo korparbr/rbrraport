@@ -6578,7 +6578,12 @@
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.name || "").localeCompare(String(b.name || ""), "pl", { numeric: true }) || String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
-      const workersForStage = stage => new Set((permissionMap[String(stage || "")] || []).map(code => String(code).toUpperCase()));
+      const hiddenWorkersForStage = stage => new Set((permissionMap[String(stage || "")] || []).map(code => String(code).toUpperCase()));
+      const allWorkerCodes = useMemo(() => workerUsers.map(w => String(w.code || w.login || "").toUpperCase()).filter(Boolean), [workerUsers]);
+      const visibleWorkersForStage = stage => {
+        const hidden = hiddenWorkersForStage(stage);
+        return new Set(allWorkerCodes.filter(code => !hidden.has(code)));
+      };
       const visibleUsers = useMemo(() => (users || []).filter(u => {
         const code = String(u.code || u.login || "");
         const role = u.role || "worker";
@@ -6681,10 +6686,10 @@
         }
       };
       const toggleStageWorker = (stage, code) => {
-        const next = workersForStage(stage);
+        const hidden = hiddenWorkersForStage(stage);
         const normalized = String(code || "").toUpperCase();
-        if (next.has(normalized)) next.delete(normalized); else next.add(normalized);
-        saveStageWorkers(stage, [...next]);
+        if (hidden.has(normalized)) hidden.delete(normalized); else hidden.add(normalized);
+        saveStageWorkers(stage, [...hidden]);
       };
       const mainStyle = { ...S.main, width: "100%", maxWidth: "none", padding: "16px 18px" };
 
@@ -6764,17 +6769,18 @@
                   <tbody>
                     ${permissionStages.map(stageRow => {
                       const stage = stageRow[0];
-                      const selected = workersForStage(stage);
+                      const hidden = hiddenWorkersForStage(stage);
+                      const visible = visibleWorkersForStage(stage);
                       const expanded = expandedPermissionStage === stage;
                       const saving = savingPermissionStage === stage;
-                      const allCodes = workerUsers.map(w => String(w.code || w.login || "").toUpperCase()).filter(Boolean);
-                      const visibleCount = Math.max(0, allCodes.length - selected.size);
+                      const allCodes = allWorkerCodes;
+                      const visibleCount = visible.size;
                       return html`
                         <tr key=${stage}>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${stageLabel(stage)}</td>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
-                            <span style=${{ ...S.badge, background: selected.size ? "#fff7ed" : "#ecfdf5", color: selected.size ? "#9a3412" : "#166534", borderColor: selected.size ? "#fdba74" : "#86efac" }}>
-                              ${selected.size >= allCodes.length && allCodes.length ? "Ukryty dla wszystkich" : selected.size ? "Widoczny: " + visibleCount + " / Ukryty: " + selected.size : "Widoczny dla wszystkich"}
+                            <span style=${{ ...S.badge, background: visibleCount ? "#ecfdf5" : "#fff7ed", color: visibleCount ? "#166534" : "#9a3412", borderColor: visibleCount ? "#86efac" : "#fdba74" }}>
+                              ${visibleCount === allCodes.length ? "Widoczny dla wszystkich" : visibleCount ? "Widoczny dla: " + visibleCount : "Ukryty dla wszystkich"}
                             </span>
                           </td>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
@@ -6793,27 +6799,27 @@
                               <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px" }}>
                                 ${workerUsers.map(w => {
                                   const code = String(w.code || w.login || "").toUpperCase();
-                                  const hidden = selected.has(code);
+                                  const isVisible = visible.has(code);
                                   return html`
                                     <button key=${stage + "-" + code} style=${{
-                                      border: "1px solid " + (hidden ? "#fdba74" : "#86efac"),
+                                      border: "1px solid " + (isVisible ? "#86efac" : "#fdba74"),
                                       borderRadius: "8px",
-                                      background: hidden ? "#fff7ed" : "#ecfdf5",
-                                      color: hidden ? "#9a3412" : "#166534",
+                                      background: isVisible ? "#ecfdf5" : "#fff7ed",
+                                      color: isVisible ? "#166534" : "#9a3412",
                                       padding: "9px",
                                       textAlign: "left",
                                       fontWeight: 800,
                                       opacity: saving ? 0.6 : 1
                                     }} disabled=${saving} onClick=${() => toggleStageWorker(stage, code)}>
                                       ${w.name || code}<br />
-                                      <span style=${{ fontSize: "12px", fontWeight: 900 }}>${hidden ? "Ukryty - kliknij, zeby odkryc" : "Widoczny - kliknij, zeby ukryc"}</span><br />
+                                      <span style=${{ fontSize: "12px", fontWeight: 900 }}>${isVisible ? "Widoczny - kliknij, zeby ukryc" : "Ukryty - kliknij, zeby odkryc"}</span><br />
                                       <span style=${{ fontSize: "12px", fontWeight: 700, opacity: 0.85 }}>${code}</span>
                                     </button>
                                   `;
                                 })}
                               </div>
                               <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "10px" }}>
-                                ${selected.size ? "Klikniecie ukrytego pracownika odkryje mu etap. Klikniecie widocznego pracownika ukryje mu etap." : "Etap widza wszyscy pracownicy."}
+                                Zieloni pracownicy widza etap po zalogowaniu. Pomaranczowi nie widza etapu w dodawaniu raportu.
                               </div>
                             </td>
                           </tr>
