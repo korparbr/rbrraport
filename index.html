@@ -650,7 +650,9 @@
       const [qualityNewMissing, setQualityNewMissing] = useState("");
 
       const effectiveStages = fixedStages && fixedStages.length ? fixedStages : stages;
-      const visibleStageSet = useMemo(() => Array.isArray(visibleStageIds) ? new Set(visibleStageIds.map(canonicalStageId)) : null, [JSON.stringify(visibleStageIds || null)]);
+      const localVisibleStageIds = useMemo(() => workerCode ? readLocalStagePreferences(workerCode) : null, [workerCode]);
+      const effectiveVisibleStageIds = Array.isArray(visibleStageIds) ? visibleStageIds : localVisibleStageIds;
+      const visibleStageSet = useMemo(() => Array.isArray(effectiveVisibleStageIds) ? new Set(effectiveVisibleStageIds.map(canonicalStageId)) : null, [JSON.stringify(effectiveVisibleStageIds || null)]);
       useEffect(() => {
         if (fixedStages && fixedStages.length) {
           setStages(fixedStages);
@@ -755,29 +757,29 @@
                 })}
               </div>
               ${allowedStages.length < STAGES.length ? html`
-                <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "6px" }}>Ukryte sa tylko etapy odznaczone dla tego pracownika w panelu uzytkownikow.</div>
+                <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "6px" }}>Ukryte sa etapy odznaczone przez pracownika w zakladce Konto.</div>
               ` : null}
               `}
             </div>
             <div>
               <label style=${S.label}>Projekt</label>
-              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: "7px", maxHeight: "190px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: "9px", maxHeight: "238px", overflowY: "auto", padding: "10px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
                 ${reportProjects.map(item => {
                   const selected = sameProject(project, item.project);
                   return html`
                     <button key=${item.project} type="button" onClick=${() => { setProject(item.project); resetSelection(); }} style=${{
-                      minHeight: "50px",
+                      minHeight: "63px",
                       border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
                       borderRadius: "8px",
                       background: selected ? COLORS.accent : COLORS.panel,
                       color: selected ? "#fff" : COLORS.text,
-                      padding: "8px",
-                      fontSize: "13px",
+                      padding: "10px",
+                      fontSize: "16px",
                       fontWeight: 900,
                       cursor: "pointer"
                     }}>
                       ${item.project}
-                      <div style=${{ fontSize: "11px", fontWeight: 800, opacity: 0.85 }}>${item.count} szt.</div>
+                      <div style=${{ fontSize: "14px", fontWeight: 800, opacity: 0.85 }}>${item.count} szt.</div>
                     </button>
                   `;
                 })}
@@ -802,7 +804,7 @@
                   <button style=${S.ghost} onClick=${() => setSelectedProducts([])}>Wyczysc</button>
                 </div>
               </div>
-              <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: "7px", maxHeight: "320px", overflowY: "auto", padding: "8px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
+              <div className="product-grid" style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(86px, 1fr))", gap: "9px", maxHeight: "400px", overflowY: "auto", padding: "10px", background: COLORS.bg, border: "1px solid " + COLORS.border, borderRadius: "10px" }}>
                 ${products.map(product => {
                   const selected = selectedProducts.includes(product);
                   const usedCurrent = isUsedProduct(product);
@@ -816,12 +818,13 @@
                       onClick=${() => toggleProduct(product)}
                       disabled=${used}
                       style=${{
-                        minHeight: "38px",
+                        minHeight: "48px",
                         border: "1px solid " + (selected ? COLORS.accent : COLORS.border),
                         borderRadius: "8px",
                         background: usedCurrent ? COLORS.panel2 : selected ? COLORS.accent : COLORS.panel,
                         color: usedCurrent ? COLORS.dim : selected ? "#fff" : COLORS.text,
-                        fontWeight: selected ? 800 : 600,
+                        fontSize: "16px",
+                        fontWeight: selected ? 900 : 800,
                         cursor: used ? "not-allowed" : "pointer",
                         opacity: usedCurrent ? 0.45 : 1
                       }}
@@ -1188,12 +1191,12 @@
     }
 
     function StagePreferenceBox({ token, user, userStagePreferences, reloadUserStagePreferences }) {
-      const saved = normalizeVisibleStages(userStagePreferences?.visibleStages);
+      const saved = normalizeVisibleStages(userStagePreferences?.visibleStages) || readLocalStagePreferences(user?.code || user?.login);
       const [selected, setSelected] = useState(saved || STAGES.map(s => s[0]));
       const [saving, setSaving] = useState(false);
       const [msg, setMsg] = useState(null);
       useEffect(() => {
-        const next = normalizeVisibleStages(userStagePreferences?.visibleStages);
+        const next = normalizeVisibleStages(userStagePreferences?.visibleStages) || readLocalStagePreferences(user?.code || user?.login);
         setSelected(next || STAGES.map(s => s[0]));
       }, [JSON.stringify(userStagePreferences || {})]);
       const selectedSet = new Set(selected.map(canonicalStageId));
@@ -1857,6 +1860,13 @@
       const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
       const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
       const workerCode = String(user.code || user.login || "").toUpperCase();
+      const effectiveVisibleStages = useMemo(() => {
+        const fromState = normalizeVisibleStages(userStagePreferences && userStagePreferences.visibleStages);
+        if (fromState) return fromState;
+        const fromUser = normalizeVisibleStages(user && user.visibleStages);
+        if (fromUser) return fromUser;
+        return readLocalStagePreferences(workerCode);
+      }, [JSON.stringify(userStagePreferences || {}), JSON.stringify(user?.visibleStages || null), workerCode]);
       const canEditWorkerMaps = user.role === "worker+" || workerCode === "POM80" || workerCode === "POM82";
       const workerVisibleTabs = useMemo(() => {
         const roleTabs = new Set(tabsForRole(user?.role, rolePermissions));
@@ -1994,7 +2004,7 @@
               <label style=${S.label}>Data raportu</label>
               <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
             </section>
-            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} visibleStageIds=${userStagePreferences && userStagePreferences.visibleStages} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
+            <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} visibleStageIds=${effectiveVisibleStages} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
             <section style=${S.card}>
               <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
               <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} onEdit=${(i, next) => setLines(lines.map((line, idx) => idx === i ? next : line))} serverProjects=${serverProjects} />
@@ -2063,6 +2073,14 @@
       const [materialForm, setMaterialForm] = useState({});
       const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
       const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
+      const workerCode = String(user.code || user.login || "").toUpperCase();
+      const effectiveVisibleStages = useMemo(() => {
+        const fromState = normalizeVisibleStages(userStagePreferences && userStagePreferences.visibleStages);
+        if (fromState) return fromState;
+        const fromUser = normalizeVisibleStages(user && user.visibleStages);
+        if (fromUser) return fromUser;
+        return readLocalStagePreferences(workerCode);
+      }, [JSON.stringify(userStagePreferences || {}), JSON.stringify(user?.visibleStages || null), workerCode]);
       const calcProjectMap = useMemo(() => {
         const map = {};
         (serverProjects || []).forEach(p => { map[String(p.project)] = !!p.calculationEnabled; });
@@ -2167,7 +2185,7 @@
           <label style=${S.label}>Data raportu</label>
           <div style=${{ ...S.input, maxWidth: "220px", background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
         </section>
-        <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} visibleStageIds=${userStagePreferences && userStagePreferences.visibleStages} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
+        <${LineEditor} reports=${reports} lines=${lines} onChange=${setLines} serverProjects=${serverProjects} visibleStageIds=${effectiveVisibleStages} reportControls=${reportControls} workerCode=${user.code || user.login} qualityData=${qualityData} />
         <section style=${S.card}>
           <h2 style=${S.title}>Raport do zapisania (${lines.length})</h2>
           <${LinesList} lines=${lines} onRemove=${i => setLines(lines.filter((_, idx) => idx !== i))} onEdit=${(i, next) => setLines(lines.map((line, idx) => idx === i ? next : line))} serverProjects=${serverProjects} />
@@ -2608,12 +2626,12 @@
       };
       const setHelmetCheck = async status => {
         if (!selectedCell || !canAddComments) return;
-        if (status === "rework" && !helmetCheckComment.trim()) return setMsg({ type: "error", text: "Przy poprawce kasku wpisz komentarz." });
         setMsg(null);
         if (VIEWER_LOCAL_MODE) {
           saveViewerLocalCheck(selectedCell.project, selectedCell.product, "entry", status === "checked", status, helmetCheckComment);
           return setMsg({ type: "success", text: "Kask zapisany lokalnie w trybie viewer." });
         }
+        if (status === "rework" && !helmetCheckComment.trim()) return setMsg({ type: "error", text: "Przy poprawce kasku wpisz komentarz." });
         try {
           await api.setBathroomCheck(token, selectedCell.project, selectedCell.product, "entry", status === "checked", status, helmetCheckComment);
           await reloadBathroomChecks();
@@ -7108,7 +7126,7 @@
         try {
           const payload = JSON.parse(atob(t.split(".")[1]));
           if (payload.exp && payload.exp * 1000 < Date.now()) return null;
-          return { code: payload.code, login: payload.code, name: payload.name, role: payload.role, mustChangePassword: !!payload.mustChangePassword };
+          return { code: payload.code, login: payload.code, name: payload.name, role: payload.role, mustChangePassword: !!payload.mustChangePassword, visibleStages: normalizeVisibleStages(payload.visibleStages) };
         } catch (_) {
           return null;
         }
@@ -7180,6 +7198,7 @@
       };
       const reloadUserStagePreferences = async (t = token, codeOverride = null) => {
         const code = codeOverride || user?.code || user?.login || "";
+        const fallbackFromUser = normalizeVisibleStages((code && String(code).toUpperCase() === String(user?.code || user?.login || "").toUpperCase()) ? user?.visibleStages : null);
         try {
           const data = await api.getMyStagePreferences(t);
           if (Array.isArray(data?.visibleStages)) {
@@ -7187,11 +7206,11 @@
             setUserStagePreferences(data);
           } else {
             const local = readLocalStagePreferences(code);
-            setUserStagePreferences(local ? { visibleStages: local, localOnly: true } : { visibleStages: null });
+            setUserStagePreferences(local ? { visibleStages: local, localOnly: true } : fallbackFromUser ? { visibleStages: fallbackFromUser, tokenOnly: true } : { visibleStages: null });
           }
         } catch (_) {
           const local = readLocalStagePreferences(code);
-          setUserStagePreferences(local ? { visibleStages: local, localOnly: true } : { visibleStages: null });
+          setUserStagePreferences(local ? { visibleStages: local, localOnly: true } : fallbackFromUser ? { visibleStages: fallbackFromUser, tokenOnly: true } : { visibleStages: null });
         }
       };
       const reloadRolePermissions = async (t = token) => {
@@ -7217,6 +7236,7 @@
             const restored = decodeToken(token);
             if (restored) {
               setUser(restored);
+              if (Array.isArray(restored.visibleStages)) setUserStagePreferences({ visibleStages: restored.visibleStages, tokenOnly: true });
               VIEWER_LOCAL_MODE = restored.role === "viewer";
               try {
                 await reloadReports(token);
@@ -7245,6 +7265,10 @@
         localStorage.setItem("rrbr_token", newToken);
         setToken(newToken);
         setUser(userData);
+        if (Array.isArray(userData.visibleStages)) {
+          setUserStagePreferences({ visibleStages: normalizeVisibleStages(userData.visibleStages), tokenOnly: true });
+          writeLocalStagePreferences(userData.code || userData.login, userData.visibleStages);
+        }
         VIEWER_LOCAL_MODE = userData.role === "viewer";
         await reloadReports(newToken);
         await reloadProjects(newToken);
