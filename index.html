@@ -325,6 +325,7 @@
     const writeLocalStagePreferences = (code, stages) => {
       try { localStorage.setItem(stagePrefStorageKey(code), JSON.stringify((stages || []).map(canonicalStageId).filter(Boolean))); } catch (_) {}
     };
+    const normalizeVisibleStages = stages => Array.isArray(stages) ? [...new Set(stages.map(canonicalStageId).filter(Boolean))] : null;
     const daysUntil = date => {
       if (!date) return null;
       const base = new Date(today() + "T00:00:00");
@@ -1165,12 +1166,13 @@
     }
 
     function StagePreferenceBox({ token, user, userStagePreferences, reloadUserStagePreferences }) {
-      const saved = Array.isArray(userStagePreferences?.visibleStages) ? userStagePreferences.visibleStages.map(canonicalStageId) : null;
+      const saved = normalizeVisibleStages(userStagePreferences?.visibleStages);
       const [selected, setSelected] = useState(saved || STAGES.map(s => s[0]));
       const [saving, setSaving] = useState(false);
       const [msg, setMsg] = useState(null);
       useEffect(() => {
-        setSelected(Array.isArray(userStagePreferences?.visibleStages) ? userStagePreferences.visibleStages.map(canonicalStageId) : STAGES.map(s => s[0]));
+        const next = normalizeVisibleStages(userStagePreferences?.visibleStages);
+        setSelected(next || STAGES.map(s => s[0]));
       }, [JSON.stringify(userStagePreferences || {})]);
       const selectedSet = new Set(selected.map(canonicalStageId));
       const toggle = stage => {
@@ -1178,15 +1180,19 @@
         setSelected(prev => prev.map(canonicalStageId).includes(id) ? prev.filter(s => canonicalStageId(s) !== id) : [...prev, id]);
       };
       const save = async () => {
-        if (!selected.length) return setMsg({ type: "error", text: "Zostaw przynajmniej jeden widoczny etap." });
+        const nextSelected = normalizeVisibleStages(selected) || [];
+        writeLocalStagePreferences(user?.code || user?.login, nextSelected);
         setSaving(true); setMsg(null);
         try {
-          await api.saveMyStagePreferences(token, selected);
-          writeLocalStagePreferences(user?.code || user?.login, selected);
+          const savedData = await api.saveMyStagePreferences(token, nextSelected);
+          const visibleStages = normalizeVisibleStages(savedData?.visibleStages) || nextSelected;
+          writeLocalStagePreferences(user?.code || user?.login, visibleStages);
+          setSelected(visibleStages);
           if (reloadUserStagePreferences) await reloadUserStagePreferences();
           setMsg({ type: "success", text: "Widoczne etapy zapisane." });
         } catch (e) {
-          setMsg({ type: "error", text: e.message });
+          setSelected(nextSelected);
+          setMsg({ type: "warning", text: "Zapisano lokalnie na tym urzadzeniu. Serwer zwrocil blad: " + e.message });
         } finally {
           setSaving(false);
         }
