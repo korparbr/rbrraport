@@ -4598,13 +4598,30 @@
 
     function QualityControlTab({ qualityData, token, reports, transportDates, serverProjects, reloadQuality }) {
       const [qualityTab, setQualityTab] = useState("records");
-      const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all" });
+      const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all", packFrom: "", packTo: "" });
       const [itemProject, setItemProject] = useState("all");
       const [itemEdits, setItemEdits] = useState({});
       const [msg, setMsg] = useState(null);
       const [savingKey, setSavingKey] = useState("");
       const records = (qualityData && qualityData.records) || [];
       const qualityItems = (qualityData && qualityData.items) || [];
+      const packingDateMap = useMemo(() => {
+        const map = {};
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          const stage = String(line.stage || "");
+          if (stage !== "19" && stage !== "20") return;
+          const key = transportKey(line.project, line.product);
+          const date = report.date || "";
+          if (!map[key] || date >= map[key].date) {
+            map[key] = {
+              date,
+              stage,
+              worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || ""
+            };
+          }
+        }));
+        return map;
+      }, [reports]);
       const warehouseSet = useMemo(() => new Set(packedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
       const loadedSet = useMemo(() => {
         const set = new Set();
@@ -4642,6 +4659,7 @@
         const state = qualityStateFor(qualityData, record.project, record.product);
         const isOpen = state.goatActive || state.missingActive;
         const key = transportKey(record.project, record.product);
+        const packDate = (packingDateMap[key] && packingDateMap[key].date) || "";
         if (filters.project !== "all" && !sameProject(record.project, filters.project)) return false;
         if (filters.status === "open" && !isOpen) return false;
         if (filters.status === "done" && isOpen) return false;
@@ -4649,8 +4667,10 @@
         if (filters.location === "loaded" && !loadedSet.has(key)) return false;
         if (filters.missing === "any" && !state.openMissing.length) return false;
         if (filters.missing !== "all" && filters.missing !== "any" && !state.openMissing.includes(filters.missing)) return false;
+        if (filters.packFrom && (!packDate || packDate < filters.packFrom)) return false;
+        if (filters.packTo && (!packDate || packDate > filters.packTo)) return false;
         return true;
-      }).sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || productNo(a.product) - productNo(b.product)), [records, filters, qualityData, warehouseSet, loadedSet]);
+      }).sort((a, b) => String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) || productNo(a.product) - productNo(b.product)), [records, filters, qualityData, warehouseSet, loadedSet, packingDateMap]);
       const goatVisible = useMemo(() => visible.filter(record => !!record.goat), [visible]);
       const updateRecord = async (record, patch) => {
         const key = transportKey(record.project, record.product);
@@ -4754,6 +4774,14 @@
                 ${missingOptions.map(item => html`<option key=${item} value=${item}>${item}</option>`)}
               </select>
             </div>
+            <div>
+              <label style=${S.label}>Data pakowania od</label>
+              <input type="date" style=${S.input} value=${filters.packFrom} onChange=${e => setFilters({ ...filters, packFrom: e.target.value })} />
+            </div>
+            <div>
+              <label style=${S.label}>Data pakowania do</label>
+              <input type="date" style=${S.input} value=${filters.packTo} onChange=${e => setFilters({ ...filters, packTo: e.target.value })} />
+            </div>
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
@@ -4825,6 +4853,7 @@
               ${goatVisible.map(record => {
                 const state = qualityStateFor(qualityData, record.project, record.product);
                 const key = transportKey(record.project, record.product);
+                const packing = packingDateMap[key] || {};
                 return html`
                   <article key=${"goat-" + key} style=${{ border: "1px solid " + (state.goatActive ? "#fb923c" : "#86efac"), borderRadius: "8px", background: state.goatActive ? "#fff7ed" : "#f0fdf4", padding: "12px" }}>
                     <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "start", flexWrap: "wrap" }}>
@@ -4832,6 +4861,7 @@
                         <strong>${qualityIcon("goat")} Projekt ${record.project} / Laz. ${record.product}</strong>
                         <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>
                           ${state.goatActive ? "Koza otwarta" : "Koza zrobiona"}${record.workerName || record.workerCode ? " / " + (record.workerName || record.workerCode) : ""}
+                          ${packing.date ? html`<br />Pakowanie: ${packing.date}${packing.worker ? " / " + packing.worker : ""}` : html`<br />Pakowanie: -`}
                         </div>
                       </div>
                       <button style=${record.goatDone ? S.ghost : S.btn} disabled=${savingKey === key} onClick=${() => updateRecord(record, { goatDone: !record.goatDone })}>
@@ -4850,6 +4880,7 @@
               const missing = Array.isArray(record.missingItems) ? record.missingItems : [];
               const resolved = new Set(Array.isArray(record.resolvedItems) ? record.resolvedItems : []);
               const key = transportKey(record.project, record.product);
+              const packing = packingDateMap[key] || {};
               return html`
                 <article key=${key} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
                   <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "start", flexWrap: "wrap" }}>
@@ -4858,6 +4889,7 @@
                       <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>
                         ${state.goatActive ? qualityIcon("goat") + " Koza otwarta" : record.goat ? "Koza zrobiona" : "Bez kozy"}
                         ${missing.length ? " / " + qualityIcon("missing") + " braki: " + state.openMissing.length + " otwarte" : ""}
+                        ${packing.date ? html`<br />Pakowanie: ${packing.date}${packing.worker ? " / " + packing.worker : ""}` : html`<br />Pakowanie: -`}
                       </div>
                     </div>
                     ${record.goat ? html`
