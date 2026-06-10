@@ -6556,6 +6556,7 @@
       const [userFilter, setUserFilter] = useState({ text: "", role: "all", status: "all" });
       const [expandedPermissionStage, setExpandedPermissionStage] = useState("");
       const [savingPermissionStage, setSavingPermissionStage] = useState("");
+      const [draftStagePermissions, setDraftStagePermissions] = useState({});
       const isController = user && user.role === "kontroler";
       const isViewer = user && user.role === "viewer";
       const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "kontroler" || user.role === "viewer" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
@@ -6578,7 +6579,11 @@
       const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.name || "").localeCompare(String(b.name || ""), "pl", { numeric: true }) || String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
-      const hiddenWorkersForStage = stage => new Set((permissionMap[String(stage || "")] || []).map(code => String(code).toUpperCase()));
+      const hiddenWorkersForStage = stage => {
+        const key = canonicalStageId(stage);
+        const source = draftStagePermissions[key] || permissionMap[key] || [];
+        return new Set(source.map(code => String(code).toUpperCase()));
+      };
       const allWorkerCodes = useMemo(() => workerUsers.map(w => String(w.code || w.login || "").toUpperCase()).filter(Boolean), [workerUsers]);
       const visibleWorkersForStage = stage => {
         const hidden = hiddenWorkersForStage(stage);
@@ -6674,10 +6679,16 @@
         }
       };
       const saveStageWorkers = async (stage, codes) => {
+        const key = canonicalStageId(stage);
         setSavingPermissionStage(stage); setMsg(null);
         try {
           await api.setStagePermission(token, stage, codes);
           await reloadStagePermissions();
+          setDraftStagePermissions(prev => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
           setMsg({ type: "success", text: codes.length ? "Lista ukrycia etapu zapisana." : "Etap widoczny dla wszystkich pracownikow." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
@@ -6686,10 +6697,17 @@
         }
       };
       const toggleStageWorker = (stage, code) => {
+        const key = canonicalStageId(stage);
         const hidden = hiddenWorkersForStage(stage);
         const normalized = String(code || "").toUpperCase();
         if (hidden.has(normalized)) hidden.delete(normalized); else hidden.add(normalized);
-        saveStageWorkers(stage, [...hidden]);
+        setDraftStagePermissions(prev => ({ ...prev, [key]: [...hidden] }));
+        setMsg(null);
+      };
+      const setDraftHiddenWorkers = (stage, codes) => {
+        const key = canonicalStageId(stage);
+        setDraftStagePermissions(prev => ({ ...prev, [key]: [...new Set((codes || []).map(code => String(code || "").toUpperCase()).filter(Boolean))] }));
+        setMsg(null);
       };
       const mainStyle = { ...S.main, width: "100%", maxWidth: "none", padding: "16px 18px" };
 
@@ -6775,6 +6793,7 @@
                       const saving = savingPermissionStage === stage;
                       const allCodes = allWorkerCodes;
                       const visibleCount = visible.size;
+                      const dirty = Object.prototype.hasOwnProperty.call(draftStagePermissions, canonicalStageId(stage));
                       return html`
                         <tr key=${stage}>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${stageLabel(stage)}</td>
@@ -6782,6 +6801,7 @@
                             <span style=${{ ...S.badge, background: visibleCount ? "#ecfdf5" : "#fff7ed", color: visibleCount ? "#166534" : "#9a3412", borderColor: visibleCount ? "#86efac" : "#fdba74" }}>
                               ${visibleCount === allCodes.length ? "Widoczny dla wszystkich" : visibleCount ? "Widoczny dla: " + visibleCount : "Ukryty dla wszystkich"}
                             </span>
+                            ${dirty ? html`<span style=${{ marginLeft: "8px", color: COLORS.accent, fontSize: "12px", fontWeight: 900 }}>niezapisane</span>` : null}
                           </td>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
                             <button style=${expanded ? S.btn : S.ghost} disabled=${savingPermissionStage && !saving} onClick=${() => setExpandedPermissionStage(expanded ? "" : stage)}>
@@ -6793,8 +6813,10 @@
                           <tr key=${stage + "-workers"}>
                             <td colSpan="3" style=${{ padding: "12px", borderBottom: "1px solid " + COLORS.border, background: COLORS.soft }}>
                               <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
-                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, [])}>Odkryj wszystkim</button>
-                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, allCodes)}>Ukryj wszystkim</button>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => setDraftHiddenWorkers(stage, [])}>Odkryj wszystkim</button>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => setDraftHiddenWorkers(stage, allCodes)}>Ukryj wszystkim</button>
+                                <button style=${{ ...S.btn, opacity: !dirty || saving ? 0.6 : 1 }} disabled=${!dirty || saving} onClick=${() => saveStageWorkers(stage, [...hidden])}>${saving ? "Zapisywanie..." : "Zapisz"}</button>
+                                <button style=${S.ghost} disabled=${!dirty || saving} onClick=${() => setDraftStagePermissions(prev => { const next = { ...prev }; delete next[canonicalStageId(stage)]; return next; })}>Anuluj zmiany</button>
                               </div>
                               <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px" }}>
                                 ${workerUsers.map(w => {
