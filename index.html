@@ -95,6 +95,8 @@
       importProject: (token, project, bathrooms, count, sourceFile) => apiRequest("POST", "/api/projects/import", { project, bathrooms, count, sourceFile }, token),
       getMaterialUsages: token => apiRequest("GET", "/api/material-usages", null, token),
       addMaterialUsage: (token, payload) => apiRequest("POST", "/api/material-usages", payload, token),
+      updateMaterialUsage: (token, id, payload) => apiRequest("PUT", "/api/material-usages/" + id, payload, token),
+      approveMaterialUsage: (token, id) => apiRequest("PUT", "/api/material-usages/" + id + "/approve", {}, token),
       deleteMaterialUsage: (token, id) => apiRequest("DELETE", "/api/material-usages/" + id, null, token),
       getQuality: token => apiRequest("GET", "/api/quality", null, token),
       updateQualityRecord: (token, payload) => apiRequest("PUT", "/api/quality-record", payload, token),
@@ -5501,16 +5503,81 @@
     }
 
     function CalculationsTab({ materialUsages, serverProjects, token, reloadMaterialUsages }) {
-      const [filters, setFilters] = useState({ project: "all", stage: "all" });
+      const [filters, setFilters] = useState({ project: "all", stage: "all", type: "all", calc: "all" });
       const [msg, setMsg] = useState(null);
       const [deletingId, setDeletingId] = useState("");
-      const projects = useMemo(() => activeProjectItems(serverProjects).map(p => p.project), [serverProjects]);
+      const [savingId, setSavingId] = useState("");
+      const [editing, setEditing] = useState(null);
+      const projects = useMemo(() => activeProjectItems(serverProjects), [serverProjects]);
+      const projectOptions = useMemo(() => projects.map(p => p.project), [projects]);
+      const calcProjects = useMemo(() => projects.filter(p => !!p.calculationEnabled), [projects]);
+      const nonCalcProjects = useMemo(() => projects.filter(p => !p.calculationEnabled), [projects]);
+      const typeOptions = useMemo(() => [...new Set((materialUsages || [])
+        .map(item => String(item.typeKey || item.typeLabel || "").trim())
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [materialUsages]);
       const visible = useMemo(() => (materialUsages || []).filter(item => {
         if (filters.project !== "all" && !sameProject(item.project, filters.project)) return false;
         if (filters.stage !== "all" && String(item.stage) !== filters.stage) return false;
+        if (filters.type !== "all" && String(item.typeKey || item.typeLabel || "") !== filters.type) return false;
+        if (filters.calc !== "all") {
+          const projectInfo = projects.find(p => sameProject(p.project, item.project));
+          const enabled = !!(projectInfo && projectInfo.calculationEnabled);
+          if (filters.calc === "yes" && !enabled) return false;
+          if (filters.calc === "no" && enabled) return false;
+        }
         return true;
-      }), [materialUsages, filters]);
+      }), [materialUsages, filters, projects]);
       const fields = item => Object.entries(item.data || {}).filter(([, value]) => value != null && String(value) !== "");
+      const fmtDateTime = value => {
+        if (!value) return "";
+        try { return new Date(value).toLocaleString("pl-PL"); } catch (_) { return String(value); }
+      };
+      const startEdit = item => setEditing({
+        id: item.id,
+        project: item.project,
+        stage: item.stage,
+        product: item.product,
+        typeLabel: item.typeLabel || "",
+        dataText: JSON.stringify(item.data || {}, null, 2)
+      });
+      const saveEdit = async () => {
+        if (!editing) return;
+        let data = {};
+        try {
+          data = JSON.parse(editing.dataText || "{}");
+        } catch (_) {
+          return setMsg({ type: "error", text: "Dane zuzycia musza byc poprawnym JSON." });
+        }
+        setSavingId("edit-" + editing.id); setMsg(null);
+        try {
+          await api.updateMaterialUsage(token, editing.id, {
+            product: Number(editing.product),
+            typeLabel: editing.typeLabel,
+            data
+          });
+          setEditing(null);
+          await reloadMaterialUsages();
+          setMsg({ type: "success", text: "Kalkulacja zostala zmodyfikowana." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingId("");
+        }
+      };
+      const approveCalculation = async item => {
+        if (!item || !item.id) return;
+        setSavingId("approve-" + item.id); setMsg(null);
+        try {
+          await api.approveMaterialUsage(token, item.id);
+          await reloadMaterialUsages();
+          setMsg({ type: "success", text: "Kalkulacja zostala zatwierdzona." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingId("");
+        }
+      };
       const removeCalculation = async item => {
         if (!item || !item.id) return;
         if (!confirm("Usunac kalkulacje: projekt " + item.project + ", laz. " + item.product + ", " + stageLabel(item.stage) + "?")) return;
@@ -5534,11 +5601,21 @@
             </div>
           </div>
           <div className="grid-3" style=${{ ...S.row3, marginBottom: "12px" }}>
+            <div style=${{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "8px" }}>
+              <div style=${{ border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", borderRadius: "8px", padding: "10px" }}>
+                <strong>Projekty z kalkulacja: ${calcProjects.length}</strong>
+                <div style=${{ fontSize: "12px", marginTop: "4px" }}>${calcProjects.map(p => p.project).join(", ") || "-"}</div>
+              </div>
+              <div style=${{ border: "1px solid #cbd5e1", background: COLORS.bg, color: COLORS.muted, borderRadius: "8px", padding: "10px" }}>
+                <strong>Bez kalkulacji: ${nonCalcProjects.length}</strong>
+                <div style=${{ fontSize: "12px", marginTop: "4px" }}>${nonCalcProjects.map(p => p.project).join(", ") || "-"}</div>
+              </div>
+            </div>
             <div>
               <label style=${S.label}>Projekt</label>
               <select style=${S.input} value=${filters.project} onChange=${e => setFilters({ ...filters, project: e.target.value })}>
                 <option value="all">Wszystkie projekty</option>
-                ${projects.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
+                ${projectOptions.map(project => html`<option key=${project} value=${project}>${project}</option>`)}
               </select>
             </div>
             <div>
@@ -5548,9 +5625,53 @@
                 ${materialStageIds.map(stage => html`<option key=${stage} value=${stage}>${stageLabel(stage)}</option>`)}
               </select>
             </div>
+            <div>
+              <label style=${S.label}>Typ</label>
+              <select style=${S.input} value=${filters.type} onChange=${e => setFilters({ ...filters, type: e.target.value })}>
+                <option value="all">Wszystkie typy</option>
+                ${typeOptions.map(type => html`<option key=${type} value=${type}>${type}</option>`)}
+              </select>
+            </div>
+            <div>
+              <label style=${S.label}>Projekt objety kalkulacja</label>
+              <select style=${S.input} value=${filters.calc} onChange=${e => setFilters({ ...filters, calc: e.target.value })}>
+                <option value="all">Wszystkie</option>
+                <option value="yes">Tak</option>
+                <option value="no">Nie</option>
+              </select>
+            </div>
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
+          ${editing ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 80, display: "grid", placeItems: "center", padding: "16px" }}>
+              <section style=${{ ...S.card, width: "min(680px, 100%)", margin: 0 }}>
+                <h2 style=${S.title}>Edytuj kalkulacje</h2>
+                <div className="grid-2" style=${S.row2}>
+                  <div>
+                    <label style=${S.label}>Projekt / etap</label>
+                    <div style=${{ ...S.input, background: COLORS.panel2 }}>${editing.project} / ${stageLabel(editing.stage)}</div>
+                  </div>
+                  <div>
+                    <label style=${S.label}>Nr lazienki</label>
+                    <input style=${S.input} type="number" min="1" value=${editing.product} onInput=${e => setEditing({ ...editing, product: e.target.value })} />
+                  </div>
+                  <div style=${{ gridColumn: "1 / -1" }}>
+                    <label style=${S.label}>Etykieta typu</label>
+                    <input style=${S.input} value=${editing.typeLabel} onInput=${e => setEditing({ ...editing, typeLabel: e.target.value })} />
+                  </div>
+                  <div style=${{ gridColumn: "1 / -1" }}>
+                    <label style=${S.label}>Dane zuzycia JSON</label>
+                    <textarea style=${{ ...S.input, minHeight: "220px", fontFamily: "Consolas, monospace", fontSize: "13px" }} value=${editing.dataText} onInput=${e => setEditing({ ...editing, dataText: e.target.value })}></textarea>
+                  </div>
+                </div>
+                <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
+                  <button style=${S.ghost} disabled=${!!savingId} onClick=${() => setEditing(null)}>Anuluj</button>
+                  <button style=${S.btn} disabled=${savingId === "edit-" + editing.id} onClick=${saveEdit}>${savingId === "edit-" + editing.id ? "Zapisywanie..." : "Zapisz zmiany"}</button>
+                </div>
+              </section>
+            </div>
+          ` : null}
           <div style=${{ display: "grid", gap: "10px" }}>
             ${visible.map(item => html`
               <div key=${item.id} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel2, padding: "12px" }}>
@@ -5559,9 +5680,16 @@
                     <strong>Projekt ${item.project} / Laz. ${item.product} / ${stageLabel(item.stage)}</strong>
                     <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>${(item.createdAt || "").slice(0, 10)} / ${item.workerName || item.workerCode || "-"}</div>
                   </div>
-                  <button style=${S.danger} disabled=${deletingId === item.id} onClick=${() => removeCalculation(item)}>${deletingId === item.id ? "Usuwanie..." : "Usun kalkulacje"}</button>
+                  <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button style=${S.ghost} disabled=${!!savingId} onClick=${() => startEdit(item)}>Modyfikuj</button>
+                    <button style=${item.approvedAt ? S.ghost : S.btn} disabled=${savingId === "approve-" + item.id} onClick=${() => approveCalculation(item)}>${savingId === "approve-" + item.id ? "Zatwierdzanie..." : item.approvedAt ? "Zatwierdz ponownie" : "Zatwierdz"}</button>
+                    <button style=${S.danger} disabled=${deletingId === item.id} onClick=${() => removeCalculation(item)}>${deletingId === item.id ? "Usuwanie..." : "Usun kalkulacje"}</button>
+                  </div>
                 </div>
                 <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${item.typeLabel || item.typeKey}</div>
+                <div style=${{ color: item.approvedAt ? "#166534" : COLORS.orange, fontSize: "12px", marginTop: "4px", fontWeight: 900 }}>
+                  ${item.approvedAt ? "Zatwierdzone: " + fmtDateTime(item.approvedAt) + " / " + (item.approvedName || item.approvedBy || "-") : "Nie zatwierdzone"}
+                </div>
                 <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px", marginTop: "10px" }}>
                   ${fields(item).map(([key, value]) => html`
                     <div key=${key} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "8px" }}>

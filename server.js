@@ -532,6 +532,9 @@ async function ensureMaterialUsagesTable() {
       UNIQUE (project, stage, type_key)
     )
   `);
+  await pool.query("ALTER TABLE material_usages ADD COLUMN IF NOT EXISTS approved_by TEXT");
+  await pool.query("ALTER TABLE material_usages ADD COLUMN IF NOT EXISTS approved_name TEXT");
+  await pool.query("ALTER TABLE material_usages ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ");
 }
 
 async function ensureBathroomCommentsTable() {
@@ -1304,7 +1307,9 @@ app.get('/api/material-usages', auth, requireTab('calculations'), async (req, re
     await ensureMaterialUsagesTable();
     const r = await pool.query(
       `SELECT id, project, product, stage, type_key AS "typeKey", type_label AS "typeLabel", data,
-              worker_code AS "workerCode", worker_name AS "workerName", report_date::text AS "reportDate", created_at AS "createdAt"
+              worker_code AS "workerCode", worker_name AS "workerName", report_date::text AS "reportDate",
+              approved_by AS "approvedBy", approved_name AS "approvedName", approved_at AS "approvedAt",
+              created_at AS "createdAt"
        FROM material_usages
        ORDER BY created_at DESC`
     );
@@ -1337,6 +1342,56 @@ app.post('/api/material-usages', auth, requireTab('reports'), async (req, res) =
     res.json({ success: true, inserted: r.rows.length > 0, id: r.rows[0] && r.rows[0].id });
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad zapisu zuzycia' });
+  }
+});
+
+app.put('/api/material-usages/:id', auth, requireTab('calculations'), managerOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  const product = Number(req.body.product);
+  const typeLabel = String(req.body.typeLabel || '').trim();
+  const data = req.body.data && typeof req.body.data === 'object' ? req.body.data : {};
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Nieprawidlowe ID kalkulacji' });
+  if (!Number.isInteger(product) || product < 1) return res.status(400).json({ error: 'Nieprawidlowy numer lazienki' });
+  try {
+    await ensureMaterialUsagesTable();
+    const r = await pool.query(
+      `UPDATE material_usages
+       SET product=$2, type_label=$3, data=$4::jsonb
+       WHERE id=$1
+       RETURNING id, project, product, stage, type_key AS "typeKey", type_label AS "typeLabel", data,
+                 worker_code AS "workerCode", worker_name AS "workerName", report_date::text AS "reportDate",
+                 approved_by AS "approvedBy", approved_name AS "approvedName", approved_at AS "approvedAt",
+                 created_at AS "createdAt"`,
+      [id, product, typeLabel || null, JSON.stringify(data)]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Nie znaleziono kalkulacji' });
+    await auditLog(req, 'material_usage_updated', String(id), { product, typeLabel, data });
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad edycji kalkulacji' });
+  }
+});
+
+app.put('/api/material-usages/:id/approve', auth, requireTab('calculations'), managerOnly, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Nieprawidlowe ID kalkulacji' });
+  try {
+    await ensureMaterialUsagesTable();
+    const r = await pool.query(
+      `UPDATE material_usages
+       SET approved_by=$2, approved_name=$3, approved_at=NOW()
+       WHERE id=$1
+       RETURNING id, project, product, stage, type_key AS "typeKey", type_label AS "typeLabel", data,
+                 worker_code AS "workerCode", worker_name AS "workerName", report_date::text AS "reportDate",
+                 approved_by AS "approvedBy", approved_name AS "approvedName", approved_at AS "approvedAt",
+                 created_at AS "createdAt"`,
+      [id, req.user.code, req.user.name || req.user.code]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'Nie znaleziono kalkulacji' });
+    await auditLog(req, 'material_usage_approved', String(id), r.rows[0]);
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zatwierdzania kalkulacji' });
   }
 });
 
@@ -2580,10 +2635,10 @@ app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, 
       await ensureMaterialUsagesTable();
       for (const m of data.material_usages) {
         await client.query(
-          `INSERT INTO material_usages (id, project, product, stage, type_key, type_label, data, worker_code, worker_name, report_date, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,COALESCE($11,NOW()))
+          `INSERT INTO material_usages (id, project, product, stage, type_key, type_label, data, worker_code, worker_name, report_date, created_at, approved_by, approved_name, approved_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,COALESCE($11,NOW()),$12,$13,$14)
            ON CONFLICT (project, stage, type_key) DO NOTHING`,
-          [m.id, m.project, m.product, m.stage, m.type_key || m.typeKey, m.type_label || m.typeLabel || null, JSON.stringify(m.data || {}), m.worker_code || m.workerCode || null, m.worker_name || m.workerName || null, m.report_date || m.reportDate || null, m.created_at || m.createdAt || null]
+          [m.id, m.project, m.product, m.stage, m.type_key || m.typeKey, m.type_label || m.typeLabel || null, JSON.stringify(m.data || {}), m.worker_code || m.workerCode || null, m.worker_name || m.workerName || null, m.report_date || m.reportDate || null, m.created_at || m.createdAt || null, m.approved_by || m.approvedBy || null, m.approved_name || m.approvedName || null, m.approved_at || m.approvedAt || null]
         );
         materialRestored++;
       }
