@@ -294,6 +294,17 @@
         question: specific.question || global.question || ""
       };
     };
+    const confirmReportQuestions = (controls, lines) => {
+      const questions = [];
+      (lines || []).forEach(line => {
+        const question = reportControlFor(controls, line.project, line.stage).question;
+        if (question && !questions.includes(question)) questions.push(question);
+      });
+      for (const question of questions) {
+        if (!confirm(question)) return false;
+      }
+      return true;
+    };
     const today = () => new Date().toISOString().slice(0, 10);
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
@@ -662,10 +673,6 @@
         if (requiresHall && !hall) return setMsg({ type: "error", text: "Dla tego etapu wybierz hale." });
         const blocked = effectiveStages.filter(stage => reportControlFor(reportControls, project, stage).disabled);
         if (blocked.length) return setMsg({ type: "error", text: "Raportowanie wylaczone dla: " + blocked.map(stageLabel).join(", ") + "." });
-        const questions = [...new Set(effectiveStages.map(stage => reportControlFor(reportControls, project, stage).question).filter(Boolean))];
-        for (const question of questions) {
-          if (!confirm(question)) return setMsg({ type: "warning", text: "Pracownik nie potwierdzil pytania, pozycje nie zostaly dodane." });
-        }
         if (isQualityStage && !qualityGoat && !qualityMissing.length) return setMsg({ type: "error", text: "Dla kontroli jakosci wybierz Koza albo co najmniej jeden brak." });
         const quality = isQualityStage ? { goat: qualityGoat, missingItems: qualityMissing } : null;
         const next = selectedProducts
@@ -1287,6 +1294,7 @@
         if (!selectedStages.length) return setMsg({ type: "error", text: "Wybierz etap." });
         if (!date) return setMsg({ type: "error", text: "Wybierz date raportu." });
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        if (!confirmReportQuestions(reportControls, lines)) return setMsg({ type: "warning", text: "Pytanie nie zostalo potwierdzone, raport nie zostal zapisany." });
         const prompt = findMaterialPrompt();
         if (prompt) {
           setMaterialSessionKeys(new Set());
@@ -1788,6 +1796,7 @@
 
       const save = async () => {
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        if (!confirmReportQuestions(reportControls, lines)) return setMsg({ type: "warning", text: "Pytanie nie zostalo potwierdzone, raport nie zostal zapisany." });
         const prompt = findMaterialPrompt();
         if (prompt) {
           setMaterialSessionKeys(new Set());
@@ -1975,6 +1984,7 @@
       };
       const save = async () => {
         if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        if (!confirmReportQuestions(reportControls, lines)) return setMsg({ type: "warning", text: "Pytanie nie zostalo potwierdzone, raport nie zostal zapisany." });
         const prompt = findMaterialPrompt();
         if (prompt) {
           setMaterialSessionKeys(new Set());
@@ -3565,6 +3575,7 @@
       const [mapLayouts, setMapLayouts] = useState({});
       const [selectedProject, setSelectedProject] = useState("all");
       const [detailProject, setDetailProject] = useState("");
+      const [detailCapacity, setDetailCapacity] = useState("");
       const [editing, setEditing] = useState(null);
       const [msg, setMsg] = useState(null);
 
@@ -3581,6 +3592,7 @@
         }
       };
       useEffect(() => { if (token) load(); }, [token]);
+      useEffect(() => { setDetailCapacity(""); }, [detailProject]);
 
       const ruleMap = useMemo(() => {
         const map = {};
@@ -3650,6 +3662,13 @@
         return [...new Set([...Array.from({ length: count }, (_, i) => i + 1), ...imported])]
           .sort((a, b) => a - b);
       }, [detailProjectInfo]);
+      const detailDeliveryDates = useMemo(() => {
+        if (!detailProjectInfo) return [];
+        return [...new Set((detailProjectInfo.bathrooms || [])
+          .map(b => String(b.requestedDelivery || "").slice(0, 10))
+          .filter(Boolean))]
+          .sort();
+      }, [detailProjectInfo]);
       const detailStatus = product => {
         const key = transportKey(detailProject, product);
         if (loadedSet.has(key)) return { id: "wyslane", label: "Wyslane", ...warehousePalette("wyslane") };
@@ -3693,6 +3712,28 @@
           setEditing(null);
           await load();
           setMsg({ type: "success", text: "Ustawienia nawozenia zapisane." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const saveProjectCapacity = async () => {
+        if (!detailProjectInfo) return;
+        const capacity = Number(detailCapacity || 0);
+        if (!capacity || capacity < 1) return setMsg({ type: "error", text: "Wpisz ile lazienek wchodzi na auto." });
+        if (!detailDeliveryDates.length) return setMsg({ type: "error", text: "Ten projekt nie ma dat Requested Delivery z Positionlisty." });
+        try {
+          for (const date of detailDeliveryDates) {
+            const current = ruleMap[detailProject + "#" + date] || {};
+            await api.saveFertilization(token, {
+              project: detailProject,
+              deliveryDate: date,
+              hall: current.hall || "",
+              carCapacity: capacity,
+              note: current.note || ""
+            });
+          }
+          await load();
+          setMsg({ type: "success", text: "Pojemnosc auta zapisana dla terminow projektu " + detailProject + "." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -3757,7 +3798,14 @@
                   ${detailProjectInfo.importedFromExcel ? "Plik: " + (detailProjectInfo.importSource || "brak nazwy") : "Projekt dodany standardowo"}
                 </div>
               </div>
-              <button style=${S.ghost} onClick=${() => setDetailProject("")}>Zamknij</button>
+              <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap" }}>
+                <div style=${{ width: "190px" }}>
+                  <label style=${S.label}>Ile lazienek na auto</label>
+                  <input style=${S.input} type="number" min="1" value=${detailCapacity} onInput=${e => setDetailCapacity(e.target.value)} placeholder="np. 5" />
+                </div>
+                <button style=${S.btn} onClick=${saveProjectCapacity}>Zapisz dla projektu</button>
+                <button style=${S.ghost} onClick=${() => setDetailProject("")}>Zamknij</button>
+              </div>
             </div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
               ${[
@@ -3770,22 +3818,37 @@
                 return html`<span key=${id} style=${{ background: wh.color, color: wh.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>${label}</span>`;
               })}
             </div>
-            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(142px, 1fr))", gap: "8px" }}>
-              ${detailProducts.map(product => {
-                const meta = bathroomMetaMap(serverProjects)[transportKey(detailProject, product)] || {};
-                const type = bathroomTypeInfo(serverProjects, detailProject, product);
-                const status = detailStatus(product);
-                const assemblyDate = assemblyDateByKey[transportKey(detailProject, product)] || "";
-                return html`
-                  <div key=${product} title=${type.label} style=${{ background: status.color, color: status.text, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "9px", minHeight: "104px" }}>
-                    <div style=${{ fontWeight: 900, fontSize: "15px" }}>${detailProject}/${product}${type.rbrTypeShort ? "/" + type.rbrTypeShort : ""}</div>
-                    <div style=${{ fontSize: "12px", fontWeight: 900, marginTop: "5px" }}>${status.label}</div>
-                    <div style=${{ fontSize: "12px", marginTop: "4px" }}>Skr.: ${assemblyDate || "-"}</div>
-                    ${meta.requestedDelivery ? html`<div style=${{ fontSize: "12px" }}>Wys.: ${String(meta.requestedDelivery).slice(0, 10)}</div>` : null}
-                    ${meta.ventilationVariant || meta.visibleHighWalls ? html`<div style=${{ fontSize: "11px", marginTop: "3px" }}>${[meta.ventilationVariant, meta.visibleHighWalls].filter(Boolean).join(" / ")}</div>` : null}
-                  </div>
-                `;
-              })}
+            <div style=${{ overflowX: "auto", border: "1px solid " + COLORS.border, borderRadius: "8px" }}>
+              <table style=${{ width: "100%", minWidth: "980px", borderCollapse: "collapse", fontSize: "13px" }}>
+                <thead>
+                  <tr style=${{ background: COLORS.bg }}>
+                    ${["Nr laz.", "ID", "RBR TYPE", "Ventilation Variant", "Visible High Walls", "Requested Delivery", "Status", "Data skrecania"].map(h => html`
+                      <th key=${h} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted }}>${h}</th>
+                    `)}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${detailProducts.map(product => {
+                    const meta = bathroomMetaMap(serverProjects)[transportKey(detailProject, product)] || {};
+                    const type = bathroomTypeInfo(serverProjects, detailProject, product);
+                    const status = detailStatus(product);
+                    const assemblyDate = assemblyDateByKey[transportKey(detailProject, product)] || "";
+                    const cellStyle = { padding: "8px 9px", borderBottom: "1px solid " + COLORS.border };
+                    return html`
+                      <tr key=${product} title=${type.label} style=${{ background: status.color, color: status.text }}>
+                        <td style=${{ ...cellStyle, fontWeight: 900 }}>${product}</td>
+                        <td style=${cellStyle}>${meta.externalId || "-"}</td>
+                        <td style=${cellStyle}>${meta.rbrType || type.rbrTypeShort || "-"}</td>
+                        <td style=${cellStyle}>${meta.ventilationVariant || "-"}</td>
+                        <td style=${cellStyle}>${meta.visibleHighWalls || "-"}</td>
+                        <td style=${cellStyle}>${meta.requestedDelivery ? String(meta.requestedDelivery).slice(0, 10) : "-"}</td>
+                        <td style=${{ ...cellStyle, fontWeight: 900 }}>${status.label}</td>
+                        <td style=${cellStyle}>${assemblyDate || "-"}</td>
+                      </tr>
+                    `;
+                  })}
+                </tbody>
+              </table>
             </div>
             ${detailProducts.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "18px" }}>Brak lazienek w positionliscie.</div>`}
           </section>
