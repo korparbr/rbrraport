@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.82</title>
+  <title>FlowRBR 1.83</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -481,6 +481,13 @@
       ],
       "8.2": []
     };
+    const MATERIAL_FIELD_LABELS = Object.assign(
+      {
+        wireUsageSent: "Zużycie przewodów wysłane"
+      },
+      Object.fromEntries(Object.values(MATERIAL_STAGES).flat().map(field => [field[0], field[1]]))
+    );
+    const materialFieldLabel = key => MATERIAL_FIELD_LABELS[key] || key;
     const materialStageIds = Object.keys(MATERIAL_STAGES);
     const rbrTypeShort = value => {
       const text = String(value || "").trim();
@@ -594,7 +601,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.82</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.83</span>` : null}
         </div>
       `;
     }
@@ -2234,6 +2241,7 @@
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const WIDTH_KEY = "flowrbr_maps_widths_1_7";
       const START_KEY = "flowrbr_maps_starts_1_71";
+      const MAP_ZOOM_KEY = "flowrbr_maps_zoom_1_83";
       const VIEWER_CHECKS_KEY = "flowrbr_viewer_local_checks_1_8";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
@@ -2244,6 +2252,10 @@
       const [mapDates, setMapDates] = useState({});
       const [mapWidths, setMapWidths] = useState(() => {
         try { return JSON.parse(localStorage.getItem(WIDTH_KEY) || "{}"); } catch (_) { return {}; }
+      });
+      const [mapZoom, setMapZoom] = useState(() => {
+        const stored = Number(localStorage.getItem(MAP_ZOOM_KEY));
+        return stored >= 0.45 && stored <= 1.5 ? stored : 1;
       });
       const [mapStarts, setMapStarts] = useState(() => {
         try { return JSON.parse(localStorage.getItem(START_KEY) || "{}"); } catch (_) { return {}; }
@@ -2260,6 +2272,7 @@
       const [helmetCheckComment, setHelmetCheckComment] = useState("");
       const [serverAvailable, setServerAvailable] = useState(null);
       const suppressClickRef = useRef(false);
+      const pinchRef = useRef(null);
       const [layouts, setLayouts] = useState(() => {
         try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { return {}; }
       });
@@ -2449,6 +2462,35 @@
       }, [hall, mapStarts, minOccupiedMapCol, selectedHall.cols, selectedHall.future]);
       const visibleMapCols = selectedHall.future ? 0 : Math.max(1, selectedHall.cols - visibleMapStart + 1);
       const visibleMapColumns = useMemo(() => selectedHall.future ? [] : Array.from({ length: visibleMapCols }, (_, i) => visibleMapStart + i), [selectedHall.future, visibleMapCols, visibleMapStart]);
+      const clampMapZoom = value => Math.max(0.45, Math.min(1.5, Number(value) || 1));
+      const saveMapZoom = value => {
+        const next = clampMapZoom(value);
+        setMapZoom(next);
+        localStorage.setItem(MAP_ZOOM_KEY, String(next));
+      };
+      const touchDistance = touches => {
+        if (!touches || touches.length < 2) return 0;
+        const a = touches[0];
+        const b = touches[1];
+        return Math.hypot((a.clientX || 0) - (b.clientX || 0), (a.clientY || 0) - (b.clientY || 0));
+      };
+      const startMapPinch = e => {
+        if (!e.touches || e.touches.length !== 2) return;
+        const distance = touchDistance(e.touches);
+        if (!distance) return;
+        pinchRef.current = { distance, zoom: mapZoom };
+        suppressClickRef.current = true;
+      };
+      const moveMapPinch = e => {
+        if (!e.touches || e.touches.length !== 2 || !pinchRef.current) return;
+        if (e.preventDefault) e.preventDefault();
+        const distance = touchDistance(e.touches);
+        if (!distance) return;
+        saveMapZoom(pinchRef.current.zoom * (distance / pinchRef.current.distance));
+      };
+      const endMapPinch = e => {
+        if (!e.touches || e.touches.length < 2) pinchRef.current = null;
+      };
       const saveMapStart = value => {
         if (!canEditMaps) return setMsg({ type: "warning", text: "Pracownik nie moze modyfikowac szachownicy." });
         if (selectedHall.future) return;
@@ -2977,6 +3019,7 @@
       };
       const startDrag = (cell, e) => {
         if (!canEditMaps || !edit || !cell) return;
+        if (pinchRef.current) return;
         setDragCell(cell);
         try { if (e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
       };
@@ -3354,13 +3397,29 @@
                 ${selectedHall.future ? "Do przygotowania w przyszlosci." : "Widoczne kolumny " + visibleMapStart + "-" + selectedHall.cols + " z " + selectedHall.cols + ", wiersze " + selectedHall.rows.join("-") + " od gory."}
               </div>
             </div>
-            <div style=${{ color: COLORS.muted, fontSize: "13px" }}>W ukladzie: <strong style=${{ color: COLORS.text }}>${currentLayout.length}</strong></div>
+            <div style=${{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>W ukladzie: <strong style=${{ color: COLORS.text }}>${currentLayout.length}</strong></div>
+              ${!selectedHall.future ? html`
+                <div style=${{ display: "flex", alignItems: "center", gap: "6px", background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "4px" }}>
+                  <button type="button" style=${{ ...S.ghost, padding: "5px 10px", borderRadius: "999px", minWidth: "34px" }} onClick=${() => saveMapZoom(mapZoom - 0.1)}>-</button>
+                  <span style=${{ minWidth: "48px", textAlign: "center", fontSize: "12px", fontWeight: 900, color: COLORS.text }}>${Math.round(mapZoom * 100)}%</span>
+                  <button type="button" style=${{ ...S.ghost, padding: "5px 10px", borderRadius: "999px", minWidth: "34px" }} onClick=${() => saveMapZoom(mapZoom + 0.1)}>+</button>
+                  <button type="button" style=${{ ...S.ghost, padding: "5px 10px", borderRadius: "999px" }} onClick=${() => saveMapZoom(1)}>100%</button>
+                </div>
+              ` : null}
+            </div>
           </div>
           ${selectedHall.future ? html`
             <div style=${{ color: COLORS.dim, textAlign: "center", padding: "36px" }}>Hala ISO bedzie dodana w przyszlosci.</div>
           ` : html`
-            <div style=${{ overflowX: "auto" }}>
-              <div style=${{ display: "grid", gridTemplateColumns: "62px repeat(" + visibleMapCols + ", minmax(108px, 1fr))", gap: "8px", minWidth: (84 + visibleMapCols * 116) + "px" }}>
+            <div
+              onTouchStart=${startMapPinch}
+              onTouchMove=${moveMapPinch}
+              onTouchEnd=${endMapPinch}
+              onTouchCancel=${endMapPinch}
+              style=${{ overflowX: "auto", overflowY: "visible", touchAction: "pan-x pan-y", paddingBottom: "10px" }}
+            >
+              <div style=${{ display: "grid", gridTemplateColumns: "62px repeat(" + visibleMapCols + ", minmax(108px, 1fr))", gap: "8px", minWidth: (84 + visibleMapCols * 116) + "px", zoom: mapZoom }}>
                 <div></div>
                 ${visibleMapColumns.map(col => html`<div key=${"h" + col} style=${{ color: COLORS.muted, fontSize: "12px", textAlign: "center", fontWeight: 800 }}>${col}</div>`)}
                 ${selectedHall.rows.flatMap(row => [
@@ -3413,7 +3472,7 @@
                           flexDirection: "column",
                           fontSize: "11px",
                           fontWeight: 900,
-                          touchAction: edit ? "pan-x pan-y pinch-zoom" : "auto",
+                          touchAction: "manipulation",
                           opacity: isDragging ? 0.72 : matchesFilter ? 1 : 0.18,
                           boxShadow: isManualCell ? "0 0 0 4px rgba(201,120,16,0.22)" : isSelected ? "0 0 0 3px rgba(39,94,254,0.18)" : "none"
                         }}
@@ -5693,7 +5752,7 @@
                 <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px", marginTop: "10px" }}>
                   ${fields(item).map(([key, value]) => html`
                     <div key=${key} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "8px" }}>
-                      <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 800 }}>${key}</div>
+                      <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 800 }}>${materialFieldLabel(key)}</div>
                       <div style=${{ fontWeight: 900 }}>${String(value)}</div>
                     </div>
                   `)}
