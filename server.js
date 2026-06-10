@@ -1,4 +1,4 @@
-// RaportRBR v1.81 - Backend
+// RaportRBR v1.82 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -798,17 +798,22 @@ app.post('/api/login', async (req, res) => {
       return res.status(lockUntil ? 423 : 401).json({ error: lockUntil ? 'Za duzo blednych prob. Konto chwilowo zablokowane.' : 'Nieprawidlowe haslo' });
     }
     await ensureUserSessionsTable();
+    await ensureUserStagePreferencesTable();
     await pool.query('UPDATE users SET failed_login_count=0, lock_until=NULL, last_login_at=NOW() WHERE code=$1', [user.code]);
     const freshUser = await pool.query('SELECT token_version FROM users WHERE code=$1', [user.code]);
     const tokenVersion = Number((freshUser.rows[0] && freshUser.rows[0].token_version) || 0);
+    const prefs = await pool.query('SELECT visible_stages FROM user_stage_preferences WHERE user_code=$1', [user.code]);
+    const visibleStages = prefs.rows.length && Array.isArray(prefs.rows[0].visible_stages)
+      ? prefs.rows[0].visible_stages.map(normalizeStageId).filter(Boolean)
+      : null;
     const sessionId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
-    const token = jwt.sign({ code: user.code, name: user.name, role: user.role, mustChangePassword: !!user.must_change_password, jti: sessionId, tokenVersion }, JWT_SECRET, { expiresIn: '12h' });
+    const token = jwt.sign({ code: user.code, name: user.name, role: user.role, mustChangePassword: !!user.must_change_password, visibleStages, jti: sessionId, tokenVersion }, JWT_SECRET, { expiresIn: '12h' });
     await pool.query(
       'INSERT INTO user_sessions (id, user_code, token_version, ip, user_agent) VALUES ($1,$2,$3,$4,$5)',
       [sessionId, user.code, tokenVersion, req.ip || req.socket.remoteAddress || '', String(req.headers['user-agent'] || '').slice(0, 500)]
     );
     await auditLog(req, 'login_success', user.code);
-    res.json({ token, user: { code: user.code, name: user.name, role: user.role, mustChangePassword: user.must_change_password } });
+    res.json({ token, user: { code: user.code, name: user.name, role: user.role, mustChangePassword: user.must_change_password, visibleStages } });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Blad serwera' }); }
 });
 
@@ -2222,7 +2227,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.81 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.82 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -2302,7 +2307,7 @@ async function collectBackupPayload() {
     fertilization_settings: fertilization.rows,
   };
   const counts = Object.fromEntries(Object.entries(data).map(([key, rows]) => [key, Array.isArray(rows) ? rows.length : 0]));
-  return { version: '1.81', exportedAt: new Date().toISOString(), data, counts };
+  return { version: '1.82', exportedAt: new Date().toISOString(), data, counts };
 }
 
 async function saveOnlineBackup(kind = 'auto', createdBy = null) {
@@ -2379,7 +2384,7 @@ app.get('/api/backup', auth, requireTab('database'), managerOnly, async (req, re
     ]);
 
     const backup = {
-      version: '1.81',
+      version: '1.82',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -2801,7 +2806,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.81',
+      version: '1.82',
       time: new Date(),
       db: {
         connected: true,
@@ -2867,6 +2872,6 @@ async function ensureInitialAdminAccount() {
 }
 
 ensureInitialAdminAccount().finally(() => {
-  app.listen(PORT, () => console.log(`RaportRBR v1.81 running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`RaportRBR v1.82 running on port ${PORT}`));
 });
 

@@ -2,8 +2,8 @@
 <html lang="pl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.81</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
+  <title>FlowRBR 1.82</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -272,11 +272,11 @@
     const DEFAULT_ROLE_TABS = {
       worker: ["reports", "maps", "sessions", "account"],
       "worker+": ["reports", "maps", "sessions", "account"],
-      kontroler: ["reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "sessions", "account"],
-      manager: ["reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "sessions", "account"],
-      viewer: ["reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "sessions", "account"],
-      supervisor: ["reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "permissions", "database", "sessions", "account"],
-      admin: ["reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "maps", "users", "permissions", "database", "sessions", "account"]
+      kontroler: ["reports", "maps", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
+      manager: ["reports", "maps", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
+      viewer: ["reports", "maps", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
+      supervisor: ["reports", "maps", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"],
+      admin: ["reports", "maps", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"]
     };
     const rolePermissionsMap = rows => {
       const map = {};
@@ -592,7 +592,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.81</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.82</span>` : null}
         </div>
       `;
     }
@@ -6751,13 +6751,19 @@
       const visibleTabs = useMemo(() => {
         const tabs = [...tabsForRole(user?.role, rolePermissions)];
         if (canSeePermissions && !tabs.includes("fertilization")) tabs.splice(1, 0, "fertilization");
-        return tabs.filter(t => {
+        const filtered = tabs.filter(t => {
           if (t === "permissions") return canSeePermissions;
           if (t === "database" && isViewer) return false;
           if (t === "fertilization") return canSeePermissions;
           if (["production", "warehouse", "transport", "quality", "calculations"].includes(t)) return canSeeProduction;
           return true;
         });
+        if (filtered.includes("maps")) {
+          const withoutMaps = filtered.filter(t => t !== "maps");
+          withoutMaps.splice(Math.min(1, withoutMaps.length), 0, "maps");
+          return withoutMaps;
+        }
+        return filtered;
       }, [user, rolePermissions, canSeePermissions, isViewer, canSeeProduction]);
       useEffect(() => {
         if (visibleTabs.length && !visibleTabs.includes(tab)) setTab(visibleTabs[0]);
