@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>FlowRBR 1.77</title>
+  <title>FlowRBR 1.78</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -216,17 +216,18 @@
       });
       return map;
     };
-    const isStageAllowedForWorker = (stage, workerCode, permissions) => {
+    const isStageHiddenForWorker = (stage, workerCode, permissions) => {
       const code = String(workerCode || "").toUpperCase();
       const map = stagePermissionMap(permissions);
-      const assignedStages = Object.entries(map)
-        .filter(([, workers]) => workers.includes(code))
-        .map(([stage]) => stage);
-      if (assignedStages.length) return assignedStages.includes(canonicalStageId(stage));
-      const allowed = map[canonicalStageId(stage)] || [];
-      return !allowed.length || allowed.includes(code);
+      const hidden = map[canonicalStageId(stage)] || [];
+      return !!code && hidden.includes(code);
     };
-    const explicitlyAllowedStageWorkers = (stage, permissions) => new Set(stagePermissionMap(permissions)[canonicalStageId(stage)] || []);
+    const isStageAllowedForWorker = (stage, workerCode, permissions) => !isStageHiddenForWorker(stage, workerCode, permissions);
+    const surnameSortKey = user => {
+      const name = String(user?.name || "").trim();
+      const parts = name.split(/\s+/).filter(Boolean);
+      return (parts[0] || String(user?.code || user?.login || "")).toLocaleLowerCase("pl");
+    };
     const ROLE_TABS = [
       ["reports", "Raporty"],
       ["fertilization", "Nawozenie"],
@@ -555,7 +556,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.77</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.78</span>` : null}
         </div>
       `;
     }
@@ -637,7 +638,7 @@
       const isUsedProduct = product => effectiveStages.length > 0 && effectiveStages.every(stage => usedInCurrentReport.has(stage + "#" + product));
       const requiresHall = false;
       const toggleStage = id => {
-        if (!isStageAllowedForWorker(id, workerCode, stagePermissions)) return setMsg({ type: "error", text: "Ten etap nie jest przypisany do tego pracownika." });
+        if (!isStageAllowedForWorker(id, workerCode, stagePermissions)) return setMsg({ type: "error", text: "Ten etap jest ukryty dla tego pracownika." });
         if (reportControlFor(reportControls, "*", id).disabled) return setMsg({ type: "error", text: "Ten etap jest aktualnie wylaczony z raportowania." });
         setStages(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
         if (id === "5" && stages.includes("5")) setHall("");
@@ -715,7 +716,7 @@
                 })}
               </div>
               ${allowedStages.length < STAGES.length ? html`
-                <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "6px" }}>Pokazane sa tylko etapy przypisane do pracownika.</div>
+                <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "6px" }}>Ukryte sa tylko etapy odznaczone dla tego pracownika w panelu uzytkownikow.</div>
               ` : null}
               `}
             </div>
@@ -1268,9 +1269,8 @@
         return null;
       };
       const filteredWorkers = useMemo(() => workers.filter(w => {
-        const code = String(w.code || w.login || "").toUpperCase();
-        return selectedStages.length > 0 && selectedStages.every(stage => isStageAllowedForWorker(stage, code, stagePermissions));
-      }), [workers, selectedStages, stagePermissions]);
+        return selectedStages.length > 0;
+      }).sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.name || "").localeCompare(String(b.name || ""), "pl", { numeric: true })), [workers, selectedStages]);
       const toggleManagerStage = id => {
         setSelectedStages(prev => prev.includes(id) ? prev.filter(stage => stage !== id) : [...prev, id]);
         setWorkerCode("");
@@ -5451,12 +5451,10 @@
         });
       }, [loadedReplacements, replacementFilters]);
       const reportWorkers = useMemo(() => {
-        const allowedLoadWorkers = explicitlyAllowedStageWorkers("21", stagePermissions);
         return (users || [])
           .filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker"))
-          .filter(u => allowedLoadWorkers.has(String(u.code || u.login || "").toUpperCase()))
-          .sort((a, b) => String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true }));
-      }, [users, stagePermissions]);
+          .sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true }));
+      }, [users]);
       const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
       const visible = allTransportItems.filter(item => {
         const info = item.transportInfo || transportInfo[transportKey(item.project, item.product)];
@@ -6542,7 +6540,7 @@
       useEffect(() => {
         if (visibleTabs.length && !visibleTabs.includes(tab)) setTab(visibleTabs[0]);
       }, [visibleTabs.join("|"), tab]);
-      const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
+      const workerUsers = useMemo(() => (users || []).filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker")).sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.name || "").localeCompare(String(b.name || ""), "pl", { numeric: true }) || String(a.code || a.login || "").localeCompare(String(b.code || b.login || ""), "pl", { numeric: true })), [users]);
       const permissionStages = useMemo(() => STAGES, []);
       const permissionMap = useMemo(() => stagePermissionMap(stagePermissions), [stagePermissions]);
       const workersForStage = stage => new Set((permissionMap[String(stage || "")] || []).map(code => String(code).toUpperCase()));
@@ -6640,7 +6638,7 @@
         try {
           await api.setStagePermission(token, stage, codes);
           await reloadStagePermissions();
-          setMsg({ type: "success", text: codes.length ? "Przypisanie etapu zapisane." : "Etap ustawiony dla wszystkich pracownikow." });
+          setMsg({ type: "success", text: codes.length ? "Lista ukrycia etapu zapisana." : "Etap widoczny dla wszystkich pracownikow." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -6719,13 +6717,13 @@
             <section style=${S.card}>
               <h2 style=${S.title}>Przypisanie etapow do pracownikow</h2>
               <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
-                Etap bez wybranych osob moga raportowac wszyscy. Po zaznaczeniu pracownikow etap bedzie dostepny tylko dla nich.
+                Kazdy moze raportowac kazdy etap. Zaznaczeni pracownicy nie beda widziec tego etapu w swoim panelu dodawania raportu.
               </div>
               <div style=${{ overflowX: "auto" }}>
                 <table style=${{ width: "100%", borderCollapse: "collapse", minWidth: "680px" }}>
                   <thead>
                     <tr>
-                      ${["Etap", "Kto moze raportowac", "Akcje"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "10px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${h}</th>`)}
+                      ${["Etap", "Ukryty dla", "Akcje"].map(h => html`<th key=${h} style=${{ textAlign: "left", padding: "10px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted, fontSize: "12px", textTransform: "uppercase" }}>${h}</th>`)}
                     </tr>
                   </thead>
                   <tbody>
@@ -6740,7 +6738,7 @@
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border, fontWeight: 800 }}>${stageLabel(stage)}</td>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
                             <span style=${{ ...S.badge, background: selected.size ? "#fff7ed" : "#ecfdf5", color: selected.size ? "#9a3412" : "#166534", borderColor: selected.size ? "#fdba74" : "#86efac" }}>
-                              ${selected.size ? "Wybrani: " + selected.size : "Wszyscy"}
+                              ${selected.size ? "Ukryty: " + selected.size : "Widoczny dla wszystkich"}
                             </span>
                           </td>
                           <td style=${{ padding: "10px", borderBottom: "1px solid " + COLORS.border }}>
@@ -6753,8 +6751,8 @@
                           <tr key=${stage + "-workers"}>
                             <td colSpan="3" style=${{ padding: "12px", borderBottom: "1px solid " + COLORS.border, background: COLORS.soft }}>
                               <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
-                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, [])}>Wszyscy</button>
-                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, allCodes)}>Zaznacz wszystkich</button>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, [])}>Widoczny dla wszystkich</button>
+                                <button style=${S.ghost} disabled=${saving} onClick=${() => saveStageWorkers(stage, allCodes)}>Ukryj wszystkim</button>
                               </div>
                               <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: "8px" }}>
                                 ${workerUsers.map(w => {
@@ -6778,7 +6776,7 @@
                                 })}
                               </div>
                               <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "10px" }}>
-                                ${selected.size ? "Wybrani pracownicy moga raportowac ten etap." : "Brak zaznaczen oznacza dostep dla wszystkich pracownikow."}
+                                ${selected.size ? "Zaznaczeni pracownicy nie zobacza tego etapu na liscie dodawania raportu." : "Brak zaznaczen oznacza, ze etap widza wszyscy pracownicy."}
                               </div>
                             </td>
                           </tr>
