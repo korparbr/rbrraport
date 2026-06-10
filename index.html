@@ -2,7 +2,7 @@
 <html lang="pl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes" />
   <title>FlowRBR 1.81</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
@@ -3411,7 +3411,7 @@
                           flexDirection: "column",
                           fontSize: "11px",
                           fontWeight: 900,
-                          touchAction: edit ? "none" : "auto",
+                          touchAction: edit ? "pan-x pan-y pinch-zoom" : "auto",
                           opacity: isDragging ? 0.72 : matchesFilter ? 1 : 0.18,
                           boxShadow: isManualCell ? "0 0 0 4px rgba(201,120,16,0.22)" : isSelected ? "0 0 0 3px rgba(39,94,254,0.18)" : "none"
                         }}
