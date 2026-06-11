@@ -364,6 +364,80 @@ async function ensureBackupSnapshotsTable() {
   await pool.query("CREATE INDEX IF NOT EXISTS idx_backup_snapshots_created_at ON backup_snapshots(created_at DESC)");
 }
 
+const DEFAULT_CALCULATION_STAGES = {
+  '7.1': [
+    ['tapeMb', 'Ilosc tasmy (mb)', 'number'],
+    ['insideCorners', 'Narozniki wew. (szt)', 'number'],
+    ['outsideCorners', 'Narozniki zew. (szt)', 'number'],
+    ['isolationSystem', 'System izolowania', 'text'],
+    ['singleCuffs', 'Manszety pojedyncze', 'number'],
+    ['doubleCuffs', 'Manszety podwojne', 'number'],
+    ['other', 'Inne', 'text']
+  ],
+  '11.1': [
+    ['tileSize1', 'Rozmiar plytki 1 (mm)', 'text'],
+    ['tileCount1', 'Ilosc plytek 1 (szt.)', 'number'],
+    ['tileSize2', 'Rozmiar plytki 2 (mm)', 'text'],
+    ['tileCount2', 'Ilosc plytek 2 (szt.)', 'number'],
+    ['tileSize3', 'Rozmiar plytki 3 (mm)', 'text'],
+    ['tileCount3', 'Ilosc plytek 3 (szt.)', 'number'],
+    ['glue', 'Ilosc i rodzaj kleju (kg)', 'text'],
+    ['stripType', 'Rodzaj listwy', 'text'],
+    ['stripCount', 'Ilosc listew', 'number'],
+    ['other', 'Inne', 'text']
+  ],
+  '11.2': [
+    ['tileSize1', 'Rozmiar plytki 1 (mm)', 'text'],
+    ['tileCount1', 'Ilosc plytek 1 (szt.)', 'number'],
+    ['tileSize2', 'Rozmiar plytki 2 (mm)', 'text'],
+    ['tileCount2', 'Ilosc plytek 2 (szt.)', 'number'],
+    ['tileSize3', 'Rozmiar plytki 3 (mm)', 'text'],
+    ['tileCount3', 'Ilosc plytek 3 (szt.)', 'number'],
+    ['glue', 'Ilosc i rodzaj kleju (kg)', 'text'],
+    ['stripType', 'Rodzaj listwy', 'text'],
+    ['stripCount', 'Ilosc listew', 'number'],
+    ['other', 'Inne', 'text']
+  ],
+  '13.1': [
+    ['color1', 'Kolor fugi 1', 'text'],
+    ['amountKg1', 'Ilosc fugi 1 (kg)', 'number'],
+    ['color2', 'Kolor fugi 2', 'text'],
+    ['amountKg2', 'Ilosc fugi 2 (kg)', 'number'],
+    ['color3', 'Kolor fugi 3', 'text'],
+    ['amountKg3', 'Ilosc fugi 3 (kg)', 'number']
+  ],
+  '13.2': [
+    ['color1', 'Kolor silikonu 1', 'text'],
+    ['amountPcs1', 'Ilosc silikonu 1 (szt)', 'number'],
+    ['color2', 'Kolor silikonu 2', 'text'],
+    ['amountPcs2', 'Ilosc silikonu 2 (szt)', 'number'],
+    ['color3', 'Kolor silikonu 3', 'text'],
+    ['amountPcs3', 'Ilosc silikonu 3 (szt)', 'number']
+  ],
+  '8.2': [
+    ['wireUsageSent', 'Wyslales zuzycie przewodow?', 'checkbox']
+  ]
+};
+
+async function ensureCalculationStagesTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS calculation_stages (
+      stage TEXT PRIMARY KEY,
+      fields JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  for (const [stage, fields] of Object.entries(DEFAULT_CALCULATION_STAGES)) {
+    await pool.query(
+      `INSERT INTO calculation_stages (stage, fields, updated_by)
+       VALUES ($1,$2::jsonb,'system')
+       ON CONFLICT (stage) DO NOTHING`,
+      [stage, JSON.stringify(fields)]
+    );
+  }
+}
+
 async function ensureAppSettingsTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -615,6 +689,11 @@ async function ensureQualityTables() {
 const uniqueTextList = value => {
   const list = Array.isArray(value) ? value : [];
   return [...new Set(list.map(x => String(x || '').trim()).filter(Boolean))];
+};
+
+const allowDuplicateReportLine = line => {
+  const stage = String(line?.stage || '').trim().toLowerCase();
+  return stage === '21' || stage === 'transport';
 };
 
 const todayWarsaw = () => {
@@ -1352,6 +1431,59 @@ app.get('/api/material-usages', auth, requireTab('calculations'), async (req, re
   }
 });
 
+app.get('/api/calculation-stages', auth, async (req, res) => {
+  try {
+    await ensureCalculationStagesTable();
+    const r = await pool.query(
+      `SELECT stage, fields, updated_by AS "updatedBy", updated_at AS "updatedAt"
+       FROM calculation_stages ORDER BY stage`
+    );
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad odczytu etapow kalkulacji' });
+  }
+});
+
+app.put('/api/calculation-stages/:stage', auth, requireTab('calculations'), managerOnly, async (req, res) => {
+  const stage = String(req.params.stage || '').trim();
+  const fields = Array.isArray(req.body?.fields) ? req.body.fields : [];
+  const normalized = fields
+    .map(field => Array.isArray(field) ? field : [field.key, field.label, field.type])
+    .map(field => [
+      String(field[0] || '').trim(),
+      String(field[1] || '').trim(),
+      ['text', 'number', 'checkbox'].includes(String(field[2] || '').trim()) ? String(field[2] || '').trim() : 'text'
+    ])
+    .filter(field => field[0] && field[1]);
+  if (!stage) return res.status(400).json({ error: 'Brak etapu kalkulacji' });
+  try {
+    await ensureCalculationStagesTable();
+    await pool.query(
+      `INSERT INTO calculation_stages (stage, fields, updated_by, updated_at)
+       VALUES ($1,$2::jsonb,$3,NOW())
+       ON CONFLICT (stage) DO UPDATE SET fields=EXCLUDED.fields, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [stage, JSON.stringify(normalized), req.user.code]
+    );
+    await auditLog(req, 'calculation_stage_saved', stage, { fields: normalized });
+    res.json({ success: true, stage, fields: normalized });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu etapu kalkulacji' });
+  }
+});
+
+app.delete('/api/calculation-stages/:stage', auth, requireTab('calculations'), managerOnly, async (req, res) => {
+  const stage = String(req.params.stage || '').trim();
+  if (!stage) return res.status(400).json({ error: 'Brak etapu kalkulacji' });
+  try {
+    await ensureCalculationStagesTable();
+    const r = await pool.query('DELETE FROM calculation_stages WHERE stage=$1', [stage]);
+    await auditLog(req, 'calculation_stage_deleted', stage, { deleted: r.rowCount || 0 });
+    res.json({ success: true, stage, deleted: r.rowCount || 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad usuwania etapu kalkulacji' });
+  }
+});
+
 app.post('/api/material-usages', auth, requireTab('reports'), async (req, res) => {
   const project = String(req.body.project || '').trim();
   const product = Number(req.body.product);
@@ -1620,15 +1752,17 @@ app.post('/api/reports', auth, requireTab('reports'), async (req, res) => {
 
     for (const line of lines) {
       // Check if this project+product+stage already exists in DB
-      const exists = await client.query(
-        `SELECT rl.id FROM report_lines rl
-         JOIN reports r ON rl.report_id = r.id
-         WHERE rl.project = $1 AND rl.product = $2 AND rl.stage = $3`,
-        [line.project, line.product, line.stage]
-      );
-      if (exists.rows.length > 0) {
-        skipped.push({ project: line.project, product: line.product, stage: line.stage });
-        continue;
+      if (!allowDuplicateReportLine(line)) {
+        const exists = await client.query(
+          `SELECT rl.id FROM report_lines rl
+           JOIN reports r ON rl.report_id = r.id
+           WHERE rl.project = $1 AND rl.product = $2 AND rl.stage = $3`,
+          [line.project, line.product, line.stage]
+        );
+        if (exists.rows.length > 0) {
+          skipped.push({ project: line.project, product: line.product, stage: line.stage });
+          continue;
+        }
       }
       await client.query(
         'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
@@ -1761,12 +1895,14 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
     const reportId = r.rows[0].id;
     const skipped = [], saved = [];
     for (const line of lines) {
-      const exists = await client.query(
-        `SELECT rl.id FROM report_lines rl JOIN reports r ON rl.report_id = r.id
-         WHERE rl.project=$1 AND rl.product=$2 AND rl.stage=$3`,
-        [line.project, line.product, line.stage]
-      );
-      if (exists.rows.length > 0) { skipped.push(line); continue; }
+      if (!allowDuplicateReportLine(line)) {
+        const exists = await client.query(
+          `SELECT rl.id FROM report_lines rl JOIN reports r ON rl.report_id = r.id
+           WHERE rl.project=$1 AND rl.product=$2 AND rl.stage=$3`,
+          [line.project, line.product, line.stage]
+        );
+        if (exists.rows.length > 0) { skipped.push(line); continue; }
+      }
       await client.query(
         'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
         [reportId, line.project, line.product, line.stage, line.contractor || workerCode, line.note || '']
@@ -2374,7 +2510,8 @@ async function collectBackupPayload() {
   await ensureQualityTables();
   await ensureReportControlsTable();
   await ensureFertilizationTable();
-  const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, userStagePreferences, rolePermissions, reportControls, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords, fertilization] = await Promise.all([
+  await ensureCalculationStagesTable();
+  const [users, reports, lines, recipients, mapLayouts, transportDates, transportExtras, transportReplacements, comments, checks, stagePermissions, userStagePreferences, rolePermissions, reportControls, projects, projectBathrooms, materialUsages, qualityItems, qualityRecords, fertilization, calculationStages] = await Promise.all([
     pool.query('SELECT * FROM users ORDER BY created_at'),
     pool.query('SELECT * FROM reports ORDER BY created_at'),
     pool.query('SELECT * FROM report_lines ORDER BY id'),
@@ -2395,6 +2532,7 @@ async function collectBackupPayload() {
     pool.query('SELECT * FROM quality_items ORDER BY project, item_name'),
     pool.query('SELECT * FROM quality_records ORDER BY project, product'),
     pool.query('SELECT * FROM fertilization_settings ORDER BY delivery_date, project'),
+    pool.query('SELECT * FROM calculation_stages ORDER BY stage'),
   ]);
   const data = {
     users: users.rows,
@@ -2417,6 +2555,7 @@ async function collectBackupPayload() {
     quality_items: qualityItems.rows,
     quality_records: qualityRecords.rows,
     fertilization_settings: fertilization.rows,
+    calculation_stages: calculationStages.rows,
   };
   const counts = Object.fromEntries(Object.entries(data).map(([key, rows]) => [key, Array.isArray(rows) ? rows.length : 0]));
   return { version: '1.86', exportedAt: new Date().toISOString(), data, counts };
@@ -2897,10 +3036,27 @@ app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, 
         qualityRecordsRestored++;
       }
     }
+
+    let calculationStagesRestored = 0;
+    if (Array.isArray(data.calculation_stages)) {
+      await ensureCalculationStagesTable();
+      for (const item of data.calculation_stages) {
+        const stage = String(item.stage || '').trim();
+        const fields = Array.isArray(item.fields) ? item.fields : [];
+        if (!stage) continue;
+        await client.query(
+          `INSERT INTO calculation_stages (stage, fields, updated_by, updated_at)
+           VALUES ($1,$2::jsonb,$3,COALESCE($4,NOW()))
+           ON CONFLICT (stage) DO UPDATE SET fields=EXCLUDED.fields, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`,
+          [stage, JSON.stringify(fields), item.updated_by || item.updatedBy || req.user.code, item.updated_at || item.updatedAt || null]
+        );
+        calculationStagesRestored++;
+      }
+    }
     
     await client.query('COMMIT');
-    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, rolePermissions: rolePermissionsRestored, reportControls: reportControlsRestored, fertilization: fertilizationRestored, materials: materialRestored, qualityItems: qualityItemsRestored, qualityRecords: qualityRecordsRestored });
-    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${rolePermissionsRestored} uprawnien rol, ${reportControlsRestored} ustawien raportowania, ${fertilizationRestored} ustawien nawozenia, ${materialRestored} kalkulacji, ${qualityRecordsRestored} wpisow jakosci` });
+    await auditLog(req, 'backup_restored', 'database', { reports: added, lines: linesAdded, transport: transportRestored, transportExtras: transportExtrasRestored, transportReplacements: transportReplacementsRestored, projects: projectsRestored, maps: mapsRestored, comments: commentsRestored, checks: checksRestored, stagePermissions: stagePermissionsRestored, rolePermissions: rolePermissionsRestored, reportControls: reportControlsRestored, fertilization: fertilizationRestored, materials: materialRestored, calculationStages: calculationStagesRestored, qualityItems: qualityItemsRestored, qualityRecords: qualityRecordsRestored });
+    res.json({ success: true, message: `Przywrocono ${added} raportow, ${linesAdded} wpisow, ${transportRestored} dat transportu, ${transportExtrasRestored} dodatkowych wpisow transportu, ${transportReplacementsRestored} podmian transportu, ${projectsRestored} projektow, ${mapsRestored} map, ${commentsRestored} komentarzy, ${checksRestored} kontroli, ${stagePermissionsRestored} przypisan etapow, ${rolePermissionsRestored} uprawnien rol, ${reportControlsRestored} ustawien raportowania, ${fertilizationRestored} ustawien nawozenia, ${materialRestored} kalkulacji, ${calculationStagesRestored} etapow kalkulacji, ${qualityRecordsRestored} wpisow jakosci` });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

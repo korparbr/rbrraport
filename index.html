@@ -98,6 +98,9 @@
       updateMaterialUsage: (token, id, payload) => apiRequest("PUT", "/api/material-usages/" + id, payload, token),
       approveMaterialUsage: (token, id) => apiRequest("PUT", "/api/material-usages/" + id + "/approve", {}, token),
       deleteMaterialUsage: (token, id) => apiRequest("DELETE", "/api/material-usages/" + id, null, token),
+      getCalculationStages: token => apiRequest("GET", "/api/calculation-stages", null, token),
+      saveCalculationStage: (token, stage, fields) => apiRequest("PUT", "/api/calculation-stages/" + encodeURIComponent(stage), { fields }, token),
+      deleteCalculationStage: (token, stage) => apiRequest("DELETE", "/api/calculation-stages/" + encodeURIComponent(stage), null, token),
       getQuality: token => apiRequest("GET", "/api/quality", null, token),
       updateQualityRecord: (token, payload) => apiRequest("PUT", "/api/quality-record", payload, token),
       renameQualityItem: (token, project, oldName, newName) => apiRequest("PUT", "/api/quality-items", { project, oldName, newName }, token),
@@ -510,7 +513,9 @@
         ["color3", "Kolor silikonu 3", "text"],
         ["amountPcs3", "Ilosc silikonu 3 (szt)", "number"]
       ],
-      "8.2": []
+      "8.2": [
+        ["wireUsageSent", "Wyslales zuzycie przewodow?", "checkbox"]
+      ]
     };
     const MATERIAL_FIELD_LABELS = Object.assign(
       {
@@ -520,6 +525,28 @@
     );
     const materialFieldLabel = key => MATERIAL_FIELD_LABELS[key] || key;
     const materialStageIds = Object.keys(MATERIAL_STAGES);
+    const normalizeMaterialStages = rows => {
+      if (!Array.isArray(rows) || !rows.length) return MATERIAL_STAGES;
+      const stages = {};
+      rows.forEach(row => {
+        const stage = String(row.stage || "").trim();
+        if (!stage) return;
+        const fields = Array.isArray(row.fields) ? row.fields : [];
+        stages[stage] = fields
+          .map(field => Array.isArray(field) ? field : [field.key, field.label, field.type])
+          .map(field => [
+            String(field[0] || "").trim(),
+            String(field[1] || "").trim(),
+            ["text", "number", "checkbox"].includes(String(field[2] || "").trim()) ? String(field[2] || "").trim() : "text"
+          ])
+          .filter(field => field[0] && field[1]);
+      });
+      return Object.keys(stages).length ? stages : MATERIAL_STAGES;
+    };
+    const materialStageFieldLabels = stages => Object.assign(
+      { wireUsageSent: "Zuzycie przewodow wyslane" },
+      Object.fromEntries(Object.values(stages || MATERIAL_STAGES).flat().map(field => [field[0], field[1]]))
+    );
     const rbrTypeShort = value => {
       const text = String(value || "").trim();
       return text.includes("-") ? text.split("-").slice(1).join("-").trim() : text;
@@ -1475,7 +1502,7 @@
       `;
     }
 
-    function ManagerAddReport({ token, reports, users, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, reloadReports, reloadQuality, reloadMaterialUsages }) {
+    function ManagerAddReport({ token, reports, users, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, materialStages, reloadReports, reloadQuality, reloadMaterialUsages }) {
       const [open, setOpen] = useState(false);
       const [selectedStages, setSelectedStages] = useState([]);
       const [workerCode, setWorkerCode] = useState("");
@@ -1506,10 +1533,12 @@
         });
         return set;
       }, [materialUsages]);
+      const activeMaterialStages = materialStages || MATERIAL_STAGES;
+      const activeMaterialStageIds = Object.keys(activeMaterialStages);
       const findMaterialPrompt = (targetLines = lines, extraKeys = materialSessionKeys) => {
         for (const line of targetLines) {
           const stage = String(line.stage || "");
-          if (!materialStageIds.includes(stage)) continue;
+          if (!activeMaterialStageIds.includes(stage)) continue;
           if (!calcProjectMap[String(line.project)]) continue;
           const type = bathroomTypeInfo(serverProjects, line.project, line.product);
           const key = String(line.project) + "#" + stage + "#" + type.calcKey;
@@ -1689,7 +1718,7 @@
                   </label>
                 ` : html`
                   <div className="grid-2" style=${S.row2}>
-                    ${(MATERIAL_STAGES[materialPrompt.stage] || []).map(field => html`
+                    ${(activeMaterialStages[materialPrompt.stage] || []).map(field => html`
                       <div key=${field[0]}>
                         <label style=${S.label}>${field[1]}</label>
                         <input style=${S.input} type=${field[2]} value=${materialForm[field[0]] || ""} onInput=${e => setMaterialForm({ ...materialForm, [field[0]]: e.target.value })} />
@@ -1717,7 +1746,7 @@
       `;
     }
 
-    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, reloadReports, reloadQuality, reloadMaterialUsages }) {
+    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, materialStages, reloadReports, reloadQuality, reloadMaterialUsages }) {
       const [dateFrom, setDateFrom] = useState("");
       const [dateTo, setDateTo] = useState("");
       const [worker, setWorker] = useState("all");
@@ -1810,7 +1839,7 @@
       };
 
       return html`
-        <${ManagerAddReport} token=${token} reports=${reports} users=${users} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />
+        <${ManagerAddReport} token=${token} reports=${reports} users=${users} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "14px" }}>
             <h2 style=${{ ...S.title, margin: 0 }}>Raporty</h2>
@@ -2012,7 +2041,7 @@
       `;
     }
 
-    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, userStagePreferences, reloadUserStagePreferences, reloadMaterialUsages, reloadQuality, reload, logout }) {
+    function WorkerView({ user, token, reports, transportDates, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, materialStages, userStagePreferences, reloadUserStagePreferences, reloadMaterialUsages, reloadQuality, reload, logout }) {
       const [date, setDate] = useState(today());
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
@@ -2065,10 +2094,12 @@
         });
         return set;
       }, [materialUsages]);
+      const activeMaterialStages = materialStages || MATERIAL_STAGES;
+      const activeMaterialStageIds = Object.keys(activeMaterialStages);
       const findMaterialPrompt = (targetLines = lines, extraKeys = materialSessionKeys) => {
         for (const line of targetLines) {
           const stage = String(line.stage || "");
-          if (!materialStageIds.includes(stage)) continue;
+          if (!activeMaterialStageIds.includes(stage)) continue;
           if (!calcProjectMap[String(line.project)]) continue;
           const type = bathroomTypeInfo(serverProjects, line.project, line.product);
           const key = String(line.project) + "#" + stage + "#" + type.calcKey;
@@ -2230,7 +2261,7 @@
                   </label>
                 ` : html`
                   <div className="grid-2" style=${S.row2}>
-                    ${(MATERIAL_STAGES[materialPrompt.stage] || []).map(field => html`
+                    ${(activeMaterialStages[materialPrompt.stage] || []).map(field => html`
                       <div key=${field[0]}>
                         <label style=${S.label}>${field[1]}</label>
                         <input style=${S.input} type=${field[2]} value=${materialForm[field[0]] || ""} onInput=${e => setMaterialForm({ ...materialForm, [field[0]]: e.target.value })} />
@@ -2258,7 +2289,7 @@
       `;
     }
 
-    function SelfReportTab({ user, token, reports, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, userStagePreferences, reloadReports, reloadMaterialUsages, reloadQuality }) {
+    function SelfReportTab({ user, token, reports, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, materialStages, userStagePreferences, reloadReports, reloadMaterialUsages, reloadQuality }) {
       const [lines, setLines] = useState([]);
       const [saving, setSaving] = useState(false);
       const [msg, setMsg] = useState(null);
@@ -2293,10 +2324,12 @@
         });
         return set;
       }, [materialUsages]);
+      const activeMaterialStages = materialStages || MATERIAL_STAGES;
+      const activeMaterialStageIds = Object.keys(activeMaterialStages);
       const findMaterialPrompt = (targetLines = lines, extraKeys = materialSessionKeys) => {
         for (const line of targetLines) {
           const stage = String(line.stage || "");
-          if (!materialStageIds.includes(stage)) continue;
+          if (!activeMaterialStageIds.includes(stage)) continue;
           if (!calcProjectMap[String(line.project)]) continue;
           const type = bathroomTypeInfo(serverProjects, line.project, line.product);
           const key = String(line.project) + "#" + stage + "#" + type.calcKey;
@@ -2423,7 +2456,7 @@
                 </label>
               ` : html`
                 <div className="grid-2" style=${S.row2}>
-                  ${(MATERIAL_STAGES[materialPrompt.stage] || []).map(field => html`
+                  ${(activeMaterialStages[materialPrompt.stage] || []).map(field => html`
                     <div key=${field[0]}>
                       <label style=${S.label}>${field[1]}</label>
                       <input style=${S.input} type=${field[2]} value=${materialForm[field[0]] || ""} onInput=${e => setMaterialForm({ ...materialForm, [field[0]]: e.target.value })} />
@@ -5900,13 +5933,17 @@
       `;
     }
 
-    function CalculationsTab({ materialUsages, serverProjects, token, reloadMaterialUsages }) {
+    function CalculationsTab({ materialUsages, serverProjects, token, materialStages, reloadMaterialUsages, reloadMaterialStages }) {
       const [filters, setFilters] = useState({ project: "all", stage: "all", type: "all", calc: "all" });
       const [msg, setMsg] = useState(null);
       const [deletingId, setDeletingId] = useState("");
       const [savingId, setSavingId] = useState("");
       const [editing, setEditing] = useState(null);
       const [adding, setAdding] = useState(null);
+      const [stageEditor, setStageEditor] = useState(null);
+      const activeMaterialStages = materialStages || MATERIAL_STAGES;
+      const activeMaterialStageIds = Object.keys(activeMaterialStages).sort((a, b) => stageLabel(a).localeCompare(stageLabel(b), "pl", { numeric: true }));
+      const dynamicFieldLabels = materialStageFieldLabels(activeMaterialStages);
       const projects = useMemo(() => activeProjectItems(serverProjects), [serverProjects]);
       const projectOptions = useMemo(() => projects.map(p => p.project), [projects]);
       const calcProjects = useMemo(() => projects.filter(p => !!p.calculationEnabled), [projects]);
@@ -5956,15 +5993,15 @@
       };
       const emptyMaterialData = stage => {
         if (stage === "8.2") return { wireUsageSent: false };
-        return Object.fromEntries((MATERIAL_STAGES[stage] || []).map(field => [field[0], ""]));
+        return Object.fromEntries((activeMaterialStages[stage] || []).map(field => [field[0], ""]));
       };
       const dataFieldsForStage = stage => stage === "8.2"
         ? [["wireUsageSent", "Wyslales zuzycie przewodow?", "checkbox"]]
-        : (MATERIAL_STAGES[stage] || []);
+        : (activeMaterialStages[stage] || []);
       const updateMaterialData = (state, key, value) => ({ ...state, data: { ...(state.data || {}), [key]: value } });
       const startAdd = () => {
         const project = calcProjects[0]?.project || projectOptions[0] || "";
-        const stage = materialStageIds[0] || "";
+        const stage = activeMaterialStageIds[0] || "";
         const product = projectBathrooms(project)[0] || 1;
         const type = bathroomTypeInfo(serverProjects, project, product);
         setAdding({
@@ -5992,6 +6029,53 @@
         setAdding({ ...adding, product, typeKey: type.calcKey, typeLabel: type.calcLabel });
       };
       const setAddingStage = stage => setAdding({ ...adding, stage, data: emptyMaterialData(stage) });
+      const stageFieldsToText = fields => (fields || []).map(field => `${field[0]} | ${field[1]} | ${field[2] || "text"}`).join("\n");
+      const parseStageFields = text => String(text || "").split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => {
+          const parts = line.split("|").map(part => part.trim());
+          return [parts[0] || "", parts[1] || parts[0] || "", ["text", "number", "checkbox"].includes(parts[2]) ? parts[2] : "text"];
+        })
+        .filter(field => field[0] && field[1]);
+      const openStageEditor = stage => setStageEditor({
+        originalStage: stage || "",
+        stage: stage || "",
+        fieldsText: stageFieldsToText(stage ? activeMaterialStages[stage] || [] : [])
+      });
+      const saveStageConfig = async () => {
+        if (!stageEditor) return;
+        const stage = String(stageEditor.stage || "").trim();
+        if (!stage) return setMsg({ type: "error", text: "Wpisz numer etapu kalkulacji." });
+        const fields = parseStageFields(stageEditor.fieldsText);
+        setSavingId("stage-" + stage); setMsg(null);
+        try {
+          if (stageEditor.originalStage && stageEditor.originalStage !== stage) {
+            await api.deleteCalculationStage(token, stageEditor.originalStage);
+          }
+          await api.saveCalculationStage(token, stage, fields);
+          if (reloadMaterialStages) await reloadMaterialStages();
+          setStageEditor(null);
+          setMsg({ type: "success", text: "Etap kalkulacji zostal zapisany." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingId("");
+        }
+      };
+      const removeStageConfig = async stage => {
+        if (!confirm("Usunac etap " + stageLabel(stage) + " z kalkulacji? Istniejace wpisy zuzyc zostana w bazie, ale etap nie bedzie wywolywal nowych kalkulacji.")) return;
+        setSavingId("stage-" + stage); setMsg(null);
+        try {
+          await api.deleteCalculationStage(token, stage);
+          if (reloadMaterialStages) await reloadMaterialStages();
+          setMsg({ type: "success", text: "Etap kalkulacji zostal usuniety." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingId("");
+        }
+      };
       const startEdit = item => setEditing({
         id: item.id,
         project: item.project,
@@ -6101,7 +6185,7 @@
               <label style=${S.label}>Etap</label>
               <select style=${S.input} value=${filters.stage} onChange=${e => setFilters({ ...filters, stage: e.target.value })}>
                 <option value="all">Wszystkie etapy</option>
-                ${materialStageIds.map(stage => html`<option key=${stage} value=${stage}>${stageLabel(stage)}</option>`)}
+                ${activeMaterialStageIds.map(stage => html`<option key=${stage} value=${stage}>${stageLabel(stage)}</option>`)}
               </select>
             </div>
             <div>
@@ -6122,6 +6206,33 @@
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
+          <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "12px" }}>
+            <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", flexWrap: "wrap", marginBottom: "8px" }}>
+              <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: 0 }}>Etapy kalkulowane</h3>
+              <button style=${S.btn} onClick=${() => openStageEditor("")}>Dodaj etap kalkulacji</button>
+            </div>
+            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "8px" }}>
+              ${activeMaterialStageIds.map(stage => html`
+                <div key=${stage} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "10px" }}>
+                  <div style=${{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "start" }}>
+                    <div>
+                      <strong>${stageLabel(stage)}</strong>
+                      <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>
+                        Pola: ${(activeMaterialStages[stage] || []).length || (stage === "8.2" ? 1 : 0)}
+                      </div>
+                    </div>
+                    <div style=${{ display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px" }} disabled=${!!savingId} onClick=${() => openStageEditor(stage)}>Modyfikuj</button>
+                      <button style=${{ ...S.danger, padding: "7px 9px", fontSize: "12px" }} disabled=${savingId === "stage-" + stage} onClick=${() => removeStageConfig(stage)}>Usun</button>
+                    </div>
+                  </div>
+                  <div style=${{ color: COLORS.dim, fontSize: "12px", marginTop: "8px", lineHeight: 1.5 }}>
+                    ${stage === "8.2" ? "Potwierdzenie: wyslales zuzycie przewodow?" : (activeMaterialStages[stage] || []).map(field => field[1]).join(", ") || "Brak pol"}
+                  </div>
+                </div>
+              `)}
+            </div>
+          </div>
           <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "12px" }}>
             <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "8px" }}>Co i gdzie kalkulujemy</h3>
             ${calculationSummary.length ? html`
@@ -6149,6 +6260,35 @@
               </div>
             ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "12px" }}>Brak wpisow do podsumowania.</div>`}
           </div>
+          ${stageEditor ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 90, display: "grid", placeItems: "center", padding: "16px" }}>
+              <section style=${{ ...S.card, width: "min(760px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
+                <h2 style=${S.title}>${stageEditor.originalStage ? "Modyfikuj etap kalkulacji" : "Dodaj etap kalkulacji"}</h2>
+                <div className="grid-2" style=${S.row2}>
+                  <div>
+                    <label style=${S.label}>Numer etapu</label>
+                    <input style=${S.input} placeholder="np. 15.1" value=${stageEditor.stage} onInput=${e => setStageEditor({ ...stageEditor, stage: e.target.value })} />
+                  </div>
+                  <div>
+                    <label style=${S.label}>Nazwa z listy etapow</label>
+                    <div style=${{ ...S.input, background: COLORS.panel2 }}>${stageEditor.stage ? stageLabel(stageEditor.stage) : "-"}</div>
+                  </div>
+                  <div style=${{ gridColumn: "1 / -1" }}>
+                    <label style=${S.label}>Pola kalkulacji</label>
+                    <textarea style=${{ ...S.input, minHeight: "220px", fontFamily: "Consolas, monospace", fontSize: "13px" }} value=${stageEditor.fieldsText} onInput=${e => setStageEditor({ ...stageEditor, fieldsText: e.target.value })}></textarea>
+                    <div style=${{ color: COLORS.dim, fontSize: "12px", marginTop: "6px", lineHeight: 1.5 }}>
+                      Jedno pole w jednej linii: <strong>klucz | nazwa pola | typ</strong>. Typ: text, number albo checkbox.<br />
+                      Przyklad: <strong>paintLiters | Ilosc farby (l) | number</strong>
+                    </div>
+                  </div>
+                </div>
+                <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
+                  <button style=${S.ghost} disabled=${!!savingId} onClick=${() => setStageEditor(null)}>Anuluj</button>
+                  <button style=${S.btn} disabled=${savingId === "stage-" + stageEditor.stage} onClick=${saveStageConfig}>${savingId === "stage-" + stageEditor.stage ? "Zapisywanie..." : "Zapisz etap"}</button>
+                </div>
+              </section>
+            </div>
+          ` : null}
           ${adding ? html`
             <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 80, display: "grid", placeItems: "center", padding: "16px" }}>
               <section style=${{ ...S.card, width: "min(760px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
@@ -6172,7 +6312,7 @@
                   <div>
                     <label style=${S.label}>Etap</label>
                     <select style=${S.input} value=${adding.stage} onChange=${e => setAddingStage(e.target.value)}>
-                      ${materialStageIds.map(stage => html`<option key=${stage} value=${stage}>${stageLabel(stage)}</option>`)}
+                      ${activeMaterialStageIds.map(stage => html`<option key=${stage} value=${stage}>${stageLabel(stage)}</option>`)}
                     </select>
                   </div>
                   <div>
@@ -6263,8 +6403,8 @@
                 <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "8px", marginTop: "10px" }}>
                   ${fields(item).map(([key, value]) => html`
                     <div key=${key} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "8px" }}>
-                      <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 800 }}>${materialFieldLabel(key)}</div>
-                      <div style=${{ fontWeight: 900 }}>${String(value)}</div>
+                      <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 800 }}>${dynamicFieldLabels[key] || materialFieldLabel(key)}</div>
+                  <div style=${{ fontWeight: 900 }}>${String(value)}</div>
                     </div>
                   `)}
                 </div>
@@ -6780,7 +6920,9 @@
           const result = await api.addReportAsWorker(token, transportReportWorker, transportReportDate, lines);
           if (reloadReports) await reloadReports();
           setTransportReport(null);
-          setMsg(saveReportMessage(result, lines.length));
+          setMsg(result && result.saved > 0
+            ? { type: "success", text: "Raport zaladunku zapisany w historii raportow. Pozycji: " + result.saved + "." }
+            : saveReportMessage(result, lines.length));
         } catch (e) {
           setMsg(saveReportErrorMessage(e));
         } finally {
@@ -7451,7 +7593,7 @@
       `;
     }
 
-    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, userStagePreferences, reloadUserStagePreferences, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadRolePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadUsers, logout }) {
+    function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, materialStages, userStagePreferences, reloadUserStagePreferences, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadRolePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadMaterialStages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -7654,8 +7796,8 @@
           <${Message} msg=${msg} />
           ${tab === "reports" ? (
             isController
-              ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} userStagePreferences=${userStagePreferences} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
-              : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
+              ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} userStagePreferences=${userStagePreferences} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
+              : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
           ) : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />
           ` : tab === "sessions" ? html`
@@ -7679,7 +7821,7 @@
           ` : tab === "quality" ? html`
             <${QualityControlTab} qualityData=${qualityData} token=${token} reports=${reports} transportDates=${transportDates} serverProjects=${serverProjects} reloadQuality=${reloadQuality} />
           ` : tab === "calculations" ? html`
-            <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} reloadMaterialUsages=${reloadMaterialUsages} />
+            <${CalculationsTab} materialUsages=${materialUsages} serverProjects=${serverProjects} token=${token} materialStages=${materialStages} reloadMaterialUsages=${reloadMaterialUsages} reloadMaterialStages=${reloadMaterialStages} />
           ` : html`
             <section style=${S.card}>
               <h2 style=${S.title}>Dodaj uzytkownika</h2>
@@ -7841,12 +7983,13 @@
       const [reportControls, setReportControls] = useState([]);
       const [userStagePreferences, setUserStagePreferences] = useState({ visibleStages: null });
       const [materialUsages, setMaterialUsages] = useState([]);
+      const [materialStages, setMaterialStages] = useState(MATERIAL_STAGES);
       const [loaded, setLoaded] = useState(false);
 
       const logout = () => {
         VIEWER_LOCAL_MODE = false;
         localStorage.removeItem("rrbr_token");
-        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setRolePermissions([]); setReportControls([]); setUserStagePreferences({ visibleStages: null }); setMaterialUsages([]); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
+        setToken(""); setUser(null); setReports([]); setUsers([]); setServerProjects([]); setStagePermissions([]); setRolePermissions([]); setReportControls([]); setUserStagePreferences({ visibleStages: null }); setMaterialUsages([]); setMaterialStages(MATERIAL_STAGES); setBathroomChecks([]); setQualityData({ items: [], records: [] }); setTransportReplacements([]);
       };
       const decodeToken = t => {
         try {
@@ -7880,6 +8023,14 @@
           setMaterialUsages(rows || []);
         } catch (_) {
           setMaterialUsages([]);
+        }
+      };
+      const reloadMaterialStages = async (t = token) => {
+        try {
+          const rows = await api.getCalculationStages(t);
+          setMaterialStages(normalizeMaterialStages(rows || []));
+        } catch (_) {
+          setMaterialStages(MATERIAL_STAGES);
         }
       };
       const reloadTransportDates = async (t = token) => {
@@ -7976,6 +8127,7 @@
                 await reloadUserStagePreferences(token, restored.code || restored.login);
                 await reloadRolePermissions(token);
                 await reloadReportControls(token);
+                await reloadMaterialStages(token);
                 await reloadMaterialUsages(token);
                 if (isManagerLike(restored)) await reloadUsers(token);
               } catch (_) {}
@@ -8007,6 +8159,7 @@
         await reloadUserStagePreferences(newToken, userData.code || userData.login);
         await reloadRolePermissions(newToken);
         await reloadReportControls(newToken);
+        await reloadMaterialStages(newToken);
         await reloadMaterialUsages(newToken);
         if (isManagerLike(userData)) await reloadUsers(newToken);
       };
@@ -8030,8 +8183,8 @@
               </section>
             </main>
           ` : isManagerLike(user) ?
-            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${() => reloadUserStagePreferences()} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadRolePermissions=${() => reloadRolePermissions()} reloadReportControls=${() => reloadReportControls()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
-            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${() => reloadUserStagePreferences()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
+            html`<${ManagerView} user=${user} token=${token} reports=${reports} users=${users} transportDates=${transportDates} transportReplacements=${transportReplacements} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} materialStages=${materialStages} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${() => reloadUserStagePreferences()} reloadProjects=${() => reloadProjects()} reloadBathroomComments=${() => reloadBathroomComments()} reloadBathroomChecks=${() => reloadBathroomChecks()} reloadQuality=${() => reloadQuality()} reloadStagePermissions=${() => reloadStagePermissions()} reloadRolePermissions=${() => reloadRolePermissions()} reloadReportControls=${() => reloadReportControls()} reloadTransportDates=${() => reloadTransportDates()} reloadTransportReplacements=${() => reloadTransportReplacements()} reloadReports=${() => reloadReports()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadMaterialStages=${() => reloadMaterialStages()} reloadUsers=${() => reloadUsers()} logout=${logout} />` :
+            html`<${WorkerView} user=${user} token=${token} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} stagePermissions=${stagePermissions} rolePermissions=${rolePermissions} reportControls=${reportControls} materialUsages=${materialUsages} materialStages=${materialStages} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${() => reloadUserStagePreferences()} reloadMaterialUsages=${() => reloadMaterialUsages()} reloadQuality=${() => reloadQuality()} reload=${() => reloadReports()} logout=${logout} />`}
         </div>
       `;
     }
