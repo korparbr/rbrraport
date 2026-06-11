@@ -3901,6 +3901,44 @@
           `}
         </section>
         ${selectedCell ? html`
+          <section style=${{ ...S.card, border: "2px solid " + COLORS.accent, background: "#eef4ff" }}>
+            <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "start", flexWrap: "wrap", marginBottom: "10px" }}>
+              <div>
+                <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "4px" }}>Komentarze lazienki</h3>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Projekt ${selectedCell.project} / Lazienka ${selectedCell.product}</div>
+              </div>
+              <button style=${S.ghost} onClick=${() => setSelectedCell(null)}>Zamknij</button>
+            </div>
+            ${selectedComments.length ? html`
+              <div style=${{ display: "grid", gap: "8px", marginBottom: "10px" }}>
+                ${selectedComments.map(c => html`
+                  <div key=${c.id} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                    <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start" }}>
+                      <div>
+                        <div style=${{ fontWeight: 800 }}>${c.comment}</div>
+                        <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${c.authorName || c.authorCode || ""} / ${(c.createdAt || "").slice(0, 10)}</div>
+                      </div>
+                      <span style=${{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", gap: "6px", color: c.done ? "#166534" : "#991b1b", fontSize: "12px", fontWeight: 900 }}>
+                        <span style=${{ width: "10px", height: "10px", borderRadius: "999px", background: c.done ? "#22c55e" : "#ef4444", display: "inline-block" }}></span>
+                        ${c.done ? "Zrobione" : "Do zrobienia"}
+                      </span>
+                    </div>
+                    ${canAddComments ? html`
+                      <button style=${{ ...S.ghost, marginTop: "8px", padding: "7px 10px" }} onClick=${() => setCommentDone(c, !c.done)}>${c.done ? "Cofnij" : "Zrobione"}</button>
+                    ` : null}
+                  </div>
+                `)}
+              </div>
+            ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px", marginBottom: "10px" }}>Brak komentarzy dla tej lazienki.</div>`}
+            ${canAddComments ? html`
+              <div className="grid-2" style=${S.row2}>
+                <input style=${S.input} value=${newComment} onInput=${e => setNewComment(e.target.value)} placeholder="Dodaj komentarz do lazienki" />
+                <button style=${S.btn} onClick=${addComment}>Dodaj komentarz</button>
+              </div>
+            ` : null}
+          </section>
+        ` : null}
+        ${selectedCell ? html`
           <section style=${S.card}>
             <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
               <div>
@@ -4071,36 +4109,6 @@
             ` : html`
               <div style=${{ color: COLORS.dim, textAlign: "center", padding: "20px" }}>Brak raportow dla tej lazienki.</div>
             `}
-            <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "14px", paddingTop: "12px" }}>
-              <h4 style=${{ ...S.title, fontSize: "16px", marginBottom: "8px" }}>Komentarze</h4>
-              ${selectedComments.length ? html`
-                <div style=${{ display: "grid", gap: "8px", marginBottom: "10px" }}>
-                  ${selectedComments.map(c => html`
-                    <div key=${c.id} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
-                      <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "flex-start" }}>
-                        <div>
-                          <div style=${{ fontWeight: 800 }}>${c.comment}</div>
-                          <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "4px" }}>${c.authorName || c.authorCode || ""} / ${(c.createdAt || "").slice(0, 10)}</div>
-                        </div>
-                        <span style=${{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", gap: "6px", color: c.done ? "#166534" : "#991b1b", fontSize: "12px", fontWeight: 900 }}>
-                          <span style=${{ width: "10px", height: "10px", borderRadius: "999px", background: c.done ? "#22c55e" : "#ef4444", display: "inline-block" }}></span>
-                          ${c.done ? "Zrobione" : "Do zrobienia"}
-                        </span>
-                      </div>
-                      ${canAddComments ? html`
-                        <button style=${{ ...S.ghost, marginTop: "8px", padding: "7px 10px" }} onClick=${() => setCommentDone(c, !c.done)}>${c.done ? "Cofnij" : "Zrobione"}</button>
-                      ` : null}
-                    </div>
-                  `)}
-                </div>
-              ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px", marginBottom: "10px" }}>Brak komentarzy.</div>`}
-              ${canAddComments ? html`
-                <div className="grid-2" style=${S.row2}>
-                  <input style=${S.input} value=${newComment} onInput=${e => setNewComment(e.target.value)} placeholder="Dodaj komentarz do lazienki" />
-                  <button style=${S.btn} onClick=${addComment}>Dodaj komentarz</button>
-                </div>
-              ` : null}
-            </div>
           </section>
         ` : null}
       `;
