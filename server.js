@@ -1,4 +1,4 @@
-// RaportRBR v1.86 - Backend
+// RaportRBR v1.87 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -693,7 +693,7 @@ const uniqueTextList = value => {
 
 const allowDuplicateReportLine = line => {
   const stage = String(line?.stage || '').trim().toLowerCase();
-  return stage === '21' || stage === 'transport';
+  return stage === 'transport';
 };
 
 const todayWarsaw = () => {
@@ -2475,7 +2475,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.86 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.87 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -2558,7 +2558,7 @@ async function collectBackupPayload() {
     calculation_stages: calculationStages.rows,
   };
   const counts = Object.fromEntries(Object.entries(data).map(([key, rows]) => [key, Array.isArray(rows) ? rows.length : 0]));
-  return { version: '1.86', exportedAt: new Date().toISOString(), data, counts };
+  return { version: '1.87', exportedAt: new Date().toISOString(), data, counts };
 }
 
 async function saveOnlineBackup(kind = 'auto', createdBy = null) {
@@ -2635,7 +2635,7 @@ app.get('/api/backup', auth, requireTab('database'), managerOnly, async (req, re
     ]);
 
     const backup = {
-      version: '1.86',
+      version: '1.87',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -3074,7 +3074,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.86',
+      version: '1.87',
       time: new Date(),
       db: {
         connected: true,
@@ -3140,6 +3140,6 @@ async function ensureInitialAdminAccount() {
 }
 
 ensureInitialAdminAccount().finally(() => {
-  app.listen(PORT, () => console.log(`RaportRBR v1.86 running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`RaportRBR v1.87 running on port ${PORT}`));
 });
 

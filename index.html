@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.86</title>
+  <title>FlowRBR 1.87</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -70,7 +70,7 @@
 
     const api = {
       login: (code, password) => apiRequest("POST", "/api/login", { code, password }),
-      getReports: token => apiRequest("GET", "/api/reports", null, token),
+      getReports: token => apiRequest("GET", "/api/reports?_=" + Date.now(), null, token),
       addReport: (token, date, lines) => apiRequest("POST", "/api/reports", { date, lines }, token),
       addReportAsWorker: (token, workerCode, date, lines) => apiRequest("POST", "/api/reports/as-worker", { workerCode, date, lines }, token),
       deleteReport: (token, id) => apiRequest("DELETE", "/api/reports/" + id, null, token),
@@ -684,7 +684,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.86</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.87</span>` : null}
         </div>
       `;
     }
@@ -1746,7 +1746,7 @@
       `;
     }
 
-    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, materialStages, reloadReports, reloadQuality, reloadMaterialUsages }) {
+    function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, materialStages, resetFiltersToken, reloadReports, reloadQuality, reloadMaterialUsages }) {
       const [dateFrom, setDateFrom] = useState("");
       const [dateTo, setDateTo] = useState("");
       const [worker, setWorker] = useState("all");
@@ -1799,6 +1799,9 @@
       const clearFilters = () => {
         setDateFrom(""); setDateTo(""); setWorker("all"); setProject("all"); setStage("all"); setMsg(null);
       };
+      useEffect(() => {
+        if (resetFiltersToken) clearFilters();
+      }, [resetFiltersToken]);
       const openDatePicker = e => {
         try {
           if (e.currentTarget.showPicker) e.currentTarget.showPicker();
@@ -6416,7 +6419,7 @@
       `;
     }
 
-    function TransportTab({ reports, transportDates, transportReplacements, token, serverProjects, users, stagePermissions, qualityData, reloadTransportDates, reloadTransportReplacements, reloadReports }) {
+    function TransportTab({ reports, transportDates, transportReplacements, token, serverProjects, users, stagePermissions, qualityData, reloadTransportDates, reloadTransportReplacements, reloadReports, onTransportReportSaved }) {
       const transportPanelStyle = {
         ...S.card,
         background: "#fff",
@@ -6920,6 +6923,7 @@
           const result = await api.addReportAsWorker(token, transportReportWorker, transportReportDate, lines);
           if (reloadReports) await reloadReports();
           setTransportReport(null);
+          if (result && result.saved > 0 && onTransportReportSaved) onTransportReportSaved(result);
           setMsg(result && result.saved > 0
             ? { type: "success", text: "Raport zaladunku zapisany w historii raportow. Pozycji: " + result.saved + "." }
             : saveReportMessage(result, lines.length));
@@ -7596,6 +7600,7 @@
     function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, materialStages, userStagePreferences, reloadUserStagePreferences, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadRolePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadMaterialStages, reloadUsers, logout }) {
       const [tab, setTab] = useState("reports");
       const [msg, setMsg] = useState(null);
+      const [reportsResetToken, setReportsResetToken] = useState(0);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
       const [resettingCode, setResettingCode] = useState("");
       const [userFilter, setUserFilter] = useState({ text: "", role: "all", status: "all" });
@@ -7797,7 +7802,7 @@
           ${tab === "reports" ? (
             isController
               ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} userStagePreferences=${userStagePreferences} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
-              : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
+              : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} resetFiltersToken=${reportsResetToken} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
           ) : tab === "account" ? html`
             <${ManagerAccount} user=${user} token=${token} users=${users} userStagePreferences=${userStagePreferences} reloadUserStagePreferences=${reloadUserStagePreferences} />
           ` : tab === "sessions" ? html`
@@ -7817,7 +7822,7 @@
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
           ` : tab === "transport" ? html`
-            <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} />
+            <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} onTransportReportSaved=${result => { setReportsResetToken(Date.now()); setMsg({ type: "success", text: "Raport zaladunku zapisany. Pozycji: " + (result.saved || 0) + ". Przelaczono do historii raportow." }); setTab("reports"); }} />
           ` : tab === "quality" ? html`
             <${QualityControlTab} qualityData=${qualityData} token=${token} reports=${reports} transportDates=${transportDates} serverProjects=${serverProjects} reloadQuality=${reloadQuality} />
           ` : tab === "calculations" ? html`
