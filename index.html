@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.85</title>
+  <title>FlowRBR 1.86</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -557,6 +557,7 @@
       ...r,
       id: r.id,
       date: r.date || r.report_date || r.reportDate || "",
+      createdAt: r.createdAt || r.created_at || "",
       workerLogin: r.workerLogin || r.worker_code || r.workerCode || r.code || "",
       workerName: r.workerName || r.worker_name || r.workerName || r.name || "",
       createdBy: r.createdBy || r.created_by || r.createdByCode || "",
@@ -591,6 +592,30 @@
         return { type: "warning", text: "Raport nie zostal zapisany w calosci. Serwer zwrocil informacje: " + text };
       }
       return { type: "error", text };
+    };
+    const reportTime = report => {
+      const value = report && (report.createdAt || report.created_at);
+      if (!value) return "";
+      try {
+        return new Date(value).toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+      } catch (_) {
+        return String(value).slice(11, 16);
+      }
+    };
+    const reportDateTime = report => {
+      const value = report && (report.createdAt || report.created_at);
+      if (!value) return report && report.date ? String(report.date) : "";
+      try {
+        return new Date(value).toLocaleString("pl-PL", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      } catch (_) {
+        return String(value).slice(0, 16).replace("T", " ");
+      }
+    };
+    const canWorkerDeleteReportToday = (report, user) => {
+      if (!report || !user) return false;
+      const owner = String(report.workerLogin || report.worker_code || "").toUpperCase();
+      const code = String(user.code || user.login || "").toUpperCase();
+      return owner && owner === code && String(report.date || "").slice(0, 10) === today();
     };
 
     const S = {
@@ -632,7 +657,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.85</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.86</span>` : null}
         </div>
       `;
     }
@@ -1082,7 +1107,7 @@
       `;
     }
 
-    function ReportsList({ reports, users, onDelete, showWorker }) {
+    function ReportsList({ reports, users, onDelete, showWorker, canDelete }) {
       const workerName = code => {
         const u = (users || []).find(x => (x.code || x.login) === code);
         return u ? u.name : code;
@@ -1096,15 +1121,18 @@
       return html`
         <section style=${S.card}>
           <h2 style=${S.title}>Historia raportow</h2>
-          ${reports.map(r => html`
+          ${reports.map(r => {
+            const showDelete = !!(onDelete && r.id && (!canDelete || canDelete(r)));
+            return html`
             <article key=${r.id || r.date + r.workerLogin} style=${{ background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "12px", marginBottom: "10px" }}>
               <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "center" }}>
                 <div>
                   <strong>${r.date}</strong>
+                  ${reportTime(r) ? html`<span style=${{ color: COLORS.muted }}> / ${reportTime(r)}</span>` : null}
                   ${showWorker ? html`<span style=${{ color: COLORS.muted }}> / ${r.workerName || workerName(r.workerLogin)}</span>` : null}
                   <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>Dodane przez: ${reportCreator(r) || "-"}</div>
                 </div>
-                ${onDelete && r.id ? html`<button style=${S.danger} onClick=${() => onDelete(r.id)}>Usun raport</button>` : null}
+                ${showDelete ? html`<button style=${S.danger} onClick=${() => onDelete(r.id)}>Usun raport</button>` : null}
               </div>
               <div style=${{ marginTop: "10px" }}>
                 ${(r.lines || []).map((l, i) => html`
@@ -1114,12 +1142,12 @@
                 `)}
               </div>
             </article>
-          `)}
+          `})}
         </section>
       `;
     }
 
-    function WorkerHistory({ reports, user, onDelete }) {
+    function WorkerHistory({ reports, user, onDelete, canDeleteReport }) {
       const [month, setMonth] = useState("");
       const [project, setProject] = useState("all");
       const [stage, setStage] = useState("all");
@@ -1140,7 +1168,7 @@
           )
         }))
         .filter(r => r.lines.length > 0)
-        .sort((a, b) => (b.date || "").localeCompare(a.date || "")), [reports, month, project, stage]);
+        .sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.createdAt || b.created_at || "").localeCompare(String(a.createdAt || a.created_at || ""))), [reports, month, project, stage]);
       const stageCounts = useMemo(() => {
         const counts = new Map();
         filteredReports.forEach(report => {
@@ -1174,7 +1202,7 @@
           filteredReports.forEach(report => {
             if (y > 275) { doc.addPage(); y = 14; }
             doc.setFont("helvetica", "bold");
-            doc.text("Data: " + report.date, 12, y);
+            doc.text("Data: " + report.date + (reportTime(report) ? " / godz. " + reportTime(report) : ""), 12, y);
             y += 6;
             doc.setFont("helvetica", "normal");
             doc.text("Dodane przez: " + reportCreator(report), 16, y);
@@ -1241,7 +1269,7 @@
           </div>
           <${Message} msg=${msg} />
         </section>
-        <${ReportsList} reports=${filteredReports} users=${[]} showWorker=${false} onDelete=${onDelete} />
+        <${ReportsList} reports=${filteredReports} users=${[]} showWorker=${false} onDelete=${onDelete} canDelete=${canDeleteReport} />
       `;
     }
 
@@ -1705,6 +1733,7 @@
         ...line,
         reportId: report.id,
         date: report.date || "",
+        createdAt: report.createdAt || report.created_at || "",
         workerLogin: report.workerLogin || report.worker_code || "",
         workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || ""),
         createdBy: report.createdBy || report.created_by || report.workerLogin || report.worker_code || "",
@@ -1726,11 +1755,12 @@
           )
         }))
         .filter(report => (report.lines || []).length > 0)
-        .sort((a, b) => (b.date || "").localeCompare(a.date || "")), [reports, dateFrom, dateTo, worker, project, stage]);
+        .sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.createdAt || b.created_at || "").localeCompare(String(a.createdAt || a.created_at || ""))), [reports, dateFrom, dateTo, worker, project, stage]);
 
       const filteredLines = useMemo(() => filteredReports.flatMap(report => (report.lines || []).map(line => ({
         ...line,
         date: report.date || "",
+        createdAt: report.createdAt || report.created_at || "",
         workerLogin: report.workerLogin || report.worker_code || "",
         workerName: report.workerName || report.worker_name || workerName(report.workerLogin || report.worker_code || ""),
         createdBy: report.createdBy || report.created_by || report.workerLogin || report.worker_code || "",
@@ -1751,9 +1781,10 @@
       };
       const exportCsv = () => {
         try {
-          const header = ["Data", "Pracownik kod", "Pracownik", "Dodane przez kod", "Dodane przez", "Zlecenie", "Lazienka", "Etap", "Hala", "Uwagi"];
+          const header = ["Data", "Godzina dodania", "Pracownik kod", "Pracownik", "Dodane przez kod", "Dodane przez", "Zlecenie", "Lazienka", "Etap", "Hala", "Uwagi"];
           const rows = filteredLines.map(line => [
             line.date,
+            reportTime(line),
             line.workerLogin,
             line.workerName,
             line.createdBy,
@@ -1992,7 +2023,9 @@
       const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
       const [questionPrompt, setQuestionPrompt] = useState(null);
       const [questionAnswers, setQuestionAnswers] = useState({});
-      const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
+      const mine = reports
+        .filter(r => r.workerLogin === (user.code || user.login))
+        .sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.createdAt || b.created_at || "").localeCompare(String(a.createdAt || a.created_at || "")));
       const workerCode = String(user.code || user.login || "").toUpperCase();
       const effectiveVisibleStages = useMemo(() => {
         const fromState = normalizeVisibleStages(userStagePreferences && userStagePreferences.visibleStages);
@@ -2163,7 +2196,7 @@
               <${Message} msg=${msg} />
             </section>
           ` : tab === "history" ? html`
-            <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
+            <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} canDeleteReport=${report => canWorkerDeleteReportToday(report, user)} />
           ` : tab === "maps" ? html`
             <${MapsTab} reports=${reports} token=${token} canEditMaps=${canEditWorkerMaps} canAddComments=${false} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} reloadBathroomComments=${async () => {}} reloadBathroomChecks=${async () => {}} />
           ` : tab === "sessions" ? html`
@@ -2234,7 +2267,9 @@
       const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
       const [questionPrompt, setQuestionPrompt] = useState(null);
       const [questionAnswers, setQuestionAnswers] = useState({});
-      const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
+      const mine = reports
+        .filter(r => r.workerLogin === (user.code || user.login))
+        .sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.createdAt || b.created_at || "").localeCompare(String(a.createdAt || a.created_at || "")));
       const workerCode = String(user.code || user.login || "").toUpperCase();
       const effectiveVisibleStages = useMemo(() => {
         const fromState = normalizeVisibleStages(userStagePreferences && userStagePreferences.visibleStages);
@@ -2371,7 +2406,7 @@
           <button style=${{ ...S.btn, marginTop: "12px", opacity: saving || !lines.length ? 0.6 : 1 }} disabled=${saving || !lines.length} onClick=${save}>${saving ? "Zapisywanie..." : "Zapisz raport"}</button>
           <${Message} msg=${msg} />
         </section>
-        <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} />
+        <${WorkerHistory} reports=${mine} user=${user} onDelete=${removeReport} canDeleteReport=${report => canWorkerDeleteReportToday(report, user)} />
         ${materialPrompt ? html`
           <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 50, display: "grid", placeItems: "center", padding: "16px" }}>
             <section style=${{ ...S.card, width: "min(720px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
@@ -5871,10 +5906,18 @@
       const [deletingId, setDeletingId] = useState("");
       const [savingId, setSavingId] = useState("");
       const [editing, setEditing] = useState(null);
+      const [adding, setAdding] = useState(null);
       const projects = useMemo(() => activeProjectItems(serverProjects), [serverProjects]);
       const projectOptions = useMemo(() => projects.map(p => p.project), [projects]);
       const calcProjects = useMemo(() => projects.filter(p => !!p.calculationEnabled), [projects]);
       const nonCalcProjects = useMemo(() => projects.filter(p => !p.calculationEnabled), [projects]);
+      const projectBathrooms = project => {
+        const info = projects.find(p => sameProject(p.project, project));
+        const count = Number(info && info.count) || 0;
+        const fromExcel = (info && Array.isArray(info.bathrooms) ? info.bathrooms : []).map(b => productNo(b.product)).filter(Boolean);
+        const numbers = fromExcel.length ? fromExcel : Array.from({ length: count }, (_, i) => i + 1);
+        return [...new Set(numbers)].sort((a, b) => a - b);
+      };
       const typeOptions = useMemo(() => [...new Set((materialUsages || [])
         .map(item => String(item.typeKey || item.typeLabel || "").trim())
         .filter(Boolean))]
@@ -5891,37 +5934,109 @@
         }
         return true;
       }), [materialUsages, filters, projects]);
+      const calculationSummary = useMemo(() => {
+        const map = {};
+        (materialUsages || []).forEach(item => {
+          const type = String(item.typeKey || item.typeLabel || "typ-brak-danych");
+          const key = [item.project, item.stage, type].join("#");
+          if (!map[key]) map[key] = { project: item.project, stage: item.stage, type, count: 0, approved: 0 };
+          map[key].count += 1;
+          if (item.approvedAt) map[key].approved += 1;
+        });
+        return Object.values(map).sort((a, b) =>
+          String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) ||
+          stageLabel(a.stage).localeCompare(stageLabel(b.stage), "pl", { numeric: true }) ||
+          String(a.type).localeCompare(String(b.type), "pl", { numeric: true })
+        );
+      }, [materialUsages]);
       const fields = item => Object.entries(item.data || {}).filter(([, value]) => value != null && String(value) !== "");
       const fmtDateTime = value => {
         if (!value) return "";
         try { return new Date(value).toLocaleString("pl-PL"); } catch (_) { return String(value); }
       };
+      const emptyMaterialData = stage => {
+        if (stage === "8.2") return { wireUsageSent: false };
+        return Object.fromEntries((MATERIAL_STAGES[stage] || []).map(field => [field[0], ""]));
+      };
+      const dataFieldsForStage = stage => stage === "8.2"
+        ? [["wireUsageSent", "Wyslales zuzycie przewodow?", "checkbox"]]
+        : (MATERIAL_STAGES[stage] || []);
+      const updateMaterialData = (state, key, value) => ({ ...state, data: { ...(state.data || {}), [key]: value } });
+      const startAdd = () => {
+        const project = calcProjects[0]?.project || projectOptions[0] || "";
+        const stage = materialStageIds[0] || "";
+        const product = projectBathrooms(project)[0] || 1;
+        const type = bathroomTypeInfo(serverProjects, project, product);
+        setAdding({
+          project,
+          product,
+          stage,
+          typeKey: type.calcKey,
+          typeLabel: type.calcLabel,
+          data: emptyMaterialData(stage)
+        });
+      };
+      const setAddingProject = project => {
+        const product = projectBathrooms(project)[0] || 1;
+        const type = bathroomTypeInfo(serverProjects, project, product);
+        setAdding(current => ({
+          ...current,
+          project,
+          product,
+          typeKey: type.calcKey,
+          typeLabel: type.calcLabel
+        }));
+      };
+      const setAddingProduct = product => {
+        const type = bathroomTypeInfo(serverProjects, adding.project, product);
+        setAdding({ ...adding, product, typeKey: type.calcKey, typeLabel: type.calcLabel });
+      };
+      const setAddingStage = stage => setAdding({ ...adding, stage, data: emptyMaterialData(stage) });
       const startEdit = item => setEditing({
         id: item.id,
         project: item.project,
         stage: item.stage,
         product: item.product,
         typeLabel: item.typeLabel || "",
-        dataText: JSON.stringify(item.data || {}, null, 2)
+        data: { ...(item.data || {}) }
       });
       const saveEdit = async () => {
         if (!editing) return;
-        let data = {};
-        try {
-          data = JSON.parse(editing.dataText || "{}");
-        } catch (_) {
-          return setMsg({ type: "error", text: "Dane zuzycia musza byc poprawnym JSON." });
-        }
         setSavingId("edit-" + editing.id); setMsg(null);
         try {
           await api.updateMaterialUsage(token, editing.id, {
             product: Number(editing.product),
             typeLabel: editing.typeLabel,
-            data
+            data: editing.data || {}
           });
           setEditing(null);
           await reloadMaterialUsages();
           setMsg({ type: "success", text: "Kalkulacja zostala zmodyfikowana." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        } finally {
+          setSavingId("");
+        }
+      };
+      const saveAdd = async () => {
+        if (!adding) return;
+        if (!adding.project || !Number(adding.product) || !adding.stage) return setMsg({ type: "error", text: "Wybierz projekt, lazienke i etap." });
+        setSavingId("add"); setMsg(null);
+        try {
+          const result = await api.addMaterialUsage(token, {
+            project: adding.project,
+            product: Number(adding.product),
+            stage: adding.stage,
+            typeKey: adding.typeKey || normalizeCalculationType(adding.typeLabel),
+            typeLabel: adding.typeLabel,
+            data: adding.data || {},
+            reportDate: today()
+          });
+          await reloadMaterialUsages();
+          setAdding(null);
+          setMsg(result && result.inserted === false
+            ? { type: "warning", text: "Taka kalkulacja juz istnieje dla tego projektu, etapu i typu. Uzyj Modyfikuj przy istniejacym wpisie." }
+            : { type: "success", text: "Kalkulacja zostala dodana." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -5960,8 +6075,9 @@
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: "12px", marginBottom: "12px" }}>
             <div>
               <h2 style=${S.title}>Kalkulacje</h2>
-              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Zuzycia materialow zapisane przy pierwszej lazienke danego typu.</div>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Podglad, dodawanie i modyfikacja zuzyc materialow dla projektow objetych kalkulacja.</div>
             </div>
+            <button style=${S.btn} onClick=${startAdd}>Dodaj kalkulacje</button>
           </div>
           <div className="grid-3" style=${{ ...S.row3, marginBottom: "12px" }}>
             <div style=${{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "8px" }}>
@@ -6006,9 +6122,89 @@
             <div style=${{ color: COLORS.muted, fontSize: "13px", display: "flex", alignItems: "end" }}>Wpisy: ${visible.length}</div>
           </div>
           <${Message} msg=${msg} />
+          <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.bg, padding: "12px", marginBottom: "12px" }}>
+            <h3 style=${{ ...S.title, fontSize: "17px", marginBottom: "8px" }}>Co i gdzie kalkulujemy</h3>
+            ${calculationSummary.length ? html`
+              <div style=${{ overflowX: "auto" }}>
+                <table style=${{ width: "100%", minWidth: "720px", borderCollapse: "collapse", fontSize: "13px" }}>
+                  <thead>
+                    <tr>
+                      ${["Projekt", "Etap", "Typ", "Wpisy", "Zatwierdzone"].map(head => html`
+                        <th key=${head} style=${{ textAlign: "left", padding: "9px", borderBottom: "1px solid " + COLORS.border, color: COLORS.muted }}>${head}</th>
+                      `)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${calculationSummary.map(row => html`
+                      <tr key=${row.project + row.stage + row.type}>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900 }}>${row.project}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${stageLabel(row.stage)}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${row.type}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border }}>${row.count}</td>
+                        <td style=${{ padding: "9px", borderBottom: "1px solid " + COLORS.border, color: row.approved === row.count ? "#166534" : COLORS.orange, fontWeight: 900 }}>${row.approved}/${row.count}</td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+            ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "12px" }}>Brak wpisow do podsumowania.</div>`}
+          </div>
+          ${adding ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 80, display: "grid", placeItems: "center", padding: "16px" }}>
+              <section style=${{ ...S.card, width: "min(760px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
+                <h2 style=${S.title}>Dodaj kalkulacje</h2>
+                <div className="grid-2" style=${S.row2}>
+                  <div>
+                    <label style=${S.label}>Projekt</label>
+                    <select style=${S.input} value=${adding.project} onChange=${e => setAddingProject(e.target.value)}>
+                      ${projectOptions.map(project => html`<option key=${project} value=${project}>${project}${calcProjects.some(p => sameProject(p.project, project)) ? " / kalkulacja" : " / bez kalkulacji"}</option>`)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style=${S.label}>Nr lazienki</label>
+                    <select style=${S.input} value=${adding.product} onChange=${e => setAddingProduct(Number(e.target.value))}>
+                      ${projectBathrooms(adding.project).map(product => {
+                        const type = bathroomTypeInfo(serverProjects, adding.project, product);
+                        return html`<option key=${product} value=${product}>${product}${type.rbrTypeShort ? " / " + type.rbrTypeShort : ""}</option>`;
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label style=${S.label}>Etap</label>
+                    <select style=${S.input} value=${adding.stage} onChange=${e => setAddingStage(e.target.value)}>
+                      ${materialStageIds.map(stage => html`<option key=${stage} value=${stage}>${stageLabel(stage)}</option>`)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style=${S.label}>Typ kalkulacji</label>
+                    <input style=${S.input} value=${adding.typeLabel} onInput=${e => setAdding({ ...adding, typeLabel: e.target.value, typeKey: normalizeCalculationType(e.target.value) })} />
+                  </div>
+                  <div style=${{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "10px" }}>
+                    ${dataFieldsForStage(adding.stage).map(field => html`
+                      <div key=${field[0]}>
+                        <label style=${S.label}>${field[1]}</label>
+                        ${field[2] === "checkbox" ? html`
+                          <label style=${{ ...S.ghost, display: "flex", gap: "8px", alignItems: "center", justifyContent: "flex-start" }}>
+                            <input type="checkbox" checked=${!!adding.data[field[0]]} onChange=${e => setAdding(updateMaterialData(adding, field[0], e.target.checked))} />
+                            Tak
+                          </label>
+                        ` : html`
+                          <input style=${S.input} type=${field[2]} value=${adding.data[field[0]] || ""} onInput=${e => setAdding(updateMaterialData(adding, field[0], e.target.value))} />
+                        `}
+                      </div>
+                    `)}
+                  </div>
+                </div>
+                <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
+                  <button style=${S.ghost} disabled=${!!savingId} onClick=${() => setAdding(null)}>Anuluj</button>
+                  <button style=${S.btn} disabled=${savingId === "add"} onClick=${saveAdd}>${savingId === "add" ? "Zapisywanie..." : "Zapisz kalkulacje"}</button>
+                </div>
+              </section>
+            </div>
+          ` : null}
           ${editing ? html`
             <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 80, display: "grid", placeItems: "center", padding: "16px" }}>
-              <section style=${{ ...S.card, width: "min(680px, 100%)", margin: 0 }}>
+              <section style=${{ ...S.card, width: "min(760px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
                 <h2 style=${S.title}>Edytuj kalkulacje</h2>
                 <div className="grid-2" style=${S.row2}>
                   <div>
@@ -6023,9 +6219,20 @@
                     <label style=${S.label}>Etykieta typu</label>
                     <input style=${S.input} value=${editing.typeLabel} onInput=${e => setEditing({ ...editing, typeLabel: e.target.value })} />
                   </div>
-                  <div style=${{ gridColumn: "1 / -1" }}>
-                    <label style=${S.label}>Dane zuzycia JSON</label>
-                    <textarea style=${{ ...S.input, minHeight: "220px", fontFamily: "Consolas, monospace", fontSize: "13px" }} value=${editing.dataText} onInput=${e => setEditing({ ...editing, dataText: e.target.value })}></textarea>
+                  <div style=${{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "10px" }}>
+                    ${dataFieldsForStage(editing.stage).map(field => html`
+                      <div key=${field[0]}>
+                        <label style=${S.label}>${field[1]}</label>
+                        ${field[2] === "checkbox" ? html`
+                          <label style=${{ ...S.ghost, display: "flex", gap: "8px", alignItems: "center", justifyContent: "flex-start" }}>
+                            <input type="checkbox" checked=${!!editing.data[field[0]]} onChange=${e => setEditing(updateMaterialData(editing, field[0], e.target.checked))} />
+                            Tak
+                          </label>
+                        ` : html`
+                          <input style=${S.input} type=${field[2]} value=${editing.data[field[0]] || ""} onInput=${e => setEditing(updateMaterialData(editing, field[0], e.target.value))} />
+                        `}
+                      </div>
+                    `)}
                   </div>
                 </div>
                 <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
