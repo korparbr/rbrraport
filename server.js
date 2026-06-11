@@ -339,7 +339,7 @@ async function ensureFertilizationTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS fertilization_settings (
       project TEXT NOT NULL,
-      delivery_date DATE NOT NULL,
+      delivery_date TEXT NOT NULL,
       hall TEXT NOT NULL DEFAULT '',
       car_capacity INTEGER NOT NULL DEFAULT 0,
       note TEXT NOT NULL DEFAULT '',
@@ -348,6 +348,7 @@ async function ensureFertilizationTable() {
       PRIMARY KEY (project, delivery_date)
     )
   `);
+  await pool.query(`ALTER TABLE fertilization_settings ALTER COLUMN delivery_date TYPE TEXT USING delivery_date::text`);
 }
 
 async function ensureBackupSnapshotsTable() {
@@ -1242,10 +1243,10 @@ app.get('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdm
   try {
     await ensureFertilizationTable();
     const r = await pool.query(
-      `SELECT project, delivery_date::text AS "deliveryDate", hall, car_capacity AS "carCapacity", note,
+      `SELECT project, delivery_date AS "deliveryDate", hall, car_capacity AS "carCapacity", note,
               updated_by AS "updatedBy", updated_at AS "updatedAt"
        FROM fertilization_settings
-       ORDER BY delivery_date, project`
+       ORDER BY CASE WHEN delivery_date ~ '^\\d{4}-\\d{2}-\\d{2}$' THEN delivery_date ELSE '9999-12-31' END, project, delivery_date`
     );
     res.json(r.rows);
   } catch (err) {
@@ -1255,11 +1256,12 @@ app.get('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdm
 
 app.put('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdminOnly, async (req, res) => {
   const project = String(req.body.project || '').trim();
-  const deliveryDate = String(req.body.deliveryDate || req.body.delivery_date || '').slice(0, 10);
+  const rawDeliveryDate = String(req.body.deliveryDate || req.body.delivery_date || '').trim();
+  const deliveryDate = rawDeliveryDate === 'kolejnosc' ? 'kolejnosc' : rawDeliveryDate.slice(0, 10);
   const hall = String(req.body.hall || '').trim();
   const carCapacity = Math.max(0, Math.floor(Number(req.body.carCapacity || req.body.car_capacity || 0)));
   const note = String(req.body.note || '').trim();
-  if (!project || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return res.status(400).json({ error: 'Brak projektu lub daty terminu' });
+  if (!project || !(/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate) || deliveryDate === 'kolejnosc')) return res.status(400).json({ error: 'Brak projektu lub daty terminu' });
   try {
     await ensureFertilizationTable();
     await pool.query(
@@ -1278,8 +1280,9 @@ app.put('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdm
 
 app.delete('/api/fertilization', auth, requireTab('fertilization'), supervisorOrAdminOnly, async (req, res) => {
   const project = String(req.query.project || '').trim();
-  const deliveryDate = String(req.query.deliveryDate || req.query.delivery_date || '').slice(0, 10);
-  if (!project || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) return res.status(400).json({ error: 'Brak projektu lub daty terminu' });
+  const rawDeliveryDate = String(req.query.deliveryDate || req.query.delivery_date || '').trim();
+  const deliveryDate = rawDeliveryDate === 'kolejnosc' ? 'kolejnosc' : rawDeliveryDate.slice(0, 10);
+  if (!project || !(/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate) || deliveryDate === 'kolejnosc')) return res.status(400).json({ error: 'Brak projektu lub daty terminu' });
   try {
     await ensureFertilizationTable();
     await pool.query('DELETE FROM fertilization_settings WHERE project=$1 AND delivery_date=$2', [project, deliveryDate]);
@@ -2983,8 +2986,9 @@ app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, 
       await ensureFertilizationTable();
       for (const f of data.fertilization_settings) {
         const project = String(f.project || '').trim();
-        const deliveryDate = String(f.delivery_date || f.deliveryDate || '').slice(0, 10);
-        if (!project || !/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate)) continue;
+        const rawDeliveryDate = String(f.delivery_date || f.deliveryDate || '').trim();
+        const deliveryDate = rawDeliveryDate === 'kolejnosc' ? 'kolejnosc' : rawDeliveryDate.slice(0, 10);
+        if (!project || !(/^\d{4}-\d{2}-\d{2}$/.test(deliveryDate) || deliveryDate === 'kolejnosc')) continue;
         await client.query(
           `INSERT INTO fertilization_settings (project, delivery_date, hall, car_capacity, note, updated_by, updated_at)
            VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()))

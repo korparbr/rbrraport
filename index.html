@@ -3189,37 +3189,45 @@
                   doc.setFontSize(Math.max(7, cellW * 0.36));
                   doc.text(String.fromCharCode(9733), x - 1.8, cy + Math.max(2.8, cellH * 0.03));
                 }
-                if (commentStatus) {
-                  const r = Math.max(1.9, cellW * 0.075);
-                  doc.setFillColor(commentStatus.open ? 239 : 34, commentStatus.open ? 68 : 197, commentStatus.open ? 68 : 94);
-                  doc.circle(x + cellW - r - 1.4, cy + cellH - r - 1.8, r, "F");
-                }
+                const markerSize = Math.max(3.2, Math.min(5.8, cellW * 0.16));
+                const markerY = cy + cellH - markerSize - 2.1;
+                const markerCenters = {
+                  check: x + cellW * 0.23,
+                  helmet: x + cellW * 0.5,
+                  comment: x + cellW * 0.77
+                };
                 if (needsTilingCheck) {
                   const csBg = hex(tileCheckStyle.bg);
                   const csBorder = hex(tileCheckStyle.border);
                   const csText = hex(tileCheckStyle.color);
-                  const size = Math.max(4.8, cellW * 0.22);
+                  const size = markerSize;
                   doc.setDrawColor(csBorder[0], csBorder[1], csBorder[2]);
                   doc.setFillColor(csBg[0], csBg[1], csBg[2]);
-                  doc.rect(x + 1.3, cy + cellH - size - 1.8, size, size, "FD");
+                  doc.rect(markerCenters.check - size / 2, markerY, size, size, "FD");
                   if (tileCheckStyle.mark) {
                     doc.setTextColor(csText[0], csText[1], csText[2]);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(size * 0.92);
-                    doc.text(tileCheckStyle.mark, x + 1.3 + size * 0.19, cy + cellH - 2.6);
+                    doc.setFontSize(size * 0.76);
+                    doc.text(tileCheckStyle.mark, markerCenters.check - size * 0.24, markerY + size * 0.74);
                   }
                 }
                 const hsBg = hex(helmetStyle.bg);
                 const hsBorder = hex(helmetStyle.border);
                 const hsText = hex(helmetStyle.color);
-                const helmetR = Math.max(2.8, cellW * 0.105);
+                const helmetR = markerSize / 2;
                 doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
                 doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
-                doc.circle(x + cellW / 2, cy + cellH - helmetR - 1.7, helmetR, "FD");
+                doc.circle(markerCenters.helmet, markerY + markerSize / 2, helmetR, "FD");
                 doc.setTextColor(hsText[0], hsText[1], hsText[2]);
                 doc.setFont("helvetica", "bold");
-                doc.setFontSize(helmetR * 1.25);
-                doc.text("K", x + cellW / 2 - helmetR * 0.38, cy + cellH - helmetR * 0.64);
+                doc.setFontSize(markerSize * 0.62);
+                doc.text("K", markerCenters.helmet - markerSize * 0.18, markerY + markerSize * 0.71);
+                if (commentStatus) {
+                  const cr = markerSize / 2;
+                  doc.setDrawColor(255, 255, 255);
+                  doc.setFillColor(commentStatus.open ? 239 : 34, commentStatus.open ? 68 : 197, commentStatus.open ? 68 : 94);
+                  doc.circle(markerCenters.comment, markerY + markerSize / 2, cr, "FD");
+                }
                 if (qState.goatActive || qState.missingActive) {
                   doc.setFont("helvetica", "bold");
                   doc.setFontSize(Math.max(5.5, cellW * 0.18));
@@ -4134,30 +4142,45 @@
       const packedSet = useMemo(() => new Set(packedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
       const loadedSet = useMemo(() => new Set(loadedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
       const projectOptions = useMemo(() => activeProjectItems(serverProjects).map(p => p.project).sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [serverProjects]);
+      const projectBathroomEntries = project => {
+        const importedMap = {};
+        (project.bathrooms || []).forEach(b => { importedMap[productNo(b.product)] = b; });
+        const count = Number(project.count || 0);
+        const products = [...new Set([
+          ...Array.from({ length: count }, (_, i) => i + 1),
+          ...Object.keys(importedMap).map(Number).filter(Boolean)
+        ])].sort((a, b) => a - b);
+        return products.map(product => importedMap[product] || { product, requestedDelivery: "" });
+      };
+      const ruleDateLabel = date => date === "kolejnosc" ? "wg kolejnosci" : date;
 
       const bathroomRows = useMemo(() => {
         const rows = [];
         activeProjectItems(serverProjects).forEach(project => {
           if (selectedProject !== "all" && !sameProject(project.project, selectedProject)) return;
-          (project.bathrooms || []).forEach(b => {
+          projectBathroomEntries(project).forEach(b => {
             const key = transportKey(project.project, b.product);
             if (productionKeys.has(key)) return;
             if (packedSet.has(key)) return;
             if (loadedSet.has(key)) return;
-            const date = String(b.requestedDelivery || "").slice(0, 10);
-            if (!date) return;
+            const realDate = String(b.requestedDelivery || "").slice(0, 10);
+            const date = realDate || "kolejnosc";
             if (planningFilters.product && !String(productNo(b.product)).includes(String(planningFilters.product).trim())) return;
             if (planningFilters.deliveryDate !== "all" && date !== planningFilters.deliveryDate) return;
             rows.push({
               project: String(project.project),
               product: productNo(b.product),
               date,
+              realDate,
               type: bathroomTypeInfo(serverProjects, project.project, b.product).rbrTypeShort || "",
               meta: b
             });
           });
         });
-        return rows.sort((a, b) => (a.date || "").localeCompare(b.date || "") || a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
+        return rows.sort((a, b) => {
+          const dateSort = (a.realDate || "9999-12-31").localeCompare(b.realDate || "9999-12-31");
+          return dateSort || a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product;
+        });
       }, [serverProjects, selectedProject, productionKeys, packedSet, loadedSet, planningFilters]);
 
       const productionCounts = useMemo(() => {
@@ -4197,16 +4220,18 @@
       }, [detailProjectInfo]);
       const detailDeliveryDates = useMemo(() => {
         if (!detailProjectInfo) return [];
-        return [...new Set((detailProjectInfo.bathrooms || [])
+        const dates = [...new Set((detailProjectInfo.bathrooms || [])
           .map(b => String(b.requestedDelivery || "").slice(0, 10))
           .filter(Boolean))]
           .sort();
+        return dates.length ? dates : ["kolejnosc"];
       }, [detailProjectInfo]);
       const planningDeliveryDates = useMemo(() => {
-        return [...new Set(activeProjectItems(serverProjects).flatMap(project => (project.bathrooms || [])
-          .map(b => String(b.requestedDelivery || "").slice(0, 10))
-          .filter(Boolean)))]
-          .sort();
+        const values = new Set();
+        activeProjectItems(serverProjects).forEach(project => {
+          projectBathroomEntries(project).forEach(b => values.add(String(b.requestedDelivery || "").slice(0, 10) || "kolejnosc"));
+        });
+        return [...values].sort((a, b) => (a === "kolejnosc" ? "9999-12-31" : a).localeCompare(b === "kolejnosc" ? "9999-12-31" : b));
       }, [serverProjects]);
       const detailCommonHall = useMemo(() => {
         if (!detailProject || !detailDeliveryDates.length) return "";
@@ -4220,7 +4245,7 @@
         const productFilter = String(detailFilters.product || "").trim();
         return detailProducts.filter(product => {
           const meta = bathroomMetaMap(serverProjects)[transportKey(detailProject, product)] || {};
-          const deliveryDate = meta.requestedDelivery ? String(meta.requestedDelivery).slice(0, 10) : "";
+          const deliveryDate = meta.requestedDelivery ? String(meta.requestedDelivery).slice(0, 10) : "kolejnosc";
           if (productFilter && !String(product).includes(productFilter)) return false;
           if (detailFilters.deliveryDate !== "all" && deliveryDate !== detailFilters.deliveryDate) return false;
           return true;
@@ -4242,17 +4267,25 @@
           base[key].bathrooms.push(row);
         });
         const ordered = Object.values(base).sort((a, b) => a.date.localeCompare(b.date) || a.project.localeCompare(b.project, "pl", { numeric: true }));
-        return ordered.map((group, idx) => {
+        return ordered.flatMap((group, idx) => {
           const rule = ruleMap[group.project + "#" + group.date] || {};
           const capacity = Number(rule.carCapacity || rule.car_capacity || 0);
           const hall = rule.hall || "";
+          if (group.date === "kolejnosc" && capacity > 0 && group.bathrooms.length > capacity) {
+            const chunks = [];
+            for (let i = 0; i < group.bathrooms.length; i += capacity) {
+              const chunk = group.bathrooms.slice(i, i + capacity);
+              chunks.push({ ...group, groupId: group.project + "#" + group.date + "#" + chunks.length, hall, capacity, note: rule.note || "", bathrooms: chunk, bathroomsWithFill: chunk, fillCount: 0 });
+            }
+            return chunks;
+          }
           const extraNeeded = Math.max(0, capacity - group.bathrooms.length);
           const extras = extraNeeded ? ordered
             .slice(idx + 1)
             .flatMap(next => next.bathrooms)
             .filter(row => row.project === group.project)
             .slice(0, extraNeeded) : [];
-          return { ...group, hall, capacity, note: rule.note || "", bathroomsWithFill: [...group.bathrooms, ...extras], fillCount: extras.length };
+          return [{ ...group, groupId: group.project + "#" + group.date, hall, capacity, note: rule.note || "", bathroomsWithFill: [...group.bathrooms, ...extras], fillCount: extras.length }];
         });
       }, [bathroomRows, ruleMap]);
       const fertilizationBoard = useMemo(() => {
@@ -4298,7 +4331,7 @@
         if (!detailProjectInfo) return;
         const capacity = Number(detailCapacity || 0);
         if (!capacity || capacity < 1) return setMsg({ type: "error", text: "Wpisz ile lazienek wchodzi na auto." });
-        if (!detailDeliveryDates.length) return setMsg({ type: "error", text: "Ten projekt nie ma dat Requested Delivery z Positionlisty." });
+        if (!detailDeliveryDates.length) return setMsg({ type: "error", text: "Ten projekt nie ma lazienek do ustawienia." });
         try {
           for (const date of detailDeliveryDates) {
             const current = ruleMap[detailProject + "#" + date] || {};
@@ -4318,15 +4351,16 @@
       };
       const saveProjectHall = async () => {
         if (!detailProjectInfo) return;
-        if (!detailHall) return setMsg({ type: "error", text: "Wybierz hale dla projektu." });
-        if (!detailDeliveryDates.length) return setMsg({ type: "error", text: "Ten projekt nie ma dat Requested Delivery z Positionlisty." });
+        const hallToSave = detailHall || detailCommonHall;
+        if (!hallToSave) return setMsg({ type: "error", text: "Wybierz hale dla projektu." });
+        if (!detailDeliveryDates.length) return setMsg({ type: "error", text: "Ten projekt nie ma lazienek do ustawienia." });
         try {
           for (const date of detailDeliveryDates) {
             const current = ruleMap[detailProject + "#" + date] || {};
             await api.saveFertilization(token, {
               project: detailProject,
               deliveryDate: date,
-              hall: detailHall,
+              hall: hallToSave,
               carCapacity: Number(current.carCapacity || current.car_capacity || 0),
               note: current.note || ""
             });
@@ -4338,7 +4372,7 @@
         }
       };
       const deleteRule = async group => {
-        if (!confirm("Usunac ustawienia nawozenia dla projektu " + group.project + " / " + group.date + "?")) return;
+        if (!confirm("Usunac ustawienia nawozenia dla projektu " + group.project + " / " + ruleDateLabel(group.date) + "?")) return;
         try {
           await api.deleteFertilization(token, group.project, group.date);
           await load();
@@ -4384,7 +4418,7 @@
               <label style=${S.label}>Filtr daty wysylki</label>
               <select style=${S.input} value=${planningFilters.deliveryDate} onChange=${e => setPlanningFilters({ ...planningFilters, deliveryDate: e.target.value })}>
                 <option value="all">Wszystkie daty</option>
-                ${planningDeliveryDates.map(date => html`<option key=${date} value=${date}>${date}</option>`)}
+                ${planningDeliveryDates.map(date => html`<option key=${date} value=${date}>${ruleDateLabel(date)}</option>`)}
               </select>
             </div>
             <div style=${{ display: "flex", alignItems: "end", gap: "8px", flexWrap: "wrap" }}>
@@ -4456,7 +4490,7 @@
                 <label style=${S.label}>Filtr daty wysylki</label>
                 <select style=${S.input} value=${detailFilters.deliveryDate} onChange=${e => setDetailFilters({ ...detailFilters, deliveryDate: e.target.value })}>
                   <option value="all">Wszystkie daty</option>
-                  ${detailDeliveryDates.map(date => html`<option key=${date} value=${date}>${date}</option>`)}
+                  ${detailDeliveryDates.map(date => html`<option key=${date} value=${date}>${ruleDateLabel(date)}</option>`)}
                 </select>
               </div>
               <div style=${{ display: "flex", alignItems: "end", gap: "8px", flexWrap: "wrap" }}>
@@ -4520,11 +4554,11 @@
                         return html`
                           <td key=${col.id} style=${{ border: "1px solid #111827", minHeight: "42px", padding: "8px", textAlign: "center", verticalAlign: "middle", color: COLORS.text, background: "#fff" }}>
                             ${group ? html`
-                              <button type="button" onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })} title=${"Termin " + group.date + " / auto " + (group.capacity || "-")} style=${{ border: "0", background: "transparent", color: COLORS.text, fontWeight: 800, fontSize: "14px", cursor: "pointer", width: "100%", lineHeight: 1.35 }}>
+                              <button type="button" onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })} title=${"Termin " + ruleDateLabel(group.date) + " / auto " + (group.capacity || "-")} style=${{ border: "0", background: "transparent", color: COLORS.text, fontWeight: 800, fontSize: "14px", cursor: "pointer", width: "100%", lineHeight: 1.35 }}>
                                 ${group.text}
                               </button>
                               <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "3px" }}>
-                                ${group.date}${group.capacity ? " / auto " + group.capacity : ""}${group.note ? " / " + group.note : ""}
+                                ${ruleDateLabel(group.date)}${group.capacity ? " / auto " + group.capacity : ""}${group.note ? " / " + group.note : ""}
                               </div>
                             ` : html`<span style=${{ color: COLORS.dim }}> </span>`}
                           </td>
@@ -4539,21 +4573,21 @@
                   <strong>Bez wybranej hali / pozostale:</strong>
                   <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "8px" }}>
                     ${fertilizationBoard.other.map(group => html`
-                      <button key=${group.project + group.date} style=${S.ghost} onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })}>
-                        ${group.text} / ${group.date}
+                      <button key=${group.groupId || group.project + group.date} style=${S.ghost} onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })}>
+                        ${group.text} / ${ruleDateLabel(group.date)}
                       </button>
                     `)}
                   </div>
                 </div>
               ` : null}
             </div>
-          ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "20px" }}>Brak lazienek do nawozenia z dat Requested Delivery.</div>`}
+          ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "20px" }}>Brak lazienek do nawozenia.</div>`}
         </section>
         ${editing ? html`
           <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 60, display: "grid", placeItems: "center", padding: "16px" }}>
             <section style=${{ ...S.card, width: "min(680px, 100%)", margin: 0 }}>
               <h2 style=${S.title}>Ustawienia nawozenia</h2>
-              <div style=${{ color: COLORS.muted, marginBottom: "12px" }}>Projekt ${editing.project} / termin ${editing.date}</div>
+              <div style=${{ color: COLORS.muted, marginBottom: "12px" }}>Projekt ${editing.project} / termin ${ruleDateLabel(editing.date)}</div>
               <div className="grid-2" style=${S.row2}>
                 <div>
                   <label style=${S.label}>Hala</label>
@@ -7978,7 +8012,7 @@
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
           ` : tab === "transport" ? html`
-            <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} onTransportReportSaved=${result => { setReportsResetToken(Date.now()); setMsg({ type: "success", text: "Raport zaladunku zapisany. Pozycji: " + (result.saved || 0) + ". Przelaczono do historii raportow." }); setTab("reports"); }} />
+            <${TransportTab} reports=${reports} transportDates=${transportDates} transportReplacements=${transportReplacements} token=${token} serverProjects=${serverProjects} users=${users} stagePermissions=${stagePermissions} qualityData=${qualityData} reloadTransportDates=${reloadTransportDates} reloadTransportReplacements=${reloadTransportReplacements} reloadReports=${reloadReports} onTransportReportSaved=${result => { setReportsResetToken(Date.now()); setMsg({ type: "success", text: "Raport zaladunku zapisany. Pozycji: " + (result.saved || 0) + "." }); }} />
           ` : tab === "quality" ? html`
             <${QualityControlTab} qualityData=${qualityData} token=${token} reports=${reports} transportDates=${transportDates} serverProjects=${serverProjects} reloadQuality=${reloadQuality} />
           ` : tab === "calculations" ? html`
