@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.87</title>
+  <title>FlowRBR 1.88</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -20,6 +20,7 @@
     button:disabled { cursor: not-allowed; }
     @media (max-width: 700px) {
       .grid-2, .grid-3 { grid-template-columns: 1fr !important; }
+      .calc-field-row { grid-template-columns: 1fr !important; }
       .product-grid { grid-template-columns: repeat(4, 1fr) !important; }
       .toolbar { align-items: stretch !important; flex-direction: column !important; }
       .tabs { overflow-x: auto; }
@@ -684,7 +685,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.87</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.88</span>` : null}
         </div>
       `;
     }
@@ -6032,25 +6033,41 @@
         setAdding({ ...adding, product, typeKey: type.calcKey, typeLabel: type.calcLabel });
       };
       const setAddingStage = stage => setAdding({ ...adding, stage, data: emptyMaterialData(stage) });
-      const stageFieldsToText = fields => (fields || []).map(field => `${field[0]} | ${field[1]} | ${field[2] || "text"}`).join("\n");
-      const parseStageFields = text => String(text || "").split(/\r?\n/)
-        .map(line => line.trim())
-        .filter(Boolean)
-        .map(line => {
-          const parts = line.split("|").map(part => part.trim());
-          return [parts[0] || "", parts[1] || parts[0] || "", ["text", "number", "checkbox"].includes(parts[2]) ? parts[2] : "text"];
-        })
+      const normalizeStageEditorFields = fields => (fields || []).map((field, index) => ({
+        id: Date.now() + "-" + index + "-" + String(field[0] || ""),
+        key: String(field[0] || "").trim(),
+        label: String(field[1] || field[0] || "").trim(),
+        type: ["text", "number", "checkbox"].includes(String(field[2] || "").trim()) ? String(field[2] || "").trim() : "text"
+      }));
+      const stageEditorFieldsPayload = fields => (fields || [])
+        .map(field => [
+          String(field.key || "").trim(),
+          String(field.label || field.key || "").trim(),
+          ["text", "number", "checkbox"].includes(String(field.type || "").trim()) ? String(field.type || "").trim() : "text"
+        ])
         .filter(field => field[0] && field[1]);
       const openStageEditor = stage => setStageEditor({
         originalStage: stage || "",
         stage: stage || "",
-        fieldsText: stageFieldsToText(stage ? activeMaterialStages[stage] || [] : [])
+        fields: normalizeStageEditorFields(stage ? activeMaterialStages[stage] || [] : [])
       });
+      const addStageField = () => setStageEditor(current => current ? ({
+        ...current,
+        fields: [...(current.fields || []), { id: Date.now() + "-field", key: "", label: "", type: "text" }]
+      }) : current);
+      const updateStageField = (id, field, value) => setStageEditor(current => current ? ({
+        ...current,
+        fields: (current.fields || []).map(item => item.id === id ? { ...item, [field]: value } : item)
+      }) : current);
+      const removeStageField = id => setStageEditor(current => current ? ({
+        ...current,
+        fields: (current.fields || []).filter(item => item.id !== id)
+      }) : current);
       const saveStageConfig = async () => {
         if (!stageEditor) return;
         const stage = String(stageEditor.stage || "").trim();
-        if (!stage) return setMsg({ type: "error", text: "Wpisz numer etapu kalkulacji." });
-        const fields = parseStageFields(stageEditor.fieldsText);
+        if (!stage) return setMsg({ type: "error", text: "Wybierz etap kalkulacji." });
+        const fields = stageEditorFieldsPayload(stageEditor.fields);
         setSavingId("stage-" + stage); setMsg(null);
         try {
           if (stageEditor.originalStage && stageEditor.originalStage !== stage) {
@@ -6270,18 +6287,49 @@
                 <div className="grid-2" style=${S.row2}>
                   <div>
                     <label style=${S.label}>Numer etapu</label>
-                    <input style=${S.input} placeholder="np. 15.1" value=${stageEditor.stage} onInput=${e => setStageEditor({ ...stageEditor, stage: e.target.value })} />
+                    <select style=${S.input} value=${stageEditor.stage} onChange=${e => setStageEditor({ ...stageEditor, stage: e.target.value })}>
+                      <option value="">- wybierz etap -</option>
+                      ${STAGES.map(stage => html`<option key=${stage[0]} value=${stage[0]}>${stage[1]}</option>`)}
+                    </select>
                   </div>
                   <div>
                     <label style=${S.label}>Nazwa z listy etapow</label>
                     <div style=${{ ...S.input, background: COLORS.panel2 }}>${stageEditor.stage ? stageLabel(stageEditor.stage) : "-"}</div>
                   </div>
                   <div style=${{ gridColumn: "1 / -1" }}>
-                    <label style=${S.label}>Pola kalkulacji</label>
-                    <textarea style=${{ ...S.input, minHeight: "220px", fontFamily: "Consolas, monospace", fontSize: "13px" }} value=${stageEditor.fieldsText} onInput=${e => setStageEditor({ ...stageEditor, fieldsText: e.target.value })}></textarea>
-                    <div style=${{ color: COLORS.dim, fontSize: "12px", marginTop: "6px", lineHeight: 1.5 }}>
-                      Jedno pole w jednej linii: <strong>klucz | nazwa pola | typ</strong>. Typ: text, number albo checkbox.<br />
-                      Przyklad: <strong>paintLiters | Ilosc farby (l) | number</strong>
+                    <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+                      <label style=${{ ...S.label, marginBottom: 0 }}>Pola kalkulacji</label>
+                      <button style=${S.ghost} onClick=${addStageField}>Dodaj pole</button>
+                    </div>
+                    <div style=${{ display: "grid", gap: "8px" }}>
+                      ${(stageEditor.fields || []).map((field, index) => html`
+                        <div key=${field.id} className="calc-field-row" style=${{ display: "grid", gridTemplateColumns: "42px minmax(130px, 1fr) minmax(180px, 1.5fr) minmax(120px, .7fr) auto", gap: "8px", alignItems: "end" }}>
+                          <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 900, paddingBottom: "11px" }}>#${index + 1}</div>
+                          <div>
+                            <label style=${S.label}>Klucz</label>
+                            <input style=${S.input} placeholder="np. foilM2" value=${field.key} onInput=${e => updateStageField(field.id, "key", e.target.value)} />
+                          </div>
+                          <div>
+                            <label style=${S.label}>Nazwa pola</label>
+                            <input style=${S.input} placeholder="np. Ilosc folii (m2)" value=${field.label} onInput=${e => updateStageField(field.id, "label", e.target.value)} />
+                          </div>
+                          <div>
+                            <label style=${S.label}>Typ</label>
+                            <select style=${S.input} value=${field.type} onChange=${e => updateStageField(field.id, "type", e.target.value)}>
+                              <option value="text">Tekst</option>
+                              <option value="number">Liczba</option>
+                              <option value="checkbox">Tak/Nie</option>
+                            </select>
+                          </div>
+                          <button style=${S.danger} onClick=${() => removeStageField(field.id)}>Usun</button>
+                        </div>
+                      `)}
+                      ${(stageEditor.fields || []).length ? null : html`
+                        <div style=${{ border: "1px dashed " + COLORS.border, borderRadius: "8px", padding: "14px", color: COLORS.dim, textAlign: "center" }}>Brak pol. Kliknij "Dodaj pole".</div>
+                      `}
+                    </div>
+                    <div style=${{ color: COLORS.dim, fontSize: "12px", marginTop: "8px", lineHeight: 1.5 }}>
+                      Klucz to techniczna nazwa bez polskich znakow i spacji, np. <strong>foilM2</strong>. Nazwa pola jest tym, co zobaczy pracownik w formularzu.
                     </div>
                   </div>
                 </div>
@@ -6903,14 +6951,13 @@
       };
       const openTransportReport = row => {
         setTransportReport(row);
-        setTransportReportDate(row.loadDate || today());
+        setTransportReportDate(today());
         setTransportReportWorkerFilter("");
         setTransportReportWorker((reportWorkers[0] && (reportWorkers[0].code || reportWorkers[0].login)) || "");
         setMsg(null);
       };
       const saveTransportReport = async () => {
         if (!transportReport) return;
-        if (!transportReportDate) return setMsg({ type: "error", text: "Wpisz date raportu zaladunku." });
         if (!transportReportWorker) return setMsg({ type: "error", text: "Wybierz pracownika." });
         setSavingKey("transport-report"); setMsg(null);
         try {
@@ -6920,7 +6967,7 @@
             stage: "21",
             note: "LKW " + (transportReport.lkwNumber || "-")
           }));
-          const result = await api.addReportAsWorker(token, transportReportWorker, transportReportDate, lines);
+          const result = await api.addReportAsWorker(token, transportReportWorker, today(), lines);
           if (reloadReports) await reloadReports();
           setTransportReport(null);
           if (result && result.saved > 0 && onTransportReportSaved) onTransportReportSaved(result);
@@ -7486,7 +7533,7 @@
                 <div className="grid-2" style=${S.row2}>
                   <div>
                     <label style=${S.label}>Data raportu</label>
-                    <input style=${S.input} type="date" value=${transportReportDate} onInput=${e => setTransportReportDate(e.target.value)} />
+                    <div style=${{ ...S.input, background: COLORS.panel2, display: "flex", alignItems: "center" }}>${today()}</div>
                   </div>
                   <div>
                     <label style=${S.label}>Filtr pracownika</label>
