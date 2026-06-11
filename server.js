@@ -1,4 +1,4 @@
-// RaportRBR v1.83 - Backend
+// RaportRBR v1.84 - Backend
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -381,11 +381,17 @@ async function ensureReportControlsTable() {
       stage TEXT NOT NULL,
       disabled BOOLEAN NOT NULL DEFAULT FALSE,
       question TEXT NOT NULL DEFAULT '',
+      question_type TEXT NOT NULL DEFAULT 'confirm',
+      question_required BOOLEAN NOT NULL DEFAULT TRUE,
+      question_options JSONB NOT NULL DEFAULT '[]'::jsonb,
       updated_by TEXT,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (project, stage)
     )
   `);
+  await pool.query("ALTER TABLE report_controls ADD COLUMN IF NOT EXISTS question_type TEXT NOT NULL DEFAULT 'confirm'");
+  await pool.query("ALTER TABLE report_controls ADD COLUMN IF NOT EXISTS question_required BOOLEAN NOT NULL DEFAULT TRUE");
+  await pool.query("ALTER TABLE report_controls ADD COLUMN IF NOT EXISTS question_options JSONB NOT NULL DEFAULT '[]'::jsonb");
 }
 
 function normalizeReportControlInput(body) {
@@ -394,7 +400,11 @@ function normalizeReportControlInput(body) {
   const stage = String(body?.stage || '').trim();
   const disabled = !!body?.disabled;
   const question = String(body?.question || '').trim().slice(0, 500);
-  return { project, stage, disabled, question };
+  const allowedTypes = new Set(['confirm', 'text', 'single', 'multi']);
+  const questionType = allowedTypes.has(String(body?.questionType || body?.question_type || '').trim()) ? String(body?.questionType || body?.question_type).trim() : 'confirm';
+  const questionRequired = body?.questionRequired ?? body?.question_required;
+  const options = uniqueTextList(body?.questionOptions || body?.question_options).slice(0, 20);
+  return { project, stage, disabled, question, questionType, questionRequired: questionRequired == null ? true : !!questionRequired, questionOptions: options };
 }
 
 async function disabledReportControlsForLines(client, lines) {
@@ -1434,17 +1444,28 @@ app.put('/api/quality-record', auth, requireTab('quality'), managerOnly, async (
     if (!project || !Number.isInteger(product)) return res.status(400).json({ error: 'Brak projektu lub numeru lazienki' });
     const current = await pool.query('SELECT * FROM quality_records WHERE project=$1 AND product=$2', [project, product]);
     if (!current.rows.length) return res.status(404).json({ error: 'Nie znaleziono wpisu kontroli jakosci' });
-    const resolvedItems = uniqueTextList(req.body?.resolvedItems);
+    const hasMissingItemsPatch = Object.prototype.hasOwnProperty.call(req.body || {}, 'missingItems');
+    const currentMissing = uniqueTextList(current.rows[0]?.missing_items);
+    const missingItems = hasMissingItemsPatch ? uniqueTextList(req.body?.missingItems) : currentMissing;
+    for (const item of missingItems) {
+      await pool.query(
+        `INSERT INTO quality_items (project, item_name, created_by)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (project, item_name) DO NOTHING`,
+        [project, item, req.user.code]
+      );
+    }
+    const resolvedItems = uniqueTextList(req.body?.resolvedItems).filter(item => missingItems.includes(item));
     const goatDone = !!req.body?.goatDone;
     const r = await pool.query(
       `UPDATE quality_records
-       SET goat_done=$3, resolved_items=$4::jsonb, updated_by=$5, updated_at=NOW()
+       SET goat_done=$3, resolved_items=$4::jsonb, missing_items=$5::jsonb, updated_by=$6, updated_at=NOW()
        WHERE project=$1 AND product=$2
        RETURNING project, product, goat, goat_done AS "goatDone", missing_items AS "missingItems",
         resolved_items AS "resolvedItems", updated_by AS "updatedBy", updated_at AS "updatedAt"`,
-      [project, product, goatDone, JSON.stringify(resolvedItems), req.user.code]
+      [project, product, goatDone, JSON.stringify(resolvedItems), JSON.stringify(missingItems), req.user.code]
     );
-    await auditLog(req, 'quality_record_updated', project + '#' + product, { goatDone, resolvedItems });
+    await auditLog(req, 'quality_record_updated', project + '#' + product, { goatDone, resolvedItems, missingItems });
     res.json(r.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Blad zapisu kontroli jakosci' });
@@ -1802,7 +1823,9 @@ app.get('/api/report-controls', auth, requireTab('reports'), async (req, res) =>
   try {
     await ensureReportControlsTable();
     const r = await pool.query(
-      `SELECT project, stage, disabled, question, updated_by AS "updatedBy", updated_at AS "updatedAt"
+      `SELECT project, stage, disabled, question, question_type AS "questionType",
+        question_required AS "questionRequired", question_options AS "questionOptions",
+        updated_by AS "updatedBy", updated_at AS "updatedAt"
        FROM report_controls
        ORDER BY project, stage`
     );
@@ -1823,11 +1846,15 @@ app.put('/api/report-controls', auth, requireTab('projects'), managerOnly, async
       return res.json({ success: true, deleted: true });
     }
     const r = await pool.query(
-      `INSERT INTO report_controls (project, stage, disabled, question, updated_by, updated_at)
-       VALUES ($1,$2,$3,$4,$5,NOW())
-       ON CONFLICT (project, stage) DO UPDATE SET disabled=EXCLUDED.disabled, question=EXCLUDED.question, updated_by=EXCLUDED.updated_by, updated_at=NOW()
-       RETURNING project, stage, disabled, question, updated_by AS "updatedBy", updated_at AS "updatedAt"`,
-      [item.project, item.stage, item.disabled, item.question, req.user.code]
+      `INSERT INTO report_controls (project, stage, disabled, question, question_type, question_required, question_options, updated_by, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,NOW())
+       ON CONFLICT (project, stage) DO UPDATE SET disabled=EXCLUDED.disabled, question=EXCLUDED.question,
+         question_type=EXCLUDED.question_type, question_required=EXCLUDED.question_required,
+         question_options=EXCLUDED.question_options, updated_by=EXCLUDED.updated_by, updated_at=NOW()
+       RETURNING project, stage, disabled, question, question_type AS "questionType",
+        question_required AS "questionRequired", question_options AS "questionOptions",
+        updated_by AS "updatedBy", updated_at AS "updatedAt"`,
+      [item.project, item.stage, item.disabled, item.question, item.questionType, item.questionRequired, JSON.stringify(item.questionOptions), req.user.code]
     );
     await auditLog(req, 'report_control_changed', item.project + '#' + item.stage, item);
     res.json(r.rows[0]);
@@ -2282,7 +2309,7 @@ app.post('/api/send-map-pdf', auth, async (req, res) => {
           </div>
           <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
             <p>W załączniku mapa hali <strong>${hallName}</strong> z aktualnym rozmieszczeniem łazienek i statusem etapów produkcji.</p>
-            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.83 © Ready Bathroom</p>
+            <p style="color:#888;font-size:12px;margin-top:16px">Wiadomość automatyczna — RaportRBR v1.84 © Ready Bathroom</p>
           </div>
         </div>`,
       attachments: [{
@@ -2362,7 +2389,7 @@ async function collectBackupPayload() {
     fertilization_settings: fertilization.rows,
   };
   const counts = Object.fromEntries(Object.entries(data).map(([key, rows]) => [key, Array.isArray(rows) ? rows.length : 0]));
-  return { version: '1.83', exportedAt: new Date().toISOString(), data, counts };
+  return { version: '1.84', exportedAt: new Date().toISOString(), data, counts };
 }
 
 async function saveOnlineBackup(kind = 'auto', createdBy = null) {
@@ -2439,7 +2466,7 @@ app.get('/api/backup', auth, requireTab('database'), managerOnly, async (req, re
     ]);
 
     const backup = {
-      version: '1.83',
+      version: '1.84',
       exportedAt: new Date().toISOString(),
       data: {
         users: users.rows,
@@ -2861,7 +2888,7 @@ app.get('/api/health', async (req, res) => {
     const r2 = await pool.query('SELECT COUNT(*) as lines FROM report_lines');
     res.json({
       status: 'ok',
-      version: '1.83',
+      version: '1.84',
       time: new Date(),
       db: {
         connected: true,
@@ -2927,6 +2954,6 @@ async function ensureInitialAdminAccount() {
 }
 
 ensureInitialAdminAccount().finally(() => {
-  app.listen(PORT, () => console.log(`RaportRBR v1.83 running on port ${PORT}`));
+  app.listen(PORT, () => console.log(`RaportRBR v1.84 running on port ${PORT}`));
 });
 

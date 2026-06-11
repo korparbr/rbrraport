@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.83</title>
+  <title>FlowRBR 1.84</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -87,7 +87,7 @@
       getRolePermissions: token => apiRequest("GET", "/api/role-permissions", null, token),
       setRolePermissions: (token, role, tabs) => apiRequest("PUT", "/api/role-permissions/" + encodeURIComponent(role), { tabs }, token),
       getReportControls: token => apiRequest("GET", "/api/report-controls", null, token),
-      setReportControl: (token, project, stage, disabled, question) => apiRequest("PUT", "/api/report-controls", { project, stage, disabled, question }, token),
+      setReportControl: (token, project, stage, disabled, question, questionType, questionRequired, questionOptions) => apiRequest("PUT", "/api/report-controls", { project, stage, disabled, question, questionType, questionRequired, questionOptions }, token),
       deleteReportControl: (token, project, stage) => apiRequest("DELETE", "/api/report-controls?project=" + encodeURIComponent(project) + "&stage=" + encodeURIComponent(stage), null, token),
       getProjects: token => apiRequest("GET", "/api/projects", null, token),
       addProject: (token, project, count) => apiRequest("POST", "/api/projects", { project, count }, token),
@@ -306,7 +306,10 @@
           project: String(row.project || "*").trim() || "*",
           stage: canonicalStageId(row.stage),
           disabled: !!row.disabled,
-          question: String(row.question || "").trim()
+          question: String(row.question || "").trim(),
+          questionType: String(row.questionType || row.question_type || "confirm").trim() || "confirm",
+          questionRequired: row.questionRequired == null && row.question_required == null ? true : !!(row.questionRequired ?? row.question_required),
+          questionOptions: Array.isArray(row.questionOptions || row.question_options) ? (row.questionOptions || row.question_options).map(x => String(x || "").trim()).filter(Boolean) : []
         };
       });
       return map;
@@ -317,19 +320,47 @@
       const specific = map[reportControlKey(project, stage)] || {};
       return {
         disabled: !!global.disabled || !!specific.disabled,
-        question: specific.question || global.question || ""
+        question: specific.question || global.question || "",
+        questionType: specific.question ? (specific.questionType || "confirm") : (global.questionType || "confirm"),
+        questionRequired: specific.question ? specific.questionRequired !== false : global.questionRequired !== false,
+        questionOptions: specific.question ? (specific.questionOptions || []) : (global.questionOptions || [])
       };
     };
-    const confirmReportQuestions = (controls, lines) => {
+    const reportQuestionsForLines = (controls, lines) => {
       const questions = [];
+      const seen = new Set();
       (lines || []).forEach(line => {
-        const question = reportControlFor(controls, line.project, line.stage).question;
-        if (question && !questions.includes(question)) questions.push(question);
+        const control = reportControlFor(controls, line.project, line.stage);
+        if (!control.question) return;
+        const key = String(line.project || "*") + "#" + canonicalStageId(line.stage) + "#" + control.question;
+        if (seen.has(key)) return;
+        seen.add(key);
+        questions.push({
+          key,
+          project: line.project,
+          stage: line.stage,
+          question: control.question,
+          type: control.questionType || "confirm",
+          required: control.questionRequired !== false,
+          options: control.questionOptions || []
+        });
       });
-      for (const question of questions) {
-        if (!confirm(question)) return false;
-      }
-      return true;
+      return questions;
+    };
+    const answerSummary = (question, value) => {
+      if (question.type === "confirm") return value ? "Tak" : "Nie";
+      if (Array.isArray(value)) return value.join(", ");
+      return String(value || "").trim();
+    };
+    const linesWithQuestionAnswers = (lines, questions, answers) => {
+      const active = (questions || []).filter(q => answerSummary(q, answers[q.key]));
+      if (!active.length) return lines;
+      return (lines || []).map(line => {
+        const matches = active.filter(q => sameProject(q.project, line.project) && canonicalStageId(q.stage) === canonicalStageId(line.stage));
+        if (!matches.length) return line;
+        const suffix = matches.map(q => q.question + ": " + answerSummary(q, answers[q.key])).join(" | ");
+        return { ...line, note: [line.note, suffix].filter(Boolean).join(" | ") };
+      });
     };
     const today = () => new Date().toISOString().slice(0, 10);
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
@@ -601,7 +632,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.83</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.84</span>` : null}
         </div>
       `;
     }
@@ -987,6 +1018,70 @@
       `;
     }
 
+    function ReportQuestionsModal({ questions, answers, onAnswer, onCancel, onConfirm }) {
+      const isAnswered = q => {
+        const value = answers[q.key];
+        if (q.type === "confirm") return value === true;
+        if (q.type === "multi") return Array.isArray(value) && value.length > 0;
+        return String(value || "").trim() !== "";
+      };
+      const canSave = questions.every(q => !q.required || isAnswered(q));
+      const toggleMulti = (q, option) => {
+        const current = Array.isArray(answers[q.key]) ? answers[q.key] : [];
+        const next = current.includes(option) ? current.filter(item => item !== option) : [...current, option];
+        onAnswer(q.key, next);
+      };
+      return html`
+        <div style=${{ position: "fixed", inset: 0, background: "rgba(24,32,51,0.45)", zIndex: 85, display: "grid", placeItems: "center", padding: "16px" }}>
+          <section style=${{ ...S.card, width: "min(760px, 100%)", maxHeight: "90vh", overflowY: "auto", margin: 0 }}>
+            <h2 style=${S.title}>Pytania przed zapisem raportu</h2>
+            <div style=${{ color: COLORS.muted, fontSize: "13px", marginBottom: "12px" }}>
+              Odpowiedzi zostana dopisane do uwag pozycji raportu.
+            </div>
+            <div style=${{ display: "grid", gap: "12px" }}>
+              ${questions.map(q => html`
+                <div key=${q.key} style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.panel2, padding: "12px" }}>
+                  <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 900, marginBottom: "4px" }}>Projekt ${q.project} / ${stageLabel(q.stage)}${q.required ? " / wymagane" : " / opcjonalne"}</div>
+                  <div style=${{ fontWeight: 900, marginBottom: "10px" }}>${q.question}</div>
+                  ${q.type === "confirm" ? html`
+                    <label style=${{ ...S.ghost, justifyContent: "flex-start", display: "flex", gap: "8px", alignItems: "center" }}>
+                      <input type="checkbox" checked=${answers[q.key] === true} onChange=${e => onAnswer(q.key, e.target.checked)} />
+                      Potwierdzam
+                    </label>
+                  ` : q.type === "single" ? html`
+                    <div style=${{ display: "grid", gap: "7px" }}>
+                      ${(q.options && q.options.length ? q.options : ["Tak", "Nie"]).map(option => html`
+                        <label key=${option} style=${{ ...S.ghost, justifyContent: "flex-start", display: "flex", gap: "8px", alignItems: "center" }}>
+                          <input type="radio" name=${q.key} checked=${answers[q.key] === option} onChange=${() => onAnswer(q.key, option)} />
+                          ${option}
+                        </label>
+                      `)}
+                    </div>
+                  ` : q.type === "multi" ? html`
+                    <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "7px" }}>
+                      ${(q.options || []).map(option => html`
+                        <label key=${option} style=${{ ...S.ghost, justifyContent: "flex-start", display: "flex", gap: "8px", alignItems: "center" }}>
+                          <input type="checkbox" checked=${Array.isArray(answers[q.key]) && answers[q.key].includes(option)} onChange=${() => toggleMulti(q, option)} />
+                          ${option}
+                        </label>
+                      `)}
+                      ${q.options && q.options.length ? null : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak zdefiniowanych opcji.</div>`}
+                    </div>
+                  ` : html`
+                    <textarea style=${{ ...S.input, minHeight: "86px" }} placeholder="Wpisz odpowiedz" value=${answers[q.key] || ""} onInput=${e => onAnswer(q.key, e.target.value)}></textarea>
+                  `}
+                </div>
+              `)}
+            </div>
+            <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "14px", flexWrap: "wrap" }}>
+              <button style=${S.ghost} onClick=${onCancel}>Anuluj</button>
+              <button style=${{ ...S.btn, opacity: canSave ? 1 : 0.55 }} disabled=${!canSave} onClick=${onConfirm}>Zapisz raport</button>
+            </div>
+          </section>
+        </div>
+      `;
+    }
+
     function ReportsList({ reports, users, onDelete, showWorker }) {
       const workerName = code => {
         const u = (users || []).find(x => (x.code || x.login) === code);
@@ -1363,6 +1458,8 @@
       const [materialPrompt, setMaterialPrompt] = useState(null);
       const [materialForm, setMaterialForm] = useState({});
       const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
+      const [questionPrompt, setQuestionPrompt] = useState(null);
+      const [questionAnswers, setQuestionAnswers] = useState({});
       const workers = useMemo(() => (users || [])
         .filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker"))
         .sort((a, b) => (a.name || "").localeCompare(b.name || "", "pl")), [users]);
@@ -1381,8 +1478,8 @@
         });
         return set;
       }, [materialUsages]);
-      const findMaterialPrompt = (extraKeys = materialSessionKeys) => {
-        for (const line of lines) {
+      const findMaterialPrompt = (targetLines = lines, extraKeys = materialSessionKeys) => {
+        for (const line of targetLines) {
           const stage = String(line.stage || "");
           if (!materialStageIds.includes(stage)) continue;
           if (!calcProjectMap[String(line.project)]) continue;
@@ -1404,23 +1501,19 @@
       const openDatePicker = e => {
         try { if (e.currentTarget.showPicker) e.currentTarget.showPicker(); } catch (_) {}
       };
-      const saveReportNow = async () => {
-        const result = await api.addReportAsWorker(token, workerCode, date, lines);
+      const saveReportNow = async (targetLines = lines) => {
+        const result = await api.addReportAsWorker(token, workerCode, date, targetLines);
         setLines([]);
         await reloadReports();
         if (reloadQuality) await reloadQuality();
         const worker = workers.find(w => (w.code || w.login) === workerCode);
-        const msg = saveReportMessage(result, lines.length);
+        const msg = saveReportMessage(result, targetLines.length);
         setMsg({ ...msg, text: msg.text + " Pracownik: " + (worker ? worker.name : workerCode) + "." });
       };
-      const save = async () => {
-        if (!workerCode) return setMsg({ type: "error", text: "Wybierz pracownika." });
-        if (!selectedStages.length) return setMsg({ type: "error", text: "Wybierz etap." });
-        if (!date) return setMsg({ type: "error", text: "Wybierz date raportu." });
-        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
-        if (!confirmReportQuestions(reportControls, lines)) return setMsg({ type: "warning", text: "Pytanie nie zostalo potwierdzone, raport nie zostal zapisany." });
-        const prompt = findMaterialPrompt();
+      const continueSave = async (targetLines = lines) => {
+        const prompt = findMaterialPrompt(targetLines);
         if (prompt) {
+          setLines(targetLines);
           setMaterialSessionKeys(new Set());
           setMaterialPrompt(prompt);
           setMaterialForm({});
@@ -1428,12 +1521,33 @@
         }
         setSaving(true); setMsg(null);
         try {
-          await saveReportNow();
+          await saveReportNow(targetLines);
         } catch (e) {
           setMsg(saveReportErrorMessage(e));
         } finally {
           setSaving(false);
         }
+      };
+      const save = async () => {
+        if (!workerCode) return setMsg({ type: "error", text: "Wybierz pracownika." });
+        if (!selectedStages.length) return setMsg({ type: "error", text: "Wybierz etap." });
+        if (!date) return setMsg({ type: "error", text: "Wybierz date raportu." });
+        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        const questions = reportQuestionsForLines(reportControls, lines);
+        if (questions.length) {
+          setQuestionAnswers({});
+          setQuestionPrompt({ questions, lines });
+          return;
+        }
+        await continueSave(lines);
+      };
+      const confirmQuestionsAndSave = async () => {
+        if (!questionPrompt) return;
+        const targetLines = linesWithQuestionAnswers(questionPrompt.lines, questionPrompt.questions, questionAnswers);
+        setQuestionPrompt(null);
+        setQuestionAnswers({});
+        setLines(targetLines);
+        await continueSave(targetLines);
       };
       const confirmMaterialAndSave = async () => {
         if (!materialPrompt) return;
@@ -1453,7 +1567,7 @@
           const nextKeys = new Set(materialSessionKeys);
           nextKeys.add(materialPrompt.usageKey);
           setMaterialSessionKeys(nextKeys);
-          const nextPrompt = findMaterialPrompt(nextKeys);
+          const nextPrompt = findMaterialPrompt(lines, nextKeys);
           if (nextPrompt) {
             setMaterialPrompt(nextPrompt);
             setMaterialForm({});
@@ -1463,7 +1577,7 @@
           setMaterialPrompt(null);
           setMaterialForm({});
           setMaterialSessionKeys(new Set());
-          await saveReportNow();
+          await saveReportNow(lines);
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -1561,6 +1675,15 @@
                 </div>
               </section>
             </div>
+          ` : null}
+          ${questionPrompt ? html`
+            <${ReportQuestionsModal}
+              questions=${questionPrompt.questions}
+              answers=${questionAnswers}
+              onAnswer=${(key, value) => setQuestionAnswers({ ...questionAnswers, [key]: value })}
+              onCancel=${() => { setQuestionPrompt(null); setQuestionAnswers({}); setMsg({ type: "warning", text: "Pytanie nie zostalo wypelnione, raport nie zostal zapisany." }); }}
+              onConfirm=${confirmQuestionsAndSave}
+            />
           ` : null}
         </section>
       `;
@@ -1867,6 +1990,8 @@
       const [materialPrompt, setMaterialPrompt] = useState(null);
       const [materialForm, setMaterialForm] = useState({});
       const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
+      const [questionPrompt, setQuestionPrompt] = useState(null);
+      const [questionAnswers, setQuestionAnswers] = useState({});
       const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
       const workerCode = String(user.code || user.login || "").toUpperCase();
       const effectiveVisibleStages = useMemo(() => {
@@ -1907,8 +2032,8 @@
         });
         return set;
       }, [materialUsages]);
-      const findMaterialPrompt = (extraKeys = materialSessionKeys) => {
-        for (const line of lines) {
+      const findMaterialPrompt = (targetLines = lines, extraKeys = materialSessionKeys) => {
+        for (const line of targetLines) {
           const stage = String(line.stage || "");
           if (!materialStageIds.includes(stage)) continue;
           if (!calcProjectMap[String(line.project)]) continue;
@@ -1918,19 +2043,17 @@
         }
         return null;
       };
-      const saveReportNow = async () => {
-        const result = await api.addReport(token, today(), lines);
+      const saveReportNow = async (targetLines = lines) => {
+        const result = await api.addReport(token, today(), targetLines);
         setLines([]);
         await reload();
         if (reloadQuality) await reloadQuality();
-        setMsg(saveReportMessage(result, lines.length));
+        setMsg(saveReportMessage(result, targetLines.length));
       };
-
-      const save = async () => {
-        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
-        if (!confirmReportQuestions(reportControls, lines)) return setMsg({ type: "warning", text: "Pytanie nie zostalo potwierdzone, raport nie zostal zapisany." });
-        const prompt = findMaterialPrompt();
+      const continueSave = async (targetLines = lines) => {
+        const prompt = findMaterialPrompt(targetLines);
         if (prompt) {
+          setLines(targetLines);
           setMaterialSessionKeys(new Set());
           setMaterialPrompt(prompt);
           setMaterialForm({});
@@ -1938,12 +2061,31 @@
         }
         setSaving(true); setMsg(null);
         try {
-          await saveReportNow();
+          await saveReportNow(targetLines);
         } catch (e) {
           setMsg(saveReportErrorMessage(e));
         } finally {
           setSaving(false);
         }
+      };
+
+      const save = async () => {
+        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        const questions = reportQuestionsForLines(reportControls, lines);
+        if (questions.length) {
+          setQuestionAnswers({});
+          setQuestionPrompt({ questions, lines });
+          return;
+        }
+        await continueSave(lines);
+      };
+      const confirmQuestionsAndSave = async () => {
+        if (!questionPrompt) return;
+        const targetLines = linesWithQuestionAnswers(questionPrompt.lines, questionPrompt.questions, questionAnswers);
+        setQuestionPrompt(null);
+        setQuestionAnswers({});
+        setLines(targetLines);
+        await continueSave(targetLines);
       };
       const confirmMaterialAndSave = async () => {
         if (!materialPrompt) return;
@@ -1963,7 +2105,7 @@
           const nextKeys = new Set(materialSessionKeys);
           nextKeys.add(materialPrompt.usageKey);
           setMaterialSessionKeys(nextKeys);
-          const nextPrompt = findMaterialPrompt(nextKeys);
+          const nextPrompt = findMaterialPrompt(lines, nextKeys);
           if (nextPrompt) {
             setMaterialPrompt(nextPrompt);
             setMaterialForm({});
@@ -1973,7 +2115,7 @@
           setMaterialPrompt(null);
           setMaterialForm({});
           setMaterialSessionKeys(new Set());
-          await saveReportNow();
+          await saveReportNow(lines);
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -2070,6 +2212,15 @@
               </section>
             </div>
           ` : null}
+          ${questionPrompt ? html`
+            <${ReportQuestionsModal}
+              questions=${questionPrompt.questions}
+              answers=${questionAnswers}
+              onAnswer=${(key, value) => setQuestionAnswers({ ...questionAnswers, [key]: value })}
+              onCancel=${() => { setQuestionPrompt(null); setQuestionAnswers({}); setMsg({ type: "warning", text: "Pytanie nie zostalo wypelnione, raport nie zostal zapisany." }); }}
+              onConfirm=${confirmQuestionsAndSave}
+            />
+          ` : null}
         </main>
       `;
     }
@@ -2081,6 +2232,8 @@
       const [materialPrompt, setMaterialPrompt] = useState(null);
       const [materialForm, setMaterialForm] = useState({});
       const [materialSessionKeys, setMaterialSessionKeys] = useState(new Set());
+      const [questionPrompt, setQuestionPrompt] = useState(null);
+      const [questionAnswers, setQuestionAnswers] = useState({});
       const mine = reports.filter(r => r.workerLogin === (user.code || user.login)).sort((a, b) => b.date.localeCompare(a.date));
       const workerCode = String(user.code || user.login || "").toUpperCase();
       const effectiveVisibleStages = useMemo(() => {
@@ -2105,8 +2258,8 @@
         });
         return set;
       }, [materialUsages]);
-      const findMaterialPrompt = (extraKeys = materialSessionKeys) => {
-        for (const line of lines) {
+      const findMaterialPrompt = (targetLines = lines, extraKeys = materialSessionKeys) => {
+        for (const line of targetLines) {
           const stage = String(line.stage || "");
           if (!materialStageIds.includes(stage)) continue;
           if (!calcProjectMap[String(line.project)]) continue;
@@ -2116,18 +2269,17 @@
         }
         return null;
       };
-      const saveReportNow = async () => {
-        const result = await api.addReport(token, today(), lines);
+      const saveReportNow = async (targetLines = lines) => {
+        const result = await api.addReport(token, today(), targetLines);
         setLines([]);
         await reloadReports();
         if (reloadQuality) await reloadQuality();
-        setMsg(saveReportMessage(result, lines.length));
+        setMsg(saveReportMessage(result, targetLines.length));
       };
-      const save = async () => {
-        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
-        if (!confirmReportQuestions(reportControls, lines)) return setMsg({ type: "warning", text: "Pytanie nie zostalo potwierdzone, raport nie zostal zapisany." });
-        const prompt = findMaterialPrompt();
+      const continueSave = async (targetLines = lines) => {
+        const prompt = findMaterialPrompt(targetLines);
         if (prompt) {
+          setLines(targetLines);
           setMaterialSessionKeys(new Set());
           setMaterialPrompt(prompt);
           setMaterialForm({});
@@ -2135,12 +2287,30 @@
         }
         setSaving(true); setMsg(null);
         try {
-          await saveReportNow();
+          await saveReportNow(targetLines);
         } catch (e) {
           setMsg(saveReportErrorMessage(e));
         } finally {
           setSaving(false);
         }
+      };
+      const save = async () => {
+        if (!lines.length) return setMsg({ type: "error", text: "Dodaj co najmniej jedna pozycje." });
+        const questions = reportQuestionsForLines(reportControls, lines);
+        if (questions.length) {
+          setQuestionAnswers({});
+          setQuestionPrompt({ questions, lines });
+          return;
+        }
+        await continueSave(lines);
+      };
+      const confirmQuestionsAndSave = async () => {
+        if (!questionPrompt) return;
+        const targetLines = linesWithQuestionAnswers(questionPrompt.lines, questionPrompt.questions, questionAnswers);
+        setQuestionPrompt(null);
+        setQuestionAnswers({});
+        setLines(targetLines);
+        await continueSave(targetLines);
       };
       const confirmMaterialAndSave = async () => {
         if (!materialPrompt) return;
@@ -2160,7 +2330,7 @@
           const nextKeys = new Set(materialSessionKeys);
           nextKeys.add(materialPrompt.usageKey);
           setMaterialSessionKeys(nextKeys);
-          const nextPrompt = findMaterialPrompt(nextKeys);
+          const nextPrompt = findMaterialPrompt(lines, nextKeys);
           if (nextPrompt) {
             setMaterialPrompt(nextPrompt);
             setMaterialForm({});
@@ -2170,7 +2340,7 @@
           setMaterialPrompt(null);
           setMaterialForm({});
           setMaterialSessionKeys(new Set());
-          await saveReportNow();
+          await saveReportNow(lines);
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
@@ -2233,6 +2403,15 @@
             </section>
           </div>
         ` : null}
+        ${questionPrompt ? html`
+          <${ReportQuestionsModal}
+            questions=${questionPrompt.questions}
+            answers=${questionAnswers}
+            onAnswer=${(key, value) => setQuestionAnswers({ ...questionAnswers, [key]: value })}
+            onCancel=${() => { setQuestionPrompt(null); setQuestionAnswers({}); setMsg({ type: "warning", text: "Pytanie nie zostalo wypelnione, raport nie zostal zapisany." }); }}
+            onConfirm=${confirmQuestionsAndSave}
+          />
+        ` : null}
       `;
     }
 
@@ -2273,6 +2452,7 @@
       const [serverAvailable, setServerAvailable] = useState(null);
       const suppressClickRef = useRef(false);
       const pinchRef = useRef(null);
+      const touchDragRef = useRef(null);
       const [layouts, setLayouts] = useState(() => {
         try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch (_) { return {}; }
       });
@@ -3023,6 +3203,29 @@
         setDragCell(cell);
         try { if (e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
       };
+      const startTouchDrag = (cell, e) => {
+        if (!canEditMaps || !edit || !cell || !e.touches || e.touches.length !== 1) return;
+        e.preventDefault();
+        suppressClickRef.current = true;
+        touchDragRef.current = cell;
+        setDragCell(cell);
+      };
+      const moveTouchDrag = e => {
+        if (!touchDragRef.current || !e.touches || e.touches.length !== 1) return;
+        e.preventDefault();
+      };
+      const endTouchDrag = (row, col, targetCell, e) => {
+        if (!touchDragRef.current) return;
+        const touch = e.changedTouches && e.changedTouches[0];
+        e.preventDefault();
+        finishDrop(row, col, targetCell, {
+          preventDefault: () => {},
+          clientX: touch ? touch.clientX : null,
+          clientY: touch ? touch.clientY : null
+        });
+        touchDragRef.current = null;
+        setTimeout(() => { suppressClickRef.current = false; }, 120);
+      };
       const finishDrop = (row, col, targetCell, e) => {
         if (!canEditMaps || !edit || !dragCell) return;
         if (e && e.preventDefault) e.preventDefault();
@@ -3182,16 +3385,6 @@
               <div style=${{ color: serverAvailable === false ? COLORS.orange : COLORS.dim, fontSize: "12px", marginTop: "4px" }}>
                 ${serverAvailable === true ? "Szachownica zsynchronizowana z serwerem." : serverAvailable === false ? "Szachownica dziala lokalnie - backend musi dodac /api/maps-layouts, aby widzieli ja wszyscy." : "Sprawdzanie zapisu szachownicy na serwerze..."}
               </div>
-            </div>
-            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <button style=${S.btn} onClick=${openPdfPicker}>Generuj PDF</button>
-              ${canEditMaps ? html`
-                <label style=${S.ghost}>
-                  Wgraj zdjecie podgladu
-                  <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
-                </label>
-                <button style=${edit ? S.btn : S.ghost} onClick=${() => setEdit(!edit)}>Modyfikuj</button>
-              ` : null}
             </div>
           </div>
           ${pdfPickerOpen ? html`
@@ -3398,6 +3591,14 @@
               </div>
             </div>
             <div style=${{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+              <button style=${S.btn} onClick=${openPdfPicker}>Generuj PDF</button>
+              ${canEditMaps ? html`
+                <label style=${S.ghost}>
+                  Wgraj zdjecie podgladu
+                  <input type="file" accept="image/*" style=${{ display: "none" }} onChange=${importPhoto} />
+                </label>
+                <button style=${edit ? S.btn : S.ghost} onClick=${() => setEdit(!edit)}>Modyfikuj</button>
+              ` : null}
               <div style=${{ color: COLORS.muted, fontSize: "13px" }}>W ukladzie: <strong style=${{ color: COLORS.text }}>${currentLayout.length}</strong></div>
               ${!selectedHall.future ? html`
                 <div style=${{ display: "flex", alignItems: "center", gap: "6px", background: COLORS.panel2, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "4px" }}>
@@ -3417,7 +3618,7 @@
               onTouchMove=${moveMapPinch}
               onTouchEnd=${endMapPinch}
               onTouchCancel=${endMapPinch}
-              style=${{ overflowX: "auto", overflowY: "visible", touchAction: "pan-x pan-y", paddingBottom: "10px" }}
+              style=${{ overflowX: "auto", overflowY: "visible", touchAction: edit ? "none" : "pan-x pan-y", paddingBottom: "10px" }}
             >
               <div style=${{ display: "grid", gridTemplateColumns: "62px repeat(" + visibleMapCols + ", minmax(108px, 1fr))", gap: "8px", minWidth: (84 + visibleMapCols * 116) + "px", zoom: mapZoom }}>
                 <div></div>
@@ -3456,6 +3657,10 @@
                         onPointerDown=${e => startDrag(cell, e)}
                         onPointerUp=${e => finishDrop(row, col, cell, e)}
                         onPointerCancel=${() => setDragCell(null)}
+                        onTouchStart=${e => startTouchDrag(cell, e)}
+                        onTouchMove=${moveTouchDrag}
+                        onTouchEnd=${e => endTouchDrag(row, col, cell, e)}
+                        onTouchCancel=${() => { touchDragRef.current = null; setDragCell(null); }}
                         onClick=${() => handleCellClick(row, col, cell)}
                         title=${cell ? st.label + " / projekt " + cell.project + " / lazienka " + cell.product : "Puste pole"}
                         style=${{
@@ -3472,7 +3677,7 @@
                           flexDirection: "column",
                           fontSize: "11px",
                           fontWeight: 900,
-                          touchAction: "manipulation",
+                          touchAction: edit ? "none" : "manipulation",
                           opacity: isDragging ? 0.72 : matchesFilter ? 1 : 0.18,
                           boxShadow: isManualCell ? "0 0 0 4px rgba(201,120,16,0.22)" : isSelected ? "0 0 0 3px rgba(39,94,254,0.18)" : "none"
                         }}
@@ -4210,7 +4415,7 @@
       const [importing, setImporting] = useState(false);
       const [mapLayouts, setMapLayouts] = useState({});
       const [selectedBathroom, setSelectedBathroom] = useState(null);
-      const [controlEdit, setControlEdit] = useState({ project: "*", stage: "18", disabled: false, question: "" });
+      const [controlEdit, setControlEdit] = useState({ project: "*", stage: "18", disabled: false, question: "", questionType: "confirm", questionRequired: true, questionOptionsText: "" });
       const [savingControl, setSavingControl] = useState(false);
       const [msg, setMsg] = useState(null);
       useEffect(() => {
@@ -4494,14 +4699,15 @@
         }
       };
       const loadControlToEdit = row => {
-        setControlEdit({ project: row.project || "*", stage: row.stage || "18", disabled: !!row.disabled, question: row.question || "" });
+        setControlEdit({ project: row.project || "*", stage: row.stage || "18", disabled: !!row.disabled, question: row.question || "", questionType: row.questionType || "confirm", questionRequired: row.questionRequired !== false, questionOptionsText: (row.questionOptions || []).join("\n") });
       };
       const saveReportControl = async () => {
         if (!controlEdit.stage) return setMsg({ type: "error", text: "Wybierz etap." });
         setSavingControl(true);
         setMsg(null);
         try {
-          await api.setReportControl(token, controlEdit.project || "*", controlEdit.stage, !!controlEdit.disabled, controlEdit.question || "");
+          const options = String(controlEdit.questionOptionsText || "").split(/\r?\n|,/).map(x => x.trim()).filter(Boolean);
+          await api.setReportControl(token, controlEdit.project || "*", controlEdit.stage, !!controlEdit.disabled, controlEdit.question || "", controlEdit.questionType || "confirm", controlEdit.questionRequired !== false, options);
           if (reloadReportControls) await reloadReportControls();
           setMsg({ type: "success", text: "Ustawienie raportowania zapisane." });
         } catch (e) {
@@ -4519,7 +4725,7 @@
         try {
           await api.deleteReportControl(token, controlEdit.project || "*", controlEdit.stage);
           if (reloadReportControls) await reloadReportControls();
-          setControlEdit({ project: "*", stage: "18", disabled: false, question: "" });
+          setControlEdit({ project: "*", stage: "18", disabled: false, question: "", questionType: "confirm", questionRequired: true, questionOptionsText: "" });
           setMsg({ type: "success", text: "Ustawienie raportowania usuniete." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
@@ -4586,12 +4792,31 @@
               <button style=${S.btn} disabled=${savingControl} onClick=${saveReportControl}>${savingControl ? "Zapisywanie..." : "Zapisz ustawienie"}</button>
               <button style=${S.danger} disabled=${savingControl} onClick=${deleteReportControl}>Usun ustawienie</button>
             </div>
+            <div className="grid-3" style=${{ ...S.row3, marginTop: "10px" }}>
+              <div>
+                <label style=${S.label}>Typ odpowiedzi</label>
+                <select style=${S.input} value=${controlEdit.questionType} onChange=${e => setControlEdit({ ...controlEdit, questionType: e.target.value })}>
+                  <option value="confirm">Potwierdzenie Tak</option>
+                  <option value="text">Tekst</option>
+                  <option value="single">Jedna odpowiedz z listy</option>
+                  <option value="multi">Wiele odpowiedzi z listy</option>
+                </select>
+              </div>
+              <label style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "10px", fontWeight: 900, display: "flex", gap: "8px", alignItems: "center", minHeight: "48px" }}>
+                <input type="checkbox" checked=${controlEdit.questionRequired !== false} onChange=${e => setControlEdit({ ...controlEdit, questionRequired: e.target.checked })} />
+                Odpowiedz wymagana
+              </label>
+              <div>
+                <label style=${S.label}>Opcje odpowiedzi</label>
+                <textarea style=${{ ...S.input, minHeight: "76px" }} placeholder="Jedna opcja w linii, np. Tak&#10;Nie&#10;Do poprawy" value=${controlEdit.questionOptionsText} onInput=${e => setControlEdit({ ...controlEdit, questionOptionsText: e.target.value })}></textarea>
+              </div>
+            </div>
             <div style=${{ display: "grid", gap: "7px", marginTop: "12px" }}>
               ${controlRows.map(row => html`
                 <button key=${reportControlKey(row.project || "*", row.stage)} style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel, padding: "9px", textAlign: "left", cursor: "pointer" }} onClick=${() => loadControlToEdit(row)}>
                   <strong>${row.project === "*" ? "Wszystkie projekty" : "Projekt " + row.project}</strong> / ${stageLabel(row.stage)}
                   <span style=${{ marginLeft: "8px", color: row.disabled ? COLORS.red : COLORS.green, fontWeight: 900 }}>${row.disabled ? "wylaczone" : "aktywne"}</span>
-                  ${row.question ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>Pytanie: ${row.question}</div>` : null}
+                  ${row.question ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>Pytanie: ${row.question} / ${row.questionType || "confirm"}${row.questionRequired === false ? " / opcjonalne" : " / wymagane"}${row.questionOptions && row.questionOptions.length ? " / opcje: " + row.questionOptions.join(", ") : ""}</div>` : null}
                 </button>
               `)}
               ${controlRows.length ? null : html`<div style=${{ color: COLORS.dim, fontSize: "13px", padding: "8px" }}>Brak dodatkowych ustawien raportowania.</div>`}
@@ -5028,6 +5253,7 @@
       const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all", hasMissing: "all", worker: "all", packFrom: "", packTo: "" });
       const [itemProject, setItemProject] = useState("all");
       const [itemEdits, setItemEdits] = useState({});
+      const [recordEdits, setRecordEdits] = useState({});
       const [msg, setMsg] = useState(null);
       const [savingKey, setSavingKey] = useState("");
       const records = (qualityData && qualityData.records) || [];
@@ -5130,7 +5356,8 @@
             project: record.project,
             product: record.product,
             goatDone: patch.goatDone != null ? patch.goatDone : !!record.goatDone,
-            resolvedItems: patch.resolvedItems || record.resolvedItems || []
+            resolvedItems: patch.resolvedItems || record.resolvedItems || [],
+            ...(patch.missingItems ? { missingItems: patch.missingItems } : {})
           });
           await reloadQuality();
           setMsg({ type: "success", text: "Kontrola jakosci zaktualizowana." });
@@ -5144,6 +5371,23 @@
         const resolved = new Set(Array.isArray(record.resolvedItems) ? record.resolvedItems : []);
         if (resolved.has(item)) resolved.delete(item); else resolved.add(item);
         updateRecord(record, { resolvedItems: [...resolved] });
+      };
+      const recordEditKey = record => transportKey(record.project, record.product);
+      const recordMissingText = record => {
+        const key = recordEditKey(record);
+        if (recordEdits[key] != null) return recordEdits[key];
+        return (Array.isArray(record.missingItems) ? record.missingItems : []).join(", ");
+      };
+      const saveRecordMissingItems = async record => {
+        const key = recordEditKey(record);
+        const missingItems = String(recordMissingText(record) || "").split(",").map(item => item.trim()).filter(Boolean);
+        const resolvedItems = (Array.isArray(record.resolvedItems) ? record.resolvedItems : []).filter(item => missingItems.includes(item));
+        await updateRecord(record, { missingItems, resolvedItems });
+        setRecordEdits(prev => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
       };
       const saveQualityItemName = async item => {
         const key = item.project + "#" + item.itemName;
@@ -5377,6 +5621,14 @@
                       `)}
                     </div>
                   ` : null}
+                  <div style=${{ marginTop: "10px", borderTop: "1px solid " + COLORS.border, paddingTop: "10px" }}>
+                    <label style=${S.label}>Modyfikuj braki tej lazienki</label>
+                    <div style=${{ display: "grid", gridTemplateColumns: "1fr auto", gap: "8px" }}>
+                      <input style=${S.input} placeholder="Braki po przecinku, np. drzwi, kratka, uchwyt" value=${recordMissingText(record)} onInput=${e => setRecordEdits({ ...recordEdits, [key]: e.target.value })} />
+                      <button style=${S.ghost} disabled=${savingKey === key} onClick=${() => saveRecordMissingItems(record)}>Zapisz braki</button>
+                    </div>
+                    <div style=${{ color: COLORS.dim, fontSize: "12px", marginTop: "5px" }}>Dodanie nowej nazwy dopisze ja do listy brakow projektu. Usuniecie nazwy z pola usunie ja tylko z tej lazienki.</div>
+                  </div>
                 </article>
               `;
             })}
