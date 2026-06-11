@@ -665,6 +665,16 @@ async function saveQualityFromLine(client, line, actorCode) {
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
+async function syncQualityItemsForProject(client, project) {
+  const records = await client.query('SELECT missing_items FROM quality_records WHERE project=$1', [project]);
+  const usedItems = [...new Set(records.rows.flatMap(row => uniqueTextList(row.missing_items)))];
+  if (!usedItems.length) {
+    await client.query('DELETE FROM quality_items WHERE project=$1', [project]);
+    return;
+  }
+  await client.query('DELETE FROM quality_items WHERE project=$1 AND NOT (item_name = ANY($2::text[]))', [project, usedItems]);
+}
+
 function authOld(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Brak tokenu' });
@@ -1465,6 +1475,7 @@ app.put('/api/quality-record', auth, requireTab('quality'), managerOnly, async (
         resolved_items AS "resolvedItems", updated_by AS "updatedBy", updated_at AS "updatedAt"`,
       [project, product, goatDone, JSON.stringify(resolvedItems), JSON.stringify(missingItems), req.user.code]
     );
+    await syncQualityItemsForProject(pool, project);
     await auditLog(req, 'quality_record_updated', project + '#' + product, { goatDone, resolvedItems, missingItems });
     res.json(r.rows[0]);
   } catch (err) {

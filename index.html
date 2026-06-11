@@ -5253,7 +5253,7 @@
       const [filters, setFilters] = useState({ project: "all", status: "open", location: "all", missing: "all", hasMissing: "all", worker: "all", packFrom: "", packTo: "" });
       const [itemProject, setItemProject] = useState("all");
       const [itemEdits, setItemEdits] = useState({});
-      const [recordEdits, setRecordEdits] = useState({});
+      const [recordEditModal, setRecordEditModal] = useState(null);
       const [msg, setMsg] = useState(null);
       const [savingKey, setSavingKey] = useState("");
       const records = (qualityData && qualityData.records) || [];
@@ -5372,22 +5372,39 @@
         if (resolved.has(item)) resolved.delete(item); else resolved.add(item);
         updateRecord(record, { resolvedItems: [...resolved] });
       };
-      const recordEditKey = record => transportKey(record.project, record.product);
-      const recordMissingText = record => {
-        const key = recordEditKey(record);
-        if (recordEdits[key] != null) return recordEdits[key];
-        return (Array.isArray(record.missingItems) ? record.missingItems : []).join(", ");
+      const openRecordEditModal = record => {
+        const items = (Array.isArray(record.missingItems) ? record.missingItems : [])
+          .map((value, index) => ({ id: Date.now() + "-" + index + "-" + value, value: String(value || "") }));
+        setRecordEditModal({ record, items, newItem: "" });
       };
-      const saveRecordMissingItems = async record => {
-        const key = recordEditKey(record);
-        const missingItems = String(recordMissingText(record) || "").split(",").map(item => item.trim()).filter(Boolean);
-        const resolvedItems = (Array.isArray(record.resolvedItems) ? record.resolvedItems : []).filter(item => missingItems.includes(item));
-        await updateRecord(record, { missingItems, resolvedItems });
-        setRecordEdits(prev => {
-          const next = { ...prev };
-          delete next[key];
-          return next;
-        });
+      const modalMissingItems = modal => [...new Set((modal?.items || []).map(item => String(item.value || "").trim()).filter(Boolean))];
+      const changeModalItem = (id, value) => setRecordEditModal(modal => modal ? {
+        ...modal,
+        items: modal.items.map(item => item.id === id ? { ...item, value } : item)
+      } : modal);
+      const removeModalItem = id => setRecordEditModal(modal => modal ? {
+        ...modal,
+        items: modal.items.filter(item => item.id !== id)
+      } : modal);
+      const addModalItem = () => setRecordEditModal(modal => {
+        if (!modal) return modal;
+        const value = String(modal.newItem || "").trim();
+        if (!value) return modal;
+        const exists = modal.items.some(item => String(item.value || "").trim().toLowerCase() === value.toLowerCase());
+        if (exists) return { ...modal, newItem: "" };
+        return {
+          ...modal,
+          newItem: "",
+          items: [...modal.items, { id: Date.now() + "-" + value, value }]
+        };
+      });
+      const saveRecordEditModal = async () => {
+        if (!recordEditModal) return;
+        const missingItems = modalMissingItems(recordEditModal);
+        const resolvedItems = (Array.isArray(recordEditModal.record.resolvedItems) ? recordEditModal.record.resolvedItems : [])
+          .filter(item => missingItems.includes(item));
+        await updateRecord(recordEditModal.record, { missingItems, resolvedItems });
+        setRecordEditModal(null);
       };
       const saveQualityItemName = async item => {
         const key = item.project + "#" + item.itemName;
@@ -5621,19 +5638,54 @@
                       `)}
                     </div>
                   ` : null}
-                  <div style=${{ marginTop: "10px", borderTop: "1px solid " + COLORS.border, paddingTop: "10px" }}>
-                    <label style=${S.label}>Modyfikuj braki tej lazienki</label>
-                    <div style=${{ display: "grid", gridTemplateColumns: "1fr auto", gap: "8px" }}>
-                      <input style=${S.input} placeholder="Braki po przecinku, np. drzwi, kratka, uchwyt" value=${recordMissingText(record)} onInput=${e => setRecordEdits({ ...recordEdits, [key]: e.target.value })} />
-                      <button style=${S.ghost} disabled=${savingKey === key} onClick=${() => saveRecordMissingItems(record)}>Zapisz braki</button>
+                  <div style=${{ marginTop: "10px", borderTop: "1px solid " + COLORS.border, paddingTop: "10px", display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+                    <div>
+                      <label style=${S.label}>Braki tej lazienki</label>
+                      <div style=${{ color: COLORS.dim, fontSize: "12px" }}>Modyfikacja pozwala zmienic nazwe braku, dodac nowy albo usunac caly zapis z tej lazienki.</div>
                     </div>
-                    <div style=${{ color: COLORS.dim, fontSize: "12px", marginTop: "5px" }}>Dodanie nowej nazwy dopisze ja do listy brakow projektu. Usuniecie nazwy z pola usunie ja tylko z tej lazienki.</div>
+                    <button style=${S.ghost} disabled=${savingKey === key} onClick=${() => openRecordEditModal(record)}>Modyfikuj</button>
                   </div>
                 </article>
               `;
             })}
             ${visible.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "22px" }}>Brak wpisow kontroli jakosci.</div>`}
           </div>` : null}
+          ${recordEditModal ? html`
+            <div style=${{ position: "fixed", inset: 0, background: "rgba(15,23,42,.45)", zIndex: 80, display: "flex", alignItems: "center", justifyContent: "center", padding: "18px" }}>
+              <section style=${{ width: "min(720px, 100%)", maxHeight: "90vh", overflow: "auto", background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "12px", boxShadow: "0 24px 80px rgba(15,23,42,.25)", padding: "16px" }}>
+                <div style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", marginBottom: "12px" }}>
+                  <div>
+                    <h2 style=${{ ...S.title, marginBottom: "4px" }}>Modyfikuj braki</h2>
+                    <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Projekt ${recordEditModal.record.project} / Laz. ${recordEditModal.record.product}</div>
+                  </div>
+                  <button style=${S.ghost} onClick=${() => setRecordEditModal(null)}>Zamknij</button>
+                </div>
+                <div style=${{ display: "grid", gap: "8px", marginBottom: "12px" }}>
+                  ${recordEditModal.items.length ? recordEditModal.items.map((item, index) => html`
+                    <div key=${item.id} style=${{ display: "grid", gridTemplateColumns: "70px 1fr auto", gap: "8px", alignItems: "center" }}>
+                      <strong style=${{ color: COLORS.muted, fontSize: "13px" }}>Brak ${index + 1}</strong>
+                      <input style=${S.input} value=${item.value} onInput=${e => changeModalItem(item.id, e.target.value)} />
+                      <button style=${S.danger} onClick=${() => removeModalItem(item.id)}>Usun</button>
+                    </div>
+                  `) : html`<div style=${{ color: COLORS.dim, border: "1px dashed " + COLORS.border, borderRadius: "8px", padding: "14px", textAlign: "center" }}>Ta lazienka nie ma teraz wpisanych brakow.</div>`}
+                </div>
+                <div style=${{ borderTop: "1px solid " + COLORS.border, paddingTop: "12px", display: "grid", gridTemplateColumns: "1fr auto", gap: "8px", alignItems: "end" }}>
+                  <div>
+                    <label style=${S.label}>Dodaj nowy brak</label>
+                    <input style=${S.input} placeholder="Nazwa braku" value=${recordEditModal.newItem} onInput=${e => setRecordEditModal({ ...recordEditModal, newItem: e.target.value })} onKeyDown=${e => { if (e.key === "Enter") { e.preventDefault(); addModalItem(); } }} />
+                  </div>
+                  <button style=${S.ghost} onClick=${addModalItem}>Dodaj</button>
+                </div>
+                <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", marginTop: "14px", flexWrap: "wrap" }}>
+                  <div style=${{ color: COLORS.dim, fontSize: "12px", maxWidth: "430px" }}>Po zapisie lista brakow projektu zostanie zaktualizowana. Brak usuniety z ostatniej lazienki zniknie tez z zakladki Lista brakow.</div>
+                  <div style=${{ display: "flex", gap: "8px" }}>
+                    <button style=${S.ghost} onClick=${() => setRecordEditModal(null)}>Anuluj</button>
+                    <button style=${S.btn} disabled=${savingKey === transportKey(recordEditModal.record.project, recordEditModal.record.product)} onClick=${saveRecordEditModal}>Zapisz zmiany</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          ` : null}
         </section>
       `;
     }
