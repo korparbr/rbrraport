@@ -4141,9 +4141,20 @@
       useEffect(() => { if (token) load(); }, [token]);
       useEffect(() => { setDetailCapacity(""); setDetailHall(""); setDetailFilters({ product: "", deliveryDate: "all" }); }, [detailProject]);
 
+      const ORDER_DATE = "2099-12-31";
+      const isOrderDate = date => date === "kolejnosc" || date === ORDER_DATE;
+      const dateKey = value => {
+        const raw = String(value || "").trim().slice(0, 10);
+        return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ORDER_DATE;
+      };
+      const ruleDateLabel = date => isOrderDate(date) ? "wg kolejnosci" : date;
       const ruleMap = useMemo(() => {
         const map = {};
-        (rules || []).forEach(r => { map[String(r.project) + "#" + String(r.deliveryDate || r.delivery_date || "")] = r; });
+        (rules || []).forEach(r => {
+          const rawDate = String(r.deliveryDate || r.delivery_date || "");
+          const normalizedDate = isOrderDate(rawDate) ? ORDER_DATE : rawDate;
+          map[String(r.project) + "#" + normalizedDate] = r;
+        });
         return map;
       }, [rules]);
       const productionKeys = useMemo(() => layoutProductionKeys(mapLayouts), [mapLayouts]);
@@ -4160,8 +4171,6 @@
         ])].sort((a, b) => a - b);
         return products.map(product => importedMap[product] || { product, requestedDelivery: "" });
       };
-      const ruleDateLabel = date => date === "kolejnosc" ? "wg kolejnosci" : date;
-
       const bathroomRows = useMemo(() => {
         const rows = [];
         activeProjectItems(serverProjects).forEach(project => {
@@ -4171,8 +4180,8 @@
             if (productionKeys.has(key)) return;
             if (packedSet.has(key)) return;
             if (loadedSet.has(key)) return;
-            const realDate = String(b.requestedDelivery || "").slice(0, 10);
-            const date = realDate || "kolejnosc";
+            const realDate = dateKey(b.requestedDelivery);
+            const date = realDate;
             if (planningFilters.product && !String(productNo(b.product)).includes(String(planningFilters.product).trim())) return;
             if (planningFilters.deliveryDate !== "all" && date !== planningFilters.deliveryDate) return;
             rows.push({
@@ -4186,7 +4195,7 @@
           });
         });
         return rows.sort((a, b) => {
-          const dateSort = (a.realDate || "9999-12-31").localeCompare(b.realDate || "9999-12-31");
+          const dateSort = (isOrderDate(a.realDate) ? "9999-12-31" : a.realDate).localeCompare(isOrderDate(b.realDate) ? "9999-12-31" : b.realDate);
           return dateSort || a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product;
         });
       }, [serverProjects, selectedProject, productionKeys, packedSet, loadedSet, planningFilters]);
@@ -4229,17 +4238,17 @@
       const detailDeliveryDates = useMemo(() => {
         if (!detailProjectInfo) return [];
         const dates = [...new Set((detailProjectInfo.bathrooms || [])
-          .map(b => String(b.requestedDelivery || "").slice(0, 10))
-          .filter(Boolean))]
+          .map(b => dateKey(b.requestedDelivery))
+          .filter(date => !isOrderDate(date)))]
           .sort();
-        return dates.length ? dates : ["kolejnosc"];
+        return dates.length ? dates : [ORDER_DATE];
       }, [detailProjectInfo]);
       const planningDeliveryDates = useMemo(() => {
         const values = new Set();
         activeProjectItems(serverProjects).forEach(project => {
-          projectBathroomEntries(project).forEach(b => values.add(String(b.requestedDelivery || "").slice(0, 10) || "kolejnosc"));
+          projectBathroomEntries(project).forEach(b => values.add(dateKey(b.requestedDelivery)));
         });
-        return [...values].sort((a, b) => (a === "kolejnosc" ? "9999-12-31" : a).localeCompare(b === "kolejnosc" ? "9999-12-31" : b));
+        return [...values].sort((a, b) => (isOrderDate(a) ? "9999-12-31" : a).localeCompare(isOrderDate(b) ? "9999-12-31" : b));
       }, [serverProjects]);
       const detailCommonHall = useMemo(() => {
         if (!detailProject || !detailDeliveryDates.length) return "";
@@ -4253,7 +4262,7 @@
         const productFilter = String(detailFilters.product || "").trim();
         return detailProducts.filter(product => {
           const meta = bathroomMetaMap(serverProjects)[transportKey(detailProject, product)] || {};
-          const deliveryDate = meta.requestedDelivery ? String(meta.requestedDelivery).slice(0, 10) : "kolejnosc";
+          const deliveryDate = dateKey(meta.requestedDelivery);
           if (productFilter && !String(product).includes(productFilter)) return false;
           if (detailFilters.deliveryDate !== "all" && deliveryDate !== detailFilters.deliveryDate) return false;
           return true;
@@ -4279,7 +4288,7 @@
           const rule = ruleMap[group.project + "#" + group.date] || {};
           const capacity = Number(rule.carCapacity || rule.car_capacity || 0);
           const hall = rule.hall || "";
-          if (group.date === "kolejnosc" && capacity > 0 && group.bathrooms.length > capacity) {
+          if (isOrderDate(group.date) && capacity > 0 && group.bathrooms.length > capacity) {
             const chunks = [];
             for (let i = 0; i < group.bathrooms.length; i += capacity) {
               const chunk = group.bathrooms.slice(i, i + capacity);
