@@ -6884,10 +6884,19 @@
         setSavingKey(row.key); setMsg(null);
         try {
           for (const item of row.items) {
-            await api.saveTransportDate(token, item.project, item.product, "");
+            if (item.extra && item.extraId) {
+              await api.deleteTransportExtra(token, item.extraId);
+            } else {
+              await api.saveTransportDate(token, item.project, item.product, "");
+            }
           }
           await reloadTransportDates();
-          setMsg({ type: "success", text: "Transport wyczyszczony." });
+          setRowEdits(prev => {
+            const next = { ...prev };
+            delete next[row.key];
+            return next;
+          });
+          setMsg({ type: "success", text: "Transport wyczyszczony i usuniety z listy." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         } finally {
