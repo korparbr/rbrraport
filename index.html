@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.84</title>
+  <title>FlowRBR 1.85</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -632,7 +632,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.84</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.85</span>` : null}
         </div>
       `;
     }
@@ -6044,6 +6044,7 @@
       const [transportReport, setTransportReport] = useState(null);
       const [transportReportDate, setTransportReportDate] = useState(today());
       const [transportReportWorker, setTransportReportWorker] = useState("");
+      const [transportReportWorkerFilter, setTransportReportWorkerFilter] = useState("");
       const [transportSubtab, setTransportSubtab] = useState("list");
       const [replacementFilters, setReplacementFilters] = useState({ project: "all", lkw: "all", date: "", text: "" });
       const [replacementModal, setReplacementModal] = useState(null);
@@ -6112,6 +6113,13 @@
           .filter(u => ["worker", "worker+", "kontroler"].includes(u.role || "worker"))
           .sort((a, b) => surnameSortKey(a).localeCompare(surnameSortKey(b), "pl", { numeric: true }) || String(a.code || "").localeCompare(String(b.code || ""), "pl", { numeric: true }));
       }, [users]);
+      const filteredReportWorkers = useMemo(() => {
+        const text = String(transportReportWorkerFilter || "").trim().toLowerCase();
+        if (!text) return reportWorkers;
+        return reportWorkers.filter(worker => [worker.code, worker.login, worker.name]
+          .map(value => String(value || "").toLowerCase())
+          .some(value => value.includes(text)));
+      }, [reportWorkers, transportReportWorkerFilter]);
       const batchItems = useMemo(() => transportItems.filter(item => sameProject(item.project, batchProject)), [transportItems, batchProject]);
       const visible = allTransportItems.filter(item => {
         const info = item.transportInfo || transportInfo[transportKey(item.project, item.product)];
@@ -6494,6 +6502,7 @@
       const openTransportReport = row => {
         setTransportReport(row);
         setTransportReportDate(row.loadDate || today());
+        setTransportReportWorkerFilter("");
         setTransportReportWorker((reportWorkers[0] && (reportWorkers[0].code || reportWorkers[0].login)) || "");
         setMsg(null);
       };
@@ -6675,7 +6684,7 @@
             ` : null}
           </div>
           <div style=${{ overflowX: "auto", width: "100%", border: "1px solid " + COLORS.border, borderRadius: "8px", background: COLORS.panel }}>
-            <table style=${{ width: "max(100%, 1520px)", borderCollapse: "collapse", fontSize: "12px" }}>
+            <table style=${{ width: "max(100%, 1520px)", borderCollapse: "collapse", fontSize: "16px" }}>
               <thead>
                 <tr style=${{ background: "#f8fafc", color: COLORS.text }}>
                   ${["Lp", "Nr. zlecenia", "Nazwa zlecenia", "NACZEPA", "LKW", "Numery lazienek", "Kierunek", "Ilosc", "Data zaladunku", "Rozmiar", "Data rozladunku", "Przewoznik", "Notatka", "Spoznienia", "Edycja"].map(label => html`
@@ -6686,7 +6695,7 @@
                   <th style=${{ padding: "5px", border: "1px solid " + COLORS.border }}></th>
                   ${transportColumnDefs.map(def => html`
                     <th key=${def[0]} style=${{ padding: "5px", border: "1px solid " + COLORS.border }}>
-                      <select title=${"Filtr: " + def[1]} style=${{ ...S.input, minHeight: "28px", padding: "4px 6px", fontSize: "11px" }} value=${columnFilters[def[0]] || ""} onChange=${e => setColumnFilters({ ...columnFilters, [def[0]]: e.target.value })}>
+                      <select title=${"Filtr: " + def[1]} style=${{ ...S.input, minHeight: "34px", padding: "5px 7px", fontSize: "14px" }} value=${columnFilters[def[0]] || ""} onChange=${e => setColumnFilters({ ...columnFilters, [def[0]]: e.target.value })}>
                         <option value="">Wszystkie</option>
                         ${(columnOptions[def[0]] || []).map(value => html`<option key=${value} value=${value}>${value}</option>`)}
                       </select>
@@ -6705,13 +6714,13 @@
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${index + 1}</td>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.project}</td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "130px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "orderName")} onInput=${e => setRowEdit(row, "orderName", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px", textAlign: "center" }} value=${rowEditValue(row, "orderName")} onInput=${e => setRowEdit(row, "orderName", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "95px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "trailer")} onInput=${e => setRowEdit(row, "trailer", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px", textAlign: "center" }} value=${rowEditValue(row, "trailer")} onInput=${e => setRowEdit(row, "trailer", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "72px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} type="number" min="1" placeholder="LKW" value=${rowEditValue(row, "lkwNumber")} onInput=${e => setRowEdit(row, "lkwNumber", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px", textAlign: "center" }} type="number" min="1" placeholder="LKW" value=${rowEditValue(row, "lkwNumber")} onInput=${e => setRowEdit(row, "lkwNumber", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "6px", border: "1px solid " + COLORS.border }}>
                         <div style=${{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "4px" }}>
@@ -6754,34 +6763,34 @@
                         </div>
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "110px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "direction")} onInput=${e => setRowEdit(row, "direction", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px", textAlign: "center" }} value=${rowEditValue(row, "direction")} onInput=${e => setRowEdit(row, "direction", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, textAlign: "center" }}>${row.items.length}</td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", whiteSpace: "nowrap", minWidth: "132px" }}>
                         ${alert ? html`<span title=${alert.label} style=${{ display: "inline-grid", placeItems: "center", width: "17px", height: "17px", marginRight: "5px", borderRadius: "999px", background: alert.color, color: alert.text, fontWeight: 900 }}>!</span>` : null}
-                        <input style=${{ ...S.input, width: "104px", minHeight: "30px", padding: "5px 6px", fontSize: "12px" }} type="date" value=${rowEditValue(row, "loadDate")} onInput=${e => setRowEdit(row, "loadDate", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, width: "126px", minHeight: "36px", padding: "6px 7px", fontSize: "16px" }} type="date" value=${rowEditValue(row, "loadDate")} onInput=${e => setRowEdit(row, "loadDate", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "80px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "sizeLabel")} onInput=${e => setRowEdit(row, "sizeLabel", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px", textAlign: "center" }} value=${rowEditValue(row, "sizeLabel")} onInput=${e => setRowEdit(row, "sizeLabel", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "120px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px" }} type="date" value=${rowEditValue(row, "unloadDate")} onInput=${e => setRowEdit(row, "unloadDate", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px" }} type="date" value=${rowEditValue(row, "unloadDate")} onInput=${e => setRowEdit(row, "unloadDate", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "110px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "carrier")} onInput=${e => setRowEdit(row, "carrier", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px", textAlign: "center" }} value=${rowEditValue(row, "carrier")} onInput=${e => setRowEdit(row, "carrier", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, minWidth: "170px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px" }} value=${rowEditValue(row, "note")} onInput=${e => setRowEdit(row, "note", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px" }} value=${rowEditValue(row, "note")} onInput=${e => setRowEdit(row, "note", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "5px", border: "1px solid " + COLORS.border, textAlign: "center", minWidth: "120px" }}>
-                        <input style=${{ ...S.input, minHeight: "30px", padding: "5px 6px", fontSize: "12px", textAlign: "center" }} value=${rowEditValue(row, "delayNote")} onInput=${e => setRowEdit(row, "delayNote", e.target.value)} disabled=${saving} />
+                        <input style=${{ ...S.input, minHeight: "36px", padding: "6px 7px", fontSize: "16px", textAlign: "center" }} value=${rowEditValue(row, "delayNote")} onInput=${e => setRowEdit(row, "delayNote", e.target.value)} disabled=${saving} />
                       </td>
                       <td style=${{ padding: "7px", border: "1px solid " + COLORS.border, minWidth: "130px" }}>
                         <div style=${{ display: "grid", gridTemplateColumns: "auto auto", gap: "5px", alignItems: "center" }}>
-                          <button style=${{ ...S.btn, padding: "7px 9px", fontSize: "12px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${() => saveTransportRow(row)}>${saving ? "..." : "Zapisz"}</button>
-                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px" }} disabled=${saving} onClick=${() => clearTransportRow(row)}>Wyczysc</button>
-                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-modal"} onClick=${() => openEditTransportModal(row)}>Edytuj transport</button>
-                          <button style=${{ ...S.ghost, padding: "7px 9px", fontSize: "12px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-report"} onClick=${() => openTransportReport(row)}>Raport zaladunek</button>
+                          <button style=${{ ...S.btn, padding: "8px 10px", fontSize: "16px", opacity: saving ? 0.6 : 1 }} disabled=${saving} onClick=${() => saveTransportRow(row)}>${saving ? "..." : "Zapisz"}</button>
+                          <button style=${{ ...S.ghost, padding: "8px 10px", fontSize: "16px" }} disabled=${saving} onClick=${() => clearTransportRow(row)}>Wyczysc</button>
+                          <button style=${{ ...S.ghost, padding: "8px 10px", fontSize: "16px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-modal"} onClick=${() => openEditTransportModal(row)}>Edytuj transport</button>
+                          <button style=${{ ...S.ghost, padding: "8px 10px", fontSize: "16px", gridColumn: "1 / -1" }} disabled=${savingKey === "transport-report"} onClick=${() => openTransportReport(row)}>Raport zaladunek</button>
                         </div>
                       </td>
                     </tr>
@@ -7075,11 +7084,24 @@
                     <input style=${S.input} type="date" value=${transportReportDate} onInput=${e => setTransportReportDate(e.target.value)} />
                   </div>
                   <div>
+                    <label style=${S.label}>Filtr pracownika</label>
+                    <input style=${S.input} placeholder="Kod, imie albo nazwisko" value=${transportReportWorkerFilter} onInput=${e => {
+                      const value = e.target.value;
+                      setTransportReportWorkerFilter(value);
+                      const text = String(value || "").trim().toLowerCase();
+                      const next = reportWorkers.filter(worker => [worker.code, worker.login, worker.name]
+                        .map(item => String(item || "").toLowerCase())
+                        .some(item => item.includes(text)));
+                      if (transportReportWorker && !next.some(worker => (worker.code || worker.login) === transportReportWorker)) setTransportReportWorker("");
+                    }} />
+                  </div>
+                  <div>
                     <label style=${S.label}>Pracownik</label>
                     <select style=${S.input} value=${transportReportWorker} onChange=${e => setTransportReportWorker(e.target.value)}>
                       <option value="">- wybierz pracownika -</option>
-                      ${reportWorkers.map(worker => html`<option key=${worker.code || worker.login} value=${worker.code || worker.login}>${worker.code || worker.login} - ${worker.name || ""}</option>`)}
+                      ${filteredReportWorkers.map(worker => html`<option key=${worker.code || worker.login} value=${worker.code || worker.login}>${worker.code || worker.login} - ${worker.name || ""}</option>`)}
                     </select>
+                    <div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "5px" }}>Widoczne osoby: ${filteredReportWorkers.length} / ${reportWorkers.length}</div>
                   </div>
                 </div>
                 <div style=${{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap", marginTop: "14px" }}>
