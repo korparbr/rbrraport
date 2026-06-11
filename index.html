@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.88</title>
+  <title>FlowRBR 1.89</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -685,7 +685,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.88</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.89</span>` : null}
         </div>
       `;
     }
@@ -3015,7 +3015,7 @@
           const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
           const pageW = doc.internal.pageSize.getWidth();
           const pageH = doc.internal.pageSize.getHeight();
-          const margin = 7;
+            const margin = 5;
           const hex = color => hexToRgb(color);
           const drawLegend = (yStart, hallDef, mapDate) => {
             let y = yStart;
@@ -3099,15 +3099,18 @@
             if (!data) return;
             if (pageIndex > 0) doc.addPage("a4", "landscape");
             const { hallDef, byCell, columns, mapDate } = data;
-            let y = drawLegend(10, hallDef, mapDate);
+            let y = drawLegend(8, hallDef, mapDate);
             const rowHeader = 8;
-            const gap = 1.1;
+            const gap = 1.8;
             const colCount = Math.max(1, columns.length);
             const availableW = pageW - margin * 2 - rowHeader - (colCount - 1) * gap;
             const availableH = pageH - y - margin - 5 - (hallDef.rows.length - 1) * gap;
-            const cellW = Math.min(hallDef.rows.length <= 2 ? 30.5 : 12.6, availableW / colCount);
-            const cellH = Math.min(hallDef.rows.length <= 2 ? 56 : 24.5, availableH / Math.max(1, hallDef.rows.length));
-            const colorH = Math.max(cellH * 0.68, hallDef.rows.length <= 2 ? 34 : 15.5);
+            const largeHall = hallDef.rows.length <= 2;
+            const screenRatio = 190 / 74;
+            const maxCellWByHeight = availableH / Math.max(1, hallDef.rows.length) / screenRatio;
+            const cellW = Math.min(largeHall ? 36 : 18, availableW / colCount, maxCellWByHeight);
+            const cellH = Math.min(largeHall ? 92 : 47, availableH / Math.max(1, hallDef.rows.length), cellW * screenRatio);
+            const colorH = cellH * 0.66;
             const gridW = rowHeader + colCount * cellW + (colCount - 1) * gap;
             const startX = Math.max(margin, (pageW - gridW) / 2);
             doc.setFontSize(7);
@@ -3129,7 +3132,7 @@
                 const x = startX + rowHeader + visibleIndex * (cellW + gap);
                 doc.setDrawColor(203, 213, 225);
                 doc.setFillColor(255, 255, 255);
-                doc.roundedRect(x, cy, cellW, cellH, 1.4, 1.4, "FD");
+                doc.roundedRect(x, cy, cellW, cellH, 1.6, 1.6, "FD");
                 if (!cell) return;
                 const st = styleForCell(cell);
                 const bg = hex(st.background);
@@ -3148,77 +3151,81 @@
                 const productLabel = typeInfo.rbrTypeShort ? cell.product + "/" + typeInfo.rbrTypeShort : String(cell.product);
                 const sampleEnabled = sampleEnabledForCell(cell);
                 doc.setFillColor(bg[0], bg[1], bg[2]);
-                doc.roundedRect(x, cy, cellW, colorH, 1.4, 1.4, "F");
+                doc.roundedRect(x, cy, cellW, colorH, 1.6, 1.6, "F");
                 doc.setFillColor(255, 255, 255);
                 doc.rect(x, cy + colorH, cellW, Math.max(0.1, cellH - colorH), "F");
                 doc.setDrawColor(203, 213, 225);
-                doc.roundedRect(x, cy, cellW, cellH, 1.4, 1.4, "S");
+                doc.roundedRect(x, cy, cellW, cellH, 1.6, 1.6, "S");
 
                 doc.setTextColor(tx[0], tx[1], tx[2]);
                 doc.setFont("helvetica", "bold");
-                const large = hallDef.rows.length <= 2;
-                const projectFont = large ? 10.4 : 6.6;
-                const productFont = large ? 9.4 : 6.2;
-                const stageFont = large ? 7.6 : 5.2;
+                const large = largeHall;
+                const scale = Math.max(0.7, Math.min(1.35, cellW / (large ? 30 : 14)));
+                const projectFont = (large ? 12.2 : 8.6) * scale;
+                const productFont = (large ? 11.2 : 7.9) * scale;
+                const stageFont = (large ? 8.8 : 6.5) * scale;
                 doc.setFontSize(projectFont);
-                doc.text(String(cell.project), x + cellW / 2, cy + (large ? 9 : 5.2), { align: "center" });
+                doc.text(String(cell.project), x + cellW / 2, cy + cellH * 0.105, { align: "center" });
                 doc.setFontSize(productFont);
-                doc.text(productLabel, x + cellW / 2, cy + (large ? 17 : 10.2), { align: "center" });
+                doc.text(productLabel, x + cellW / 2, cy + cellH * 0.205, { align: "center" });
                 doc.setFontSize(stageFont);
-                const stageLines = doc.splitTextToSize(st.shortLabel || st.label || "Brak", cellW - 2).slice(0, large ? 2 : 1);
-                doc.text(stageLines, x + cellW / 2, cy + (large ? 25 : 15), { align: "center" });
+                const stageLines = doc.splitTextToSize(st.shortLabel || st.label || "Brak", cellW - 3).slice(0, large ? 2 : 2);
+                doc.text(stageLines, x + cellW / 2, cy + cellH * 0.315, { align: "center", lineHeightFactor: 1.04 });
 
                 if (alert) {
                   const ar = hex(alert.color);
                   const atr = hex(alert.text);
+                  const alertR = Math.max(2.4, cellW * 0.105);
                   doc.setFillColor(ar[0], ar[1], ar[2]);
-                  doc.circle(x + cellW - (large ? 3.6 : 2.7), cy + (large ? 4.2 : 3.1), large ? 3.3 : 2.4, "F");
+                  doc.circle(x + cellW - alertR - 0.6, cy - alertR * 0.42, alertR, "F");
                   doc.setTextColor(atr[0], atr[1], atr[2]);
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(large ? 9 : 6.5);
-                  doc.text("!", x + cellW - (large ? 4.8 : 3.5), cy + (large ? 7.2 : 5.2));
+                  doc.setFontSize(alertR * 2.05);
+                  doc.text("!", x + cellW - alertR - 1.25, cy + alertR * 0.46);
                 }
                 if (sampleEnabled) {
                   doc.setTextColor(245, 158, 11);
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(large ? 11 : 8);
-                  doc.text(String.fromCharCode(9733), x + 1.2, cy + (large ? 5.8 : 4.6));
+                  doc.setFontSize(Math.max(7, cellW * 0.36));
+                  doc.text(String.fromCharCode(9733), x - 1.8, cy + Math.max(2.8, cellH * 0.03));
                 }
                 if (commentStatus) {
+                  const r = Math.max(1.9, cellW * 0.075);
                   doc.setFillColor(commentStatus.open ? 239 : 34, commentStatus.open ? 68 : 197, commentStatus.open ? 68 : 94);
-                  doc.circle(x + cellW - (large ? 4.3 : 3.2), cy + cellH - (large ? 4.6 : 3.2), large ? 2.9 : 2.1, "F");
+                  doc.circle(x + cellW - r - 1.4, cy + cellH - r - 1.8, r, "F");
                 }
                 if (needsTilingCheck) {
                   const csBg = hex(tileCheckStyle.bg);
                   const csBorder = hex(tileCheckStyle.border);
                   const csText = hex(tileCheckStyle.color);
-                  const size = large ? 7.2 : 4.6;
+                  const size = Math.max(4.8, cellW * 0.22);
                   doc.setDrawColor(csBorder[0], csBorder[1], csBorder[2]);
                   doc.setFillColor(csBg[0], csBg[1], csBg[2]);
-                  doc.rect(x + 1.2, cy + cellH - size - 1.5, size, size, "FD");
+                  doc.rect(x + 1.3, cy + cellH - size - 1.8, size, size, "FD");
                   if (tileCheckStyle.mark) {
                     doc.setTextColor(csText[0], csText[1], csText[2]);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(large ? 8 : 5.5);
-                    doc.text(tileCheckStyle.mark, x + 2.2, cy + cellH - 2.3);
+                    doc.setFontSize(size * 0.92);
+                    doc.text(tileCheckStyle.mark, x + 1.3 + size * 0.19, cy + cellH - 2.6);
                   }
                 }
                 const hsBg = hex(helmetStyle.bg);
                 const hsBorder = hex(helmetStyle.border);
                 const hsText = hex(helmetStyle.color);
+                const helmetR = Math.max(2.8, cellW * 0.105);
                 doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
                 doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
-                doc.circle(x + cellW / 2, cy + cellH - (large ? 4.5 : 3.2), large ? 3.4 : 2.35, "FD");
+                doc.circle(x + cellW / 2, cy + cellH - helmetR - 1.7, helmetR, "FD");
                 doc.setTextColor(hsText[0], hsText[1], hsText[2]);
                 doc.setFont("helvetica", "bold");
-                doc.setFontSize(large ? 7.2 : 5);
-                doc.text("K", x + cellW / 2 - (large ? 1.4 : 1), cy + cellH - (large ? 2.2 : 1.5));
+                doc.setFontSize(helmetR * 1.25);
+                doc.text("K", x + cellW / 2 - helmetR * 0.38, cy + cellH - helmetR * 0.64);
                 if (qState.goatActive || qState.missingActive) {
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(large ? 7.2 : 4.8);
+                  doc.setFontSize(Math.max(5.5, cellW * 0.18));
                   doc.setTextColor(20, 30, 45);
                   const icons = (qState.goatActive ? "G" : "") + (qState.missingActive ? " B" : "");
-                  doc.text(icons.trim(), x + cellW - (large ? 11 : 7), cy + cellH - (large ? 10 : 7));
+                  doc.text(icons.trim(), x + cellW - Math.max(9, cellW * 0.35), cy + cellH - Math.max(8, cellH * 0.17));
                 }
               });
             });
@@ -4097,7 +4104,9 @@
       const [selectedProject, setSelectedProject] = useState("all");
       const [detailProject, setDetailProject] = useState("");
       const [detailCapacity, setDetailCapacity] = useState("");
+      const [detailHall, setDetailHall] = useState("");
       const [detailFilters, setDetailFilters] = useState({ product: "", deliveryDate: "all" });
+      const [planningFilters, setPlanningFilters] = useState({ product: "", deliveryDate: "all" });
       const [editing, setEditing] = useState(null);
       const [msg, setMsg] = useState(null);
 
@@ -4114,7 +4123,7 @@
         }
       };
       useEffect(() => { if (token) load(); }, [token]);
-      useEffect(() => { setDetailCapacity(""); setDetailFilters({ product: "", deliveryDate: "all" }); }, [detailProject]);
+      useEffect(() => { setDetailCapacity(""); setDetailHall(""); setDetailFilters({ product: "", deliveryDate: "all" }); }, [detailProject]);
 
       const ruleMap = useMemo(() => {
         const map = {};
@@ -4137,6 +4146,8 @@
             if (loadedSet.has(key)) return;
             const date = String(b.requestedDelivery || "").slice(0, 10);
             if (!date) return;
+            if (planningFilters.product && !String(productNo(b.product)).includes(String(planningFilters.product).trim())) return;
+            if (planningFilters.deliveryDate !== "all" && date !== planningFilters.deliveryDate) return;
             rows.push({
               project: String(project.project),
               product: productNo(b.product),
@@ -4147,7 +4158,7 @@
           });
         });
         return rows.sort((a, b) => (a.date || "").localeCompare(b.date || "") || a.project.localeCompare(b.project, "pl", { numeric: true }) || a.product - b.product);
-      }, [serverProjects, selectedProject, productionKeys, packedSet, loadedSet]);
+      }, [serverProjects, selectedProject, productionKeys, packedSet, loadedSet, planningFilters]);
 
       const productionCounts = useMemo(() => {
         const map = {};
@@ -4191,6 +4202,20 @@
           .filter(Boolean))]
           .sort();
       }, [detailProjectInfo]);
+      const planningDeliveryDates = useMemo(() => {
+        return [...new Set(activeProjectItems(serverProjects).flatMap(project => (project.bathrooms || [])
+          .map(b => String(b.requestedDelivery || "").slice(0, 10))
+          .filter(Boolean)))]
+          .sort();
+      }, [serverProjects]);
+      const detailCommonHall = useMemo(() => {
+        if (!detailProject || !detailDeliveryDates.length) return "";
+        const halls = detailDeliveryDates
+          .map(date => (ruleMap[detailProject + "#" + date] || {}).hall || "")
+          .filter(Boolean);
+        const unique = [...new Set(halls)];
+        return unique.length === 1 ? unique[0] : "";
+      }, [detailProject, detailDeliveryDates, ruleMap]);
       const filteredDetailProducts = useMemo(() => {
         const productFilter = String(detailFilters.product || "").trim();
         return detailProducts.filter(product => {
@@ -4230,6 +4255,27 @@
           return { ...group, hall, capacity, note: rule.note || "", bathroomsWithFill: [...group.bathrooms, ...extras], fillCount: extras.length };
         });
       }, [bathroomRows, ruleMap]);
+      const fertilizationBoard = useMemo(() => {
+        const columns = [
+          { id: "namiot1", label: "n1" },
+          { id: "betonowanie", label: "hala" },
+          { id: "namiot2", label: "n2" }
+        ];
+        const byHall = {};
+        columns.forEach(col => { byHall[col.id] = []; });
+        const other = [];
+        groups.forEach(group => {
+          const item = {
+            ...group,
+            text: group.project + " " + group.bathroomsWithFill.map(b => b.product).join(",")
+              + (group.fillCount ? " (" + group.fillCount + ")" : "")
+          };
+          if (byHall[group.hall]) byHall[group.hall].push(item);
+          else other.push(item);
+        });
+        const rowCount = Math.max(1, ...columns.map(col => byHall[col.id].length));
+        return { columns, byHall, other, rowCount };
+      }, [groups]);
 
       const saveRule = async () => {
         if (!editing) return;
@@ -4266,6 +4312,27 @@
           }
           await load();
           setMsg({ type: "success", text: "Pojemnosc auta zapisana dla terminow projektu " + detailProject + "." });
+        } catch (e) {
+          setMsg({ type: "error", text: e.message });
+        }
+      };
+      const saveProjectHall = async () => {
+        if (!detailProjectInfo) return;
+        if (!detailHall) return setMsg({ type: "error", text: "Wybierz hale dla projektu." });
+        if (!detailDeliveryDates.length) return setMsg({ type: "error", text: "Ten projekt nie ma dat Requested Delivery z Positionlisty." });
+        try {
+          for (const date of detailDeliveryDates) {
+            const current = ruleMap[detailProject + "#" + date] || {};
+            await api.saveFertilization(token, {
+              project: detailProject,
+              deliveryDate: date,
+              hall: detailHall,
+              carCapacity: Number(current.carCapacity || current.car_capacity || 0),
+              note: current.note || ""
+            });
+          }
+          await load();
+          setMsg({ type: "success", text: "Hala zapisana dla terminow projektu " + detailProject + "." });
         } catch (e) {
           setMsg({ type: "error", text: e.message });
         }
@@ -4308,6 +4375,23 @@
               <div style=${{ fontSize: "24px", fontWeight: 900 }}>${Object.values(warehouseCounts).reduce((a, b) => a + b, 0)}</div>
             </div>
           </div>
+          <div className="grid-3" style=${{ ...S.row3, marginTop: "12px" }}>
+            <div>
+              <label style=${S.label}>Filtr lazienki w nawozeniu</label>
+              <input style=${S.input} value=${planningFilters.product} onInput=${e => setPlanningFilters({ ...planningFilters, product: e.target.value.replace(/[^\d]/g, "") })} placeholder="np. 44" />
+            </div>
+            <div>
+              <label style=${S.label}>Filtr daty wysylki</label>
+              <select style=${S.input} value=${planningFilters.deliveryDate} onChange=${e => setPlanningFilters({ ...planningFilters, deliveryDate: e.target.value })}>
+                <option value="all">Wszystkie daty</option>
+                ${planningDeliveryDates.map(date => html`<option key=${date} value=${date}>${date}</option>`)}
+              </select>
+            </div>
+            <div style=${{ display: "flex", alignItems: "end", gap: "8px", flexWrap: "wrap" }}>
+              <button style=${S.ghost} onClick=${() => setPlanningFilters({ product: "", deliveryDate: "all" })}>Wyczysc filtry</button>
+              <span style=${{ color: COLORS.muted, fontSize: "13px" }}>Do nawozenia: ${bathroomRows.length}</span>
+            </div>
+          </div>
         </section>
         <section style=${S.card}>
           <h3 style=${{ ...S.title, fontSize: "18px" }}>Podsumowanie projektow</h3>
@@ -4337,6 +4421,13 @@
                 </div>
               </div>
               <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap" }}>
+                <div style=${{ width: "210px" }}>
+                  <label style=${S.label}>Hala dla positionlisty</label>
+                  <select style=${S.input} value=${detailHall || detailCommonHall} onChange=${e => setDetailHall(e.target.value)}>
+                    ${HALLS.map(h => html`<option key=${h[0]} value=${h[0]}>${h[1]}</option>`)}
+                  </select>
+                </div>
+                <button style=${S.btn} onClick=${saveProjectHall}>Zapisz hale</button>
                 <div style=${{ width: "190px" }}>
                   <label style=${S.label}>Ile lazienek na auto</label>
                   <input style=${S.input} type="number" min="1" value=${detailCapacity} onInput=${e => setDetailCapacity(e.target.value)} placeholder="np. 5" />
@@ -4412,31 +4503,49 @@
         <section style=${S.card}>
           <h3 style=${{ ...S.title, fontSize: "18px" }}>Lista nawozenia wg terminow</h3>
           ${groups.length ? html`
-            <div style=${{ display: "grid", gap: "12px" }}>
-              ${groups.map(group => html`
-                <article key=${group.project + group.date} style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", padding: "12px", background: COLORS.panel2 }}>
-                  <div style=${{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
-                    <div>
-                      <strong>Projekt ${group.project} / termin ${group.date}</strong>
-                      <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px" }}>
-                        Hala: ${HALLS.find(h => h[0] === group.hall)?.[1] || "-"} / auto: ${group.capacity || "-"} / z terminu: ${group.bathrooms.length}${group.fillCount ? " + dobrane " + group.fillCount + " z nastepnego terminu" : ""}
-                      </div>
-                      ${group.note ? html`<div style=${{ color: COLORS.muted, fontSize: "13px" }}>Notatka: ${group.note}</div>` : null}
-                    </div>
-                    <div style=${{ display: "flex", gap: "8px", alignItems: "center" }}>
-                      <button style=${S.ghost} onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })}>Edytuj</button>
-                      <button style=${S.danger} onClick=${() => deleteRule(group)}>Wyczysc</button>
-                    </div>
-                  </div>
-                  <div style=${{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "10px" }}>
-                    ${group.bathroomsWithFill.map((b, idx) => html`
-                      <span key=${b.project + "-" + b.product + "-" + idx} style=${{ border: "1px solid " + (idx >= group.bathrooms.length ? "#f97316" : COLORS.border), background: idx >= group.bathrooms.length ? "#fff7ed" : "#fff", borderRadius: "8px", padding: "7px 9px", fontWeight: 900 }}>
-                        ${b.project}/${b.product}${b.type ? "/" + b.type : ""}
-                      </span>
+            <div style=${{ overflowX: "auto", border: "1px solid " + COLORS.border, borderRadius: "8px", background: "#fff" }}>
+              <table style=${{ width: "100%", minWidth: "980px", borderCollapse: "collapse", tableLayout: "fixed" }}>
+                <thead>
+                  <tr>
+                    ${fertilizationBoard.columns.map(col => html`
+                      <th key=${col.id} style=${{ border: "1px solid #111827", padding: "8px", textAlign: "center", fontSize: "15px", color: COLORS.text, background: "#f8fafc" }}>${col.label}</th>
+                    `)}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${Array.from({ length: fertilizationBoard.rowCount }, (_, rowIndex) => html`
+                    <tr key=${rowIndex}>
+                      ${fertilizationBoard.columns.map(col => {
+                        const group = fertilizationBoard.byHall[col.id][rowIndex];
+                        return html`
+                          <td key=${col.id} style=${{ border: "1px solid #111827", minHeight: "42px", padding: "8px", textAlign: "center", verticalAlign: "middle", color: COLORS.text, background: "#fff" }}>
+                            ${group ? html`
+                              <button type="button" onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })} title=${"Termin " + group.date + " / auto " + (group.capacity || "-")} style=${{ border: "0", background: "transparent", color: COLORS.text, fontWeight: 800, fontSize: "14px", cursor: "pointer", width: "100%", lineHeight: 1.35 }}>
+                                ${group.text}
+                              </button>
+                              <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "3px" }}>
+                                ${group.date}${group.capacity ? " / auto " + group.capacity : ""}${group.note ? " / " + group.note : ""}
+                              </div>
+                            ` : html`<span style=${{ color: COLORS.dim }}> </span>`}
+                          </td>
+                        `;
+                      })}
+                    </tr>
+                  `)}
+                </tbody>
+              </table>
+              ${fertilizationBoard.other.length ? html`
+                <div style=${{ padding: "10px", borderTop: "1px solid " + COLORS.border }}>
+                  <strong>Bez wybranej hali / pozostale:</strong>
+                  <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "8px" }}>
+                    ${fertilizationBoard.other.map(group => html`
+                      <button key=${group.project + group.date} style=${S.ghost} onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })}>
+                        ${group.text} / ${group.date}
+                      </button>
                     `)}
                   </div>
-                </article>
-              `)}
+                </div>
+              ` : null}
             </div>
           ` : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "20px" }}>Brak lazienek do nawozenia z dat Requested Delivery.</div>`}
         </section>
