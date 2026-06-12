@@ -2762,19 +2762,21 @@
         if (!cell) return { plaster: null, electric: null };
         const key = bathroomKey(cell.project, cell.product);
         const currentStage = String((stageByBathroom[key] || {}).stage || "");
-        if (currentStage !== "9" && currentStage !== "10") return { plaster: null, electric: null };
+        const currentScore = stageOrder[currentStage] || 0;
+        const plasterWarningScore = stageOrder["9"] || 0;
+        if (currentScore < plasterWarningScore) return { plaster: null, electric: null };
         const stages = stageSetByBathroom[key] || new Set();
-        const severe = currentStage === "10";
+        const severe = currentScore >= (stageOrder["10"] || 0);
         return {
           plaster: stages.has("16") ? null : {
             text: "T",
-            title: severe ? "Brak tynkowania przed malowaniem" : "Brak tynkowania przed szpachlowaniem",
+            title: severe ? "Brak tynkowania od etapu malowania lub pozniej" : "Brak tynkowania przed szpachlowaniem",
             textColor: severe ? "#dc2626" : "#facc15",
             strikeColor: severe ? "#facc15" : "#dc2626"
           },
           electric: stages.has("8.2") ? null : {
             text: String.fromCodePoint(0x26A1),
-            title: severe ? "Brak montazu elektrycznego Grob przed malowaniem" : "Brak montazu elektrycznego Grob przed szpachlowaniem",
+            title: severe ? "Brak montazu elektrycznego Grob od etapu malowania lub pozniej" : "Brak montazu elektrycznego Grob przed szpachlowaniem",
             textColor: severe ? "#dc2626" : "#facc15",
             strikeColor: "#dc2626"
           }
