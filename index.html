@@ -2786,13 +2786,13 @@
         return {
           plaster: stages.has("16") ? null : {
             text: "T",
-            title: severe ? "Brak tynkowania od etapu malowania lub pozniej" : "Brak tynkowania przed szpachlowaniem",
+            title: severe ? "BRAK TYNKOWANIA!" : "brak tynkowania",
             textColor: severe ? "#dc2626" : "#facc15",
             strikeColor: severe ? "#facc15" : "#dc2626"
           },
           electric: stages.has("8.2") ? null : {
             text: String.fromCodePoint(0x26A1),
-            title: severe ? "Brak montazu elektrycznego Grob od etapu malowania lub pozniej" : "Brak montazu elektrycznego Grob przed szpachlowaniem",
+            title: severe ? "BRAK OKABLOWANIA!" : "brak okablowania",
             textColor: severe ? "#dc2626" : "#facc15",
             strikeColor: "#dc2626"
           }
@@ -3251,7 +3251,7 @@
             doc.setDrawColor(249, 115, 22); doc.setFillColor(255, 255, 255); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.text("kontrola", lx + 6, y); lx += 26;
             doc.setDrawColor(22, 163, 74); doc.setFillColor(220, 252, 231); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.text(String.fromCharCode(10003), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("sprawdz.", lx + 6, y); lx += 25;
             doc.setDrawColor(220, 38, 38); doc.setFillColor(254, 226, 226); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.setTextColor(153, 27, 27); doc.text(String.fromCharCode(10005), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("poprawka", lx + 6, y); lx += 30;
-            doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.circle(lx + 2, y - 2, 2.3, "FD"); doc.setTextColor(51, 65, 85); doc.setFont("helvetica", "bold"); doc.text(String.fromCodePoint(0x26D1), lx + 2, y - 0.5, { align: "center" }); doc.setFont("helvetica", "normal"); doc.setTextColor(20, 30, 45); doc.text("kask", lx + 6, y); lx += 20;
+            doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.circle(lx + 2, y - 2, 2.3, "FD"); doc.setDrawColor(51, 65, 85); doc.setLineWidth(0.35); doc.line(lx + 0.6, y - 2.2, lx + 3.4, y - 2.2); doc.line(lx + 1, y - 1.1, lx + 3, y - 1.1); doc.line(lx + 1, y - 2.2, lx + 1.5, y - 3.2); doc.line(lx + 1.5, y - 3.2, lx + 2.5, y - 3.2); doc.line(lx + 2.5, y - 3.2, lx + 3, y - 2.2); doc.setLineWidth(0.2); doc.setFont("helvetica", "normal"); doc.setTextColor(20, 30, 45); doc.text("kask", lx + 6, y); lx += 20;
             doc.setTextColor(245, 158, 11); doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.text(String.fromCharCode(9733), lx, y); doc.setTextColor(20, 30, 45); doc.setFont("helvetica", "normal"); doc.setFontSize(6.4); doc.text("musztrowka", lx + 5, y);
             return y + 5.5;
           };
@@ -3368,6 +3368,68 @@
                   doc.text(label, centerX, centerY + size * 0.23, { align: "center" });
                   doc.setLineWidth(0.2);
                 };
+                const drawTrainShape = (centerX, centerY, size, color) => {
+                  const c = hex(color);
+                  doc.setDrawColor(c[0], c[1], c[2]);
+                  doc.setFillColor(c[0], c[1], c[2]);
+                  doc.setLineWidth(Math.max(0.25, size * 0.045));
+                  doc.roundedRect(centerX - size * 0.26, centerY - size * 0.24, size * 0.52, size * 0.43, size * 0.07, size * 0.07, "S");
+                  doc.line(centerX - size * 0.18, centerY - size * 0.08, centerX + size * 0.18, centerY - size * 0.08);
+                  doc.circle(centerX - size * 0.13, centerY + size * 0.22, size * 0.045, "F");
+                  doc.circle(centerX + size * 0.13, centerY + size * 0.22, size * 0.045, "F");
+                  doc.line(centerX - size * 0.2, centerY + size * 0.31, centerX + size * 0.2, centerY + size * 0.31);
+                  doc.setLineWidth(0.2);
+                };
+                const drawTrainIcon = (leftPx, topPx, bgColor, textColor, borderColor, borderPx = 2) => {
+                  const size = 41 * px;
+                  const left = x + leftPx * px;
+                  const top = cy + topPx * px;
+                  const centerX = left + size / 2;
+                  const centerY = top + size / 2;
+                  const bgc = hex(bgColor);
+                  const brc = hex(borderColor || COLORS.border);
+                  doc.setFillColor(bgc[0], bgc[1], bgc[2]);
+                  doc.setDrawColor(brc[0], brc[1], brc[2]);
+                  doc.setLineWidth(Math.max(0.15, borderPx * px));
+                  doc.circle(centerX, centerY, size / 2, "FD");
+                  drawTrainShape(centerX, centerY, size, textColor);
+                };
+                const drawLightningShape = (centerX, centerY, size, color) => {
+                  const c = hex(color);
+                  doc.setDrawColor(c[0], c[1], c[2]);
+                  doc.setFillColor(c[0], c[1], c[2]);
+                  doc.setLineWidth(Math.max(0.35, size * 0.07));
+                  doc.line(centerX + size * 0.08, centerY - size * 0.32, centerX - size * 0.13, centerY + size * 0.02);
+                  doc.line(centerX - size * 0.13, centerY + size * 0.02, centerX + size * 0.03, centerY + size * 0.02);
+                  doc.line(centerX + size * 0.03, centerY + size * 0.02, centerX - size * 0.09, centerY + size * 0.32);
+                  doc.line(centerX - size * 0.09, centerY + size * 0.32, centerX + size * 0.17, centerY - size * 0.08);
+                  doc.setLineWidth(0.2);
+                };
+                const drawHelmetShape = (centerX, centerY, size, color) => {
+                  const c = hex(color);
+                  doc.setDrawColor(c[0], c[1], c[2]);
+                  doc.setLineWidth(Math.max(0.3, size * 0.055));
+                  doc.line(centerX - size * 0.28, centerY + size * 0.08, centerX + size * 0.28, centerY + size * 0.08);
+                  doc.line(centerX - size * 0.2, centerY + size * 0.22, centerX + size * 0.2, centerY + size * 0.22);
+                  doc.line(centerX - size * 0.22, centerY + size * 0.08, centerX - size * 0.12, centerY - size * 0.18);
+                  doc.line(centerX - size * 0.12, centerY - size * 0.18, centerX + size * 0.12, centerY - size * 0.18);
+                  doc.line(centerX + size * 0.12, centerY - size * 0.18, centerX + size * 0.22, centerY + size * 0.08);
+                  doc.line(centerX, centerY - size * 0.18, centerX, centerY + size * 0.08);
+                  doc.setLineWidth(0.2);
+                };
+                const drawDropShape = (centerX, centerY, size) => {
+                  doc.setFillColor(59, 130, 246);
+                  doc.setDrawColor(30, 64, 175);
+                  doc.circle(centerX, centerY + size * 0.1, size * 0.19, "FD");
+                  doc.triangle(centerX, centerY - size * 0.32, centerX - size * 0.16, centerY + size * 0.03, centerX + size * 0.16, centerY + size * 0.03, "FD");
+                };
+                const drawBoxShape = (centerX, centerY, size) => {
+                  doc.setFillColor(180, 83, 9);
+                  doc.setDrawColor(120, 53, 15);
+                  doc.roundedRect(centerX - size * 0.23, centerY - size * 0.2, size * 0.46, size * 0.4, size * 0.04, size * 0.04, "FD");
+                  doc.line(centerX - size * 0.23, centerY - size * 0.05, centerX + size * 0.23, centerY - size * 0.05);
+                  doc.line(centerX, centerY - size * 0.2, centerX, centerY + size * 0.2);
+                };
                 const drawDependencyIcon = (leftPx, topPx, marker, fontPx) => {
                   if (!marker) return;
                   const size = 38 * px;
@@ -3381,10 +3443,14 @@
                   doc.setDrawColor(229, 231, 235);
                   doc.setLineWidth(Math.max(0.25, 2 * px));
                   doc.circle(centerX, centerY, size / 2, "FD");
-                  doc.setTextColor(txtc[0], txtc[1], txtc[2]);
-                  doc.setFont("helvetica", "bold");
-                  doc.setFontSize(Math.max(4, fontPx * px));
-                  doc.text(marker.text, centerX, centerY + size * 0.24, { align: "center" });
+                  if (marker.text === "T") {
+                    doc.setTextColor(txtc[0], txtc[1], txtc[2]);
+                    doc.setFont("helvetica", "bold");
+                    doc.setFontSize(Math.max(4, fontPx * px));
+                    doc.text(marker.text, centerX, centerY + size * 0.24, { align: "center" });
+                  } else {
+                    drawLightningShape(centerX, centerY, size, marker.textColor);
+                  }
                   doc.setDrawColor(strike[0], strike[1], strike[2]);
                   doc.setLineWidth(Math.max(0.35, 3 * px));
                   doc.line(left + 7 * px, top + 24 * px, left + 31 * px, top + 14 * px);
@@ -3394,7 +3460,7 @@
                   drawRoundIcon(cellW / px - 43, -18, 41, alert.color, alert.text, COLORS.border, freshTransportChange ? "!!" : "!", freshTransportChange ? 23 : 30, 1);
                 }
                 if (trainWarning) {
-                  drawRoundIcon(alert ? cellW / px - 84 : cellW / px - 43, -16, 41, trainWarning.color, trainWarning.text, trainWarning.border, String.fromCodePoint(0x1F686), 23, 2);
+                  drawTrainIcon(alert ? cellW / px - 84 : cellW / px - 43, -16, trainWarning.color, trainWarning.text, trainWarning.border, 2);
                 }
                 if (sampleEnabled) {
                   doc.setTextColor(245, 158, 11);
@@ -3430,10 +3496,7 @@
                 doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
                 doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
                 doc.circle(x + cellW / 2, helmetCenterY, helmetR, "FD");
-                doc.setTextColor(hsText[0], hsText[1], hsText[2]);
-                doc.setFont("helvetica", "bold");
-                doc.setFontSize(Math.max(4, 22 * px));
-                doc.text(String.fromCodePoint(0x26D1), x + cellW / 2, helmetCenterY + helmetSize * 0.23, { align: "center" });
+                drawHelmetShape(x + cellW / 2, helmetCenterY, helmetSize, helmetStyle.color);
                 if (commentStatus) {
                   const cr = Math.max(3.2, 12 * px);
                   doc.setDrawColor(255, 255, 255);
@@ -3441,11 +3504,15 @@
                   doc.circle(x + cellW - 22 * px, cy + cellH - 22 * px, cr, "FD");
                 }
                 if (qState.goatActive || qState.missingActive) {
-                  doc.setFont("helvetica", "bold");
-                  doc.setFontSize(Math.max(4.4, 24 * px));
-                  doc.setTextColor(20, 30, 45);
-                  const icons = (qState.goatActive ? qualityIcon("goat") : "") + (qState.missingActive ? " " + qualityIcon("missing") : "");
-                  doc.text(icons.trim(), x + cellW - 8 * px, cy + cellH - 44 * px + 8 * px, { align: "right" });
+                  const qY = cy + cellH - 44 * px + 8 * px;
+                  let qX = x + cellW - 14 * px;
+                  if (qState.missingActive) {
+                    drawBoxShape(qX, qY, 22 * px);
+                    qX -= 25 * px;
+                  }
+                  if (qState.goatActive) {
+                    drawDropShape(qX, qY, 22 * px);
+                  }
                 }
               });
             });
@@ -3773,10 +3840,10 @@
                 </span>
               `)}
               ${[
-                { icon: "T", label: "brak tynkowania przy szpachlowaniu", color: "#facc15", strike: "#dc2626" },
-                { icon: "T", label: "brak tynkowania od malowania dalej", color: "#dc2626", strike: "#facc15" },
-                { icon: String.fromCodePoint(0x26A1), label: "brak elektryki Grob przy szpachlowaniu", color: "#facc15", strike: "#dc2626" },
-                { icon: String.fromCodePoint(0x26A1), label: "brak elektryki Grob od malowania dalej", color: "#dc2626", strike: "#dc2626" }
+                { icon: "T", label: "brak tynkowania", color: "#facc15", strike: "#dc2626" },
+                { icon: "T", label: "BRAK TYNKOWANIA!", color: "#dc2626", strike: "#facc15" },
+                { icon: String.fromCodePoint(0x26A1), label: "brak okablowania", color: "#facc15", strike: "#dc2626" },
+                { icon: String.fromCodePoint(0x26A1), label: "BRAK OKABLOWANIA!", color: "#dc2626", strike: "#dc2626" }
               ].map(item => html`
                 <span key=${item.label} style=${{ display: "inline-flex", alignItems: "center", gap: "6px", background: "#fff", color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
                   <span style=${{ position: "relative", width: "22px", height: "22px", borderRadius: "999px", display: "grid", placeItems: "center", background: "#fff", color: item.color, border: "2px solid #e5e7eb", fontSize: item.icon === "T" ? "16px" : "14px", fontWeight: 1000, lineHeight: 1 }}>
