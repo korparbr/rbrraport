@@ -4641,7 +4641,7 @@
                                 ${group.text}
                               </button>
                               <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "3px" }}>
-                                Wysylka auta: ${ruleDateLabel(group.shipmentDate || group.date)}${group.capacity ? " / auto " + group.capacity : ""}${group.fillCount ? " / dolad. " + group.fillCount : ""} / wyslane: ${group.sentCount || 0}${group.note ? " / " + group.note : ""}
+                                ${ruleDateLabel(group.shipmentDate || group.date)}
                               </div>
                             ` : html`<span style=${{ color: COLORS.dim }}> </span>`}
                           </td>
@@ -4657,7 +4657,7 @@
                   <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "8px" }}>
                     ${fertilizationBoard.other.map(group => html`
                       <button key=${group.groupId || group.project + group.date} style=${S.ghost} onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })}>
-                        ${group.text} / wysylka ${ruleDateLabel(group.shipmentDate || group.date)} / wyslane ${group.sentCount || 0}
+                        ${group.text} / ${ruleDateLabel(group.shipmentDate || group.date)}
                       </button>
                     `)}
                   </div>
