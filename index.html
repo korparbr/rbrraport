@@ -369,23 +369,30 @@
         return { ...line, note: [line.note, suffix].filter(Boolean).join(" | ") };
       });
     };
+    const localDateIso = date => {
+      const d = date instanceof Date ? date : (date ? new Date(date + "T00:00:00") : new Date());
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
     const dateOffset = days => {
       const d = new Date();
       d.setDate(d.getDate() + days);
-      return d.toISOString().slice(0, 10);
+      return localDateIso(d);
     };
     const today = () => dateOffset(0);
     const yesterday = () => dateOffset(-1);
     const isoAddDays = (iso, days) => {
       const d = new Date((iso || today()) + "T00:00:00");
       d.setDate(d.getDate() + days);
-      return d.toISOString().slice(0, 10);
+      return localDateIso(d);
     };
     const weekStartIso = (iso = today()) => {
       const d = new Date(iso + "T00:00:00");
       const day = d.getDay() || 7;
       d.setDate(d.getDate() - day + 1);
-      return d.toISOString().slice(0, 10);
+      return localDateIso(d);
     };
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
@@ -5971,6 +5978,7 @@
       const [savingBoardHall, setSavingBoardHall] = useState(false);
       const [editBoard, setEditBoard] = useState(false);
       const [dragBoardItem, setDragBoardItem] = useState(null);
+      const [boardHallOverrides, setBoardHallOverrides] = useState({});
       const touchBoardDragRef = useRef(null);
       const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => isoAddDays(weekStart, i)), [weekStart]);
       const monthKey = today().slice(0, 7);
@@ -6006,6 +6014,10 @@
         if (h.includes("namiot 2") || h === "namiot2" || h === "n2") return "namiot2";
         return "";
       };
+      useEffect(() => {
+        const normalized = weekStartIso(weekStart);
+        if (normalized !== weekStart) setWeekStart(normalized);
+      }, [weekStart]);
       useEffect(() => {
         if (!token) return;
         api.getMapLayouts(token)
@@ -6061,7 +6073,7 @@
             date,
             project,
             product,
-            hall: normalizeBoardHall(line.hall) || hallByBathroomFromMap[transportKey(project, product)] || reportHallByBathroom[transportKey(project, product)] || unresolvedBoardHall.id
+            hall: boardHallOverrides[transportKey(project, product)] || normalizeBoardHall(line.hall) || hallByBathroomFromMap[transportKey(project, product)] || reportHallByBathroom[transportKey(project, product)] || unresolvedBoardHall.id
           });
         }));
         return rows.sort((a, b) =>
@@ -6070,7 +6082,7 @@
           String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) ||
           a.product - b.product
         );
-      }, [reports, hallByBathroomFromMap]);
+      }, [reports, hallByBathroomFromMap, boardHallOverrides]);
       const visibleBoardHalls = useMemo(() => {
         const hasUnresolved = closedRows.some(row => weekDays.includes(row.date) && row.hall === unresolvedBoardHall.id);
         return hasUnresolved ? [...boardHalls, unresolvedBoardHall] : boardHalls;
@@ -6105,6 +6117,9 @@
       const changeBathroomHall = async (project, product, hall) => {
         const normalizedHall = normalizeBoardHall(hall);
         if (!normalizedHall) return;
+        const key = transportKey(project, product);
+        const previousOverride = boardHallOverrides[key];
+        setBoardHallOverrides(prev => ({ ...prev, [key]: normalizedHall }));
         setSavingBoardHall(true);
         setBoardMsg(null);
         try {
@@ -6116,6 +6131,11 @@
           if (reloadReports) await reloadReports();
           setBoardMsg({ type: "success", text: "Hala produkcji zapisana. Lazienka zostala przeniesiona na Tablicy." });
         } catch (e) {
+          setBoardHallOverrides(prev => {
+            const next = { ...prev };
+            if (previousOverride) next[key] = previousOverride; else delete next[key];
+            return next;
+          });
           setBoardMsg({ type: "error", text: e.message || "Nie udalo sie zapisac hali." });
         } finally {
           setSavingBoardHall(false);
@@ -6124,6 +6144,12 @@
       const moveBoardItem = (item, targetHall) => {
         if (!editBoard || !item || targetHall === unresolvedBoardHall.id || item.hall === targetHall) return;
         changeBathroomHall(item.project, item.product, targetHall);
+        setDragBoardItem(null);
+      };
+      const selectBoardItemForMove = item => {
+        if (!editBoard || !item) return;
+        setDragBoardItem(item);
+        setBoardMsg({ type: "warning", text: "Wybrano " + item.project + "/" + item.product + ". Kliknij kolumne/hale, do ktorej chcesz przeniesc lazienke." });
       };
       const startBoardDrag = item => {
         if (!editBoard || !item) return;
@@ -6197,6 +6223,7 @@
           <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px", marginBottom: "14px" }}>
             <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: "#eef4ff", padding: "12px" }}>
               <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 900 }}>Biezacy tydzien</div>
+              <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 800, marginTop: "2px" }}>${weekDays[0]} - ${weekDays[6]} (pon.-niedz.)</div>
               <div style=${{ fontSize: "30px", fontWeight: 900, lineHeight: 1 }}>${weekTotal}</div>
             </div>
             <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: "#ecfdf5", padding: "12px" }}>
@@ -6234,6 +6261,10 @@
                             moveBoardItem(item, hall.id);
                             setDragBoardItem(null);
                           }}
+                          onClick=${() => {
+                            if (!editBoard || hall.id === unresolvedBoardHall.id || !dragBoardItem) return;
+                            moveBoardItem(dragBoardItem, hall.id);
+                          }}
                           style=${{
                             padding: "8px",
                             borderBottom: "1px solid " + COLORS.border,
@@ -6266,8 +6297,12 @@
                                 onDragEnd=${() => setDragBoardItem(null)}
                                 onTouchStart=${() => startBoardDrag(item)}
                                 onTouchEnd=${finishBoardTouchDrag}
-                                onClick=${() => editBoard ? null : setSelectedBathroom(item)}
-                                title=${editBoard ? "Przeciagnij na inna hale" : item.project + " / Laz. " + item.product}
+                                onClick=${e => {
+                                  if (e && e.stopPropagation) e.stopPropagation();
+                                  if (editBoard) return selectBoardItemForMove(item);
+                                  setSelectedBathroom(item);
+                                }}
+                                title=${editBoard ? "Przeciagnij albo kliknij, potem kliknij hale docelowa" : item.project + " / Laz. " + item.product}
                                 style=${{
                                   display: "inline-flex",
                                   border: "1px solid " + (dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product) ? COLORS.accent : (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#fed7aa")),
