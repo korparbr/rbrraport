@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.92</title>
+  <title>FlowRBR 1.93</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -439,6 +439,26 @@
       const target = new Date(date + "T00:00:00");
       return Math.round((target - base) / 86400000);
     };
+    const isBusinessDate = date => {
+      const d = date instanceof Date ? date : new Date(String(date || today()) + "T00:00:00");
+      const day = d.getDay();
+      return day !== 0 && day !== 6;
+    };
+    const businessDaysUntil = date => {
+      const parsed = parseDateIsoValue(date);
+      if (!parsed) return null;
+      const base = new Date(today() + "T00:00:00");
+      const target = new Date(parsed + "T00:00:00");
+      if (target <= base) return 0;
+      let count = 0;
+      const d = new Date(base);
+      d.setDate(d.getDate() + 1);
+      while (d <= target) {
+        if (isBusinessDate(d)) count++;
+        d.setDate(d.getDate() + 1);
+      }
+      return count;
+    };
     const transportAlert = date => {
       const days = daysUntil(date);
       if (days == null || days > 16) return null;
@@ -735,7 +755,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.92</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.93</span>` : null}
         </div>
       `;
     }
@@ -2618,7 +2638,18 @@
         { stage: "13.2", label: "13.2 Silikonowanie", short: "Silik.", color: "#fde047", text: "#111827" },
         { stage: "17", label: "17 Czyszczenie", short: "Czysz.", color: "#86efac", text: "#064e3b" }
       ];
-      const stageOrder = { "4": 1, "4.1": 1.5, "6.1": 2, "7.1": 3, "9": 4, "10": 5, "11.2": 6, "13.1": 7, "13.2": 8, "15.1": 9, "17": 10, "19": 11, "20": 12, "21": 13 };
+      const stageOrder = { "4": 1, "4.1": 1.5, "6.1": 2, "7.1": 3, "11.2": 4, "13.1": 5, "9": 6, "10": 7, "15.1": 8, "13.2": 9, "17": 10, "19": 11, "20": 12, "21": 13 };
+      const productionSchedule = [
+        { stage: "6.1", days: 0 },
+        { stage: "7.1", days: 2 },
+        { stage: "11.2", days: 2 },
+        { stage: "13.1", days: 1 },
+        { stage: "9", days: 2 },
+        { stage: "10", days: 2 },
+        { stage: "15.1", days: 1 },
+        { stage: "13.2", days: 1 },
+        { stage: "17", days: 2 }
+      ];
       const removedFromMapStages = new Set(["19", "20", "21"]);
       const selectedHall = halls.find(h => h.id === hall) || halls[0];
       const loadDateByBathroom = useMemo(() => transportMap((transportDates || []).filter(item => !item.extra)), [transportDates]);
@@ -2716,6 +2747,59 @@
         });
         return map;
       }, [reports]);
+      const stageSetByBathroom = useMemo(() => {
+        const map = {};
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          const key = bathroomKey(line.project, line.product);
+          const stage = String(line.stage || "").trim();
+          if (!key || !stage) return;
+          if (!map[key]) map[key] = new Set();
+          map[key].add(stage);
+        }));
+        return map;
+      }, [reports]);
+      const dependencyMarkersForCell = cell => {
+        if (!cell) return { plaster: null, electric: null };
+        const key = bathroomKey(cell.project, cell.product);
+        const currentStage = String((stageByBathroom[key] || {}).stage || "");
+        if (currentStage !== "9" && currentStage !== "10") return { plaster: null, electric: null };
+        const stages = stageSetByBathroom[key] || new Set();
+        const severe = currentStage === "10";
+        return {
+          plaster: stages.has("16") ? null : {
+            text: "T",
+            title: severe ? "Brak tynkowania przed malowaniem" : "Brak tynkowania przed szpachlowaniem",
+            textColor: severe ? "#dc2626" : "#facc15",
+            strikeColor: severe ? "#facc15" : "#dc2626"
+          },
+          electric: stages.has("8.2") ? null : {
+            text: String.fromCodePoint(0x26A1),
+            title: severe ? "Brak montazu elektrycznego Grob przed malowaniem" : "Brak montazu elektrycznego Grob przed szpachlowaniem",
+            textColor: severe ? "#dc2626" : "#facc15",
+            strikeColor: "#dc2626"
+          }
+        };
+      };
+      const remainingProductionDaysForStage = stage => {
+        const current = String(stage || "");
+        const index = productionSchedule.findIndex(item => item.stage === current);
+        if (index < 0) return productionSchedule.reduce((sum, item) => sum + item.days, 0);
+        return productionSchedule.slice(index + 1).reduce((sum, item) => sum + item.days, 0);
+      };
+      const trainWarningForCell = (cell, loadDate) => {
+        if (!cell || !loadDate) return null;
+        const key = bathroomKey(cell.project, cell.product);
+        const currentStage = String((stageByBathroom[key] || {}).stage || "");
+        if (removedFromMapStages.has(currentStage)) return null;
+        const remaining = remainingProductionDaysForStage(currentStage);
+        const available = businessDaysUntil(loadDate);
+        if (available == null) return null;
+        const shortage = remaining - available;
+        if (shortage <= 0) return null;
+        if (shortage <= 2) return { color: "#fff", text: "#111827", border: "#cbd5e1", shortage, remaining, available, label: "Brakuje " + shortage + " dni roboczych" };
+        if (shortage <= 5) return { color: "#fde047", text: "#111827", border: "#ca8a04", shortage, remaining, available, label: "Brakuje " + shortage + " dni roboczych" };
+        return { color: "#dc2626", text: "#fff", border: "#991b1b", shortage, remaining, available, label: "Brakuje " + shortage + " dni roboczych" };
+      };
       const savedLayout = layouts[hall] || [];
       const isRemovedFromMap = cell => {
         if (!cell) return false;
@@ -3789,6 +3873,7 @@
                     const isSelected = selectedCell && cell && bathroomKey(selectedCell.project, selectedCell.product) === bathroomKey(cell.project, cell.product);
                     const loadDate = cell ? loadDateByBathroom[transportKey(cell.project, cell.product)] : "";
                     const alert = transportAlert(loadDate);
+                    const trainWarning = trainWarningForCell(cell, loadDate);
                     const commentStatus = cell ? commentStatusByBathroom[bathroomKey(cell.project, cell.product)] : null;
                     const checkKey = cell ? bathroomKey(cell.project, cell.product) : "";
                     const needsTilingCheck = cell ? tilingByBathroom.has(checkKey) : false;
@@ -3800,6 +3885,7 @@
                     const helmetStyle = helmetStatusStyle(helmetStatus);
                     const sampleEnabled = sampleEnabledForCell(cell);
                     const qState = cell ? qualityStateFor(qualityData, cell.project, cell.product) : { goatActive: false, missingActive: false };
+                    const dependencyMarkers = dependencyMarkersForCell(cell);
                     const matchesFilter = matchesMapFilters(cell, alert);
                     const isManualCell = edit && manual.row === row && Number(manual.col) === col;
                     const typeInfo = cell ? bathroomTypeInfo(serverProjects, cell.project, cell.product) : {};
@@ -3858,6 +3944,25 @@
                               zIndex: 2
                             }}>!</span>
                           ` : null}
+                          ${trainWarning ? html`
+                            <span title=${trainWarning.label + " / potrzeba " + trainWarning.remaining + " dni rob., do zaladunku " + trainWarning.available + " dni rob."} style=${{
+                              position: "absolute",
+                              top: "-16px",
+                              right: alert ? "43px" : "-2px",
+                              width: "41px",
+                              height: "41px",
+                              borderRadius: "999px",
+                              background: trainWarning.color,
+                              color: trainWarning.text,
+                              display: "grid",
+                              placeItems: "center",
+                              fontWeight: 900,
+                              fontSize: "23px",
+                              border: "2px solid " + trainWarning.border,
+                              boxShadow: "0 2px 6px rgba(15,23,42,0.18)",
+                              zIndex: 3
+                            }}>${String.fromCodePoint(0x1F686)}</span>
+                          ` : null}
                           ${sampleEnabled ? html`
                             <span title="Musztrowka - pierwsza lazienka tego typu" style=${{
                               position: "absolute",
@@ -3874,6 +3979,74 @@
                               lineHeight: 1,
                               zIndex: 3
                             }}>${String.fromCharCode(9733)}</span>
+                          ` : null}
+                          ${dependencyMarkers.plaster ? html`
+                            <span title=${dependencyMarkers.plaster.title} style=${{
+                              position: "absolute",
+                              top: "50%",
+                              right: "8px",
+                              transform: "translateY(-50%)",
+                              width: "32px",
+                              height: "32px",
+                              borderRadius: "999px",
+                              background: "#fff",
+                              border: "2px solid #e5e7eb",
+                              color: dependencyMarkers.plaster.textColor,
+                              display: "grid",
+                              placeItems: "center",
+                              fontWeight: 1000,
+                              fontSize: "22px",
+                              lineHeight: 1,
+                              boxShadow: "0 0 0 1px rgba(15,23,42,0.12)",
+                              zIndex: 4,
+                              pointerEvents: "none"
+                            }}>
+                              <span>${dependencyMarkers.plaster.text}</span>
+                              <span style=${{
+                                position: "absolute",
+                                left: "5px",
+                                right: "5px",
+                                top: "15px",
+                                height: "3px",
+                                background: dependencyMarkers.plaster.strikeColor,
+                                borderRadius: "999px",
+                                transform: "rotate(-28deg)"
+                              }}></span>
+                            </span>
+                          ` : null}
+                          ${dependencyMarkers.electric ? html`
+                            <span title=${dependencyMarkers.electric.title} style=${{
+                              position: "absolute",
+                              top: "50%",
+                              left: "8px",
+                              transform: "translateY(-50%)",
+                              width: "32px",
+                              height: "32px",
+                              borderRadius: "999px",
+                              background: "#fff",
+                              border: "2px solid #e5e7eb",
+                              color: dependencyMarkers.electric.textColor,
+                              display: "grid",
+                              placeItems: "center",
+                              fontWeight: 1000,
+                              fontSize: "21px",
+                              lineHeight: 1,
+                              boxShadow: "0 0 0 1px rgba(15,23,42,0.12)",
+                              zIndex: 4,
+                              pointerEvents: "none"
+                            }}>
+                              <span>${dependencyMarkers.electric.text}</span>
+                              <span style=${{
+                                position: "absolute",
+                                left: "5px",
+                                right: "5px",
+                                top: "15px",
+                                height: "3px",
+                                background: dependencyMarkers.electric.strikeColor,
+                                borderRadius: "999px",
+                                transform: "rotate(-28deg)"
+                              }}></span>
+                            </span>
                           ` : null}
                           ${commentStatus ? html`
                             <span title=${commentStatus.open ? "Komentarz do zrobienia" : "Komentarze zrobione"} style=${{
