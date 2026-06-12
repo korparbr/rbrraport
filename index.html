@@ -5961,30 +5961,62 @@
       `;
     }
 
-    function BoardTab({ reports }) {
+    function BoardTab({ reports, token }) {
       const [weekStart, setWeekStart] = useState(() => weekStartIso());
+      const [mapLayouts, setMapLayouts] = useState({});
       const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => isoAddDays(weekStart, i)), [weekStart]);
       const monthKey = today().slice(0, 7);
+      const boardHalls = [
+        { id: "namiot1", label: "Namiot 1" },
+        { id: "betonowanie", label: "Hala Betonowanie" },
+        { id: "namiot2", label: "Namiot 2" }
+      ];
       const weekdayLabel = date => {
         const names = ["Pon", "Wt", "Sr", "Czw", "Pt", "Sob", "Nd"];
         const d = new Date(date + "T00:00:00");
         return names[(d.getDay() + 6) % 7] + " " + date.slice(5);
       };
-      const hallRank = hall => {
-        const h = String(hall || "").toLowerCase();
-        if (h.includes("namiot 1") || h === "n1") return 1;
-        if (h.includes("beton") || h.includes("hala")) return 2;
-        if (h.includes("namiot 2") || h === "n2") return 3;
-        return 9;
+      const isoWeekNumber = date => {
+        const d = new Date(date + "T00:00:00");
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+        const week1 = new Date(d.getFullYear(), 0, 4);
+        return 1 + Math.round((((d - week1) / 86400000) - 3 + ((week1.getDay() + 6) % 7)) / 7);
       };
+      const normalizeBoardHall = hall => {
+        const h = String(hall || "").toLowerCase();
+        if (h.includes("namiot 1") || h === "namiot1" || h === "n1") return "namiot1";
+        if (h.includes("beton") || h.includes("hala betonowanie")) return "betonowanie";
+        if (h.includes("namiot 2") || h === "namiot2" || h === "n2") return "namiot2";
+        return "";
+      };
+      useEffect(() => {
+        if (!token) return;
+        api.getMapLayouts(token)
+          .then(data => setMapLayouts((data && (data.layouts || data)) || {}))
+          .catch(() => setMapLayouts({}));
+      }, [token]);
+      const hallByBathroomFromMap = useMemo(() => {
+        const map = {};
+        Object.entries(mapLayouts || {}).forEach(([hallId, cells]) => {
+          const normalizedHall = normalizeBoardHall(hallId);
+          if (!normalizedHall) return;
+          (cells || []).forEach(cell => {
+            const key = transportKey(cell.project, cell.product);
+            if (key) map[key] = normalizedHall;
+          });
+        });
+        return map;
+      }, [mapLayouts]);
       const closedRows = useMemo(() => {
-        const hallByBathroom = {};
+        const reportHallByBathroom = {};
         (reports || [])
           .slice()
           .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
           .forEach(report => (report.lines || []).forEach(line => {
             const key = transportKey(line.project, line.product);
-            if (line.hall && key) hallByBathroom[key] = String(line.hall).trim();
+            const normalizedHall = normalizeBoardHall(line.hall);
+            if (normalizedHall && key) reportHallByBathroom[key] = normalizedHall;
           }));
         const seen = new Set();
         const rows = [];
@@ -6001,23 +6033,22 @@
             date,
             project,
             product,
-            hall: String(line.hall || hallByBathroom[transportKey(project, product)] || "Bez hali").trim()
+            hall: normalizeBoardHall(line.hall) || hallByBathroomFromMap[transportKey(project, product)] || reportHallByBathroom[transportKey(project, product)] || ""
           });
         }));
         return rows.sort((a, b) =>
           a.date.localeCompare(b.date) ||
-          hallRank(a.hall) - hallRank(b.hall) ||
+          boardHalls.findIndex(h => h.id === a.hall) - boardHalls.findIndex(h => h.id === b.hall) ||
           String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) ||
           a.product - b.product
         );
-      }, [reports]);
-      const halls = useMemo(() => [...new Set(closedRows.map(row => row.hall || "Bez hali"))].sort((a, b) => hallRank(a) - hallRank(b) || a.localeCompare(b, "pl", { numeric: true })), [closedRows]);
+      }, [reports, hallByBathroomFromMap]);
       const weekMap = useMemo(() => {
         const map = {};
         closedRows
           .filter(row => weekDays.includes(row.date))
           .forEach(row => {
-            const key = row.hall + "#" + row.date;
+            const key = row.date + "#" + row.hall;
             if (!map[key]) map[key] = [];
             map[key].push(row);
           });
@@ -6027,6 +6058,7 @@
         const summary = {};
         closedRows
           .filter(row => row.date.slice(0, 7) === monthKey)
+          .filter(row => row.hall)
           .forEach(row => {
             if (!summary[row.hall]) summary[row.hall] = { count: 0, projects: {} };
             summary[row.hall].count += 1;
@@ -6036,21 +6068,24 @@
       }, [closedRows, monthKey]);
       const weekTotal = closedRows.filter(row => weekDays.includes(row.date)).length;
       const monthTotal = closedRows.filter(row => row.date.slice(0, 7) === monthKey).length;
-      const activeHalls = halls.length ? halls : ["Bez hali"];
-      const cellItems = (hall, date) => weekMap[hall + "#" + date] || [];
+      const unassignedWeek = closedRows.filter(row => weekDays.includes(row.date) && !row.hall);
+      const cellItems = (date, hall) => weekMap[date + "#" + hall] || [];
       const setCurrentWeek = () => setWeekStart(weekStartIso());
+      const moveWeek = offset => setWeekStart(isoAddDays(weekStart, offset * 7));
       return html`
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", flexWrap: "wrap", marginBottom: "14px" }}>
             <div>
               <h2 style=${S.title}>Tablica</h2>
-              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 18 - Kontrola jakosci, z podzialem na hale i dni.</div>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 18 - Kontrola jakosci. Hala jest pobierana z aktualnej szachownicy.</div>
             </div>
             <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap" }}>
+              <button style=${S.ghost} onClick=${() => moveWeek(-1)}>Poprzedni KW</button>
               <div>
-                <label style=${S.label}>Tydzien od</label>
+                <label style=${S.label}>KW ${isoWeekNumber(weekStart)} / tydzien od</label>
                 <input type="date" style=${S.input} value=${weekStart} onInput=${e => setWeekStart(e.target.value || weekStartIso())} />
               </div>
+              <button style=${S.ghost} onClick=${() => moveWeek(1)}>Nastepny KW</button>
               <button style=${S.ghost} onClick=${setCurrentWeek}>Biezacy tydzien</button>
             </div>
           </div>
@@ -6068,18 +6103,18 @@
             <table style=${{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: "980px", border: "1px solid " + COLORS.border, borderRadius: "10px", overflow: "hidden" }}>
               <thead>
                 <tr>
-                  <th style=${{ textAlign: "left", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, width: "150px" }}>Hala</th>
-                  ${weekDays.map(day => html`<th key=${day} style=${{ textAlign: "left", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, minWidth: "118px" }}>${weekdayLabel(day)}</th>`)}
+                  <th style=${{ textAlign: "left", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, width: "150px" }}>Dzien</th>
+                  ${boardHalls.map(hall => html`<th key=${hall.id} style=${{ textAlign: "center", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, minWidth: "230px" }}>${hall.label}</th>`)}
                 </tr>
               </thead>
               <tbody>
-                ${activeHalls.map(hall => html`
-                  <tr key=${hall}>
-                    <td style=${{ padding: "11px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900, background: COLORS.panel2, verticalAlign: "top" }}>${hall}</td>
-                    ${weekDays.map(day => {
-                      const items = cellItems(hall, day);
+                ${weekDays.map(day => html`
+                  <tr key=${day}>
+                    <td style=${{ padding: "11px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900, background: COLORS.panel2, verticalAlign: "top" }}>${weekdayLabel(day)}</td>
+                    ${boardHalls.map(hall => {
+                      const items = cellItems(day, hall.id);
                       return html`
-                        <td key=${hall + day} style=${{ padding: "8px", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, verticalAlign: "top", minHeight: "90px", background: items.length ? "#fff7ed" : COLORS.panel }}>
+                        <td key=${day + hall.id} style=${{ padding: "8px", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, verticalAlign: "top", minHeight: "108px", background: items.length ? "#fff7ed" : COLORS.panel }}>
                           <div style=${{ display: "flex", justifyContent: "space-between", gap: "6px", marginBottom: "6px", color: COLORS.muted, fontSize: "11px", fontWeight: 900 }}>
                             <span>${items.length ? items.length + " szt." : ""}</span>
                           </div>
@@ -6098,16 +6133,21 @@
               </tbody>
             </table>
           </div>
+          ${unassignedWeek.length ? html`
+            <div style=${{ border: "1px solid #fed7aa", background: "#fff7ed", color: "#9a3412", borderRadius: "8px", padding: "10px 12px", marginBottom: "16px", fontSize: "13px" }}>
+              Bez hali z szachownicy w tym tygodniu: ${unassignedWeek.map(item => item.project + "/" + item.product).join(", ")}
+            </div>
+          ` : null}
           <section style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.panel2, padding: "12px" }}>
             <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Podsumowanie miesiaca ${monthKey}</h3>
             <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "10px" }}>
-              ${activeHalls.map(hall => {
-                const info = monthSummary[hall] || { count: 0, projects: {} };
+              ${boardHalls.map(hall => {
+                const info = monthSummary[hall.id] || { count: 0, projects: {} };
                 const projects = Object.entries(info.projects).sort((a, b) => String(a[0]).localeCompare(String(b[0]), "pl", { numeric: true }));
                 return html`
-                  <div key=${hall} style=${{ border: "1px solid " + COLORS.border, background: COLORS.panel, borderRadius: "8px", padding: "11px" }}>
+                  <div key=${hall.id} style=${{ border: "1px solid " + COLORS.border, background: COLORS.panel, borderRadius: "8px", padding: "11px" }}>
                     <div style=${{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "center", marginBottom: "8px" }}>
-                      <strong>${hall}</strong>
+                      <strong>${hall.label}</strong>
                       <span style=${{ ...S.badge, background: "#eef4ff", color: COLORS.accent, borderColor: "#bfdbfe" }}>${info.count} szt.</span>
                     </div>
                     ${projects.length ? html`
@@ -8244,7 +8284,7 @@
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} token=${token} serverProjects=${serverProjects} />
           ` : tab === "board" ? html`
-            <${BoardTab} reports=${reports} />
+            <${BoardTab} reports=${reports} token=${token} />
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
           ` : tab === "transport" ? html`
