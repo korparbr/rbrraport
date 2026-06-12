@@ -613,6 +613,7 @@
         ...l,
         project: String(l.project ?? l.project_id ?? l.projectId ?? l.order_no ?? l.orderNo ?? "").trim(),
         stage: String(l.stage ?? l.stage_id ?? l.stageId ?? "").trim(),
+        hall: String(l.hall ?? l.production_hall ?? l.productionHall ?? "").trim(),
         product: productNo(l.product ?? l.product_no ?? l.productNo ?? l.product_number ?? l.productNumber ?? l.bathroom ?? l.bathroom_no ?? l.bathroomNo)
       }))
     });
@@ -5961,16 +5962,20 @@
       `;
     }
 
-    function BoardTab({ reports, token }) {
+    function BoardTab({ reports, token, transportDates, qualityData, serverProjects, bathroomComments }) {
       const [weekStart, setWeekStart] = useState(() => weekStartIso());
       const [mapLayouts, setMapLayouts] = useState({});
+      const [selectedBathroom, setSelectedBathroom] = useState(null);
       const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => isoAddDays(weekStart, i)), [weekStart]);
       const monthKey = today().slice(0, 7);
+      const loads = useMemo(() => transportMap(transportDates), [transportDates]);
+      const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
       const boardHalls = [
         { id: "namiot1", label: "Namiot 1" },
         { id: "betonowanie", label: "Hala Betonowanie" },
         { id: "namiot2", label: "Namiot 2" }
       ];
+      const boardHallLabel = id => (boardHalls.find(h => h.id === id) || {}).label || "";
       const weekdayLabel = date => {
         const names = ["Pon", "Wt", "Sr", "Czw", "Pt", "Sob", "Nd"];
         const d = new Date(date + "T00:00:00");
@@ -6004,6 +6009,18 @@
           (cells || []).forEach(cell => {
             const key = transportKey(cell.project, cell.product);
             if (key) map[key] = normalizedHall;
+          });
+        });
+        return map;
+      }, [mapLayouts]);
+      const mapCellByBathroom = useMemo(() => {
+        const map = {};
+        Object.entries(mapLayouts || {}).forEach(([hallId, cells]) => {
+          const normalizedHall = normalizeBoardHall(hallId);
+          const hallLabel = (boardHalls.find(h => h.id === normalizedHall) || {}).label || hallId;
+          (cells || []).forEach(cell => {
+            const key = transportKey(cell.project, cell.product);
+            if (key) map[key] = { ...cell, hall: normalizedHall, hallLabel };
           });
         });
         return map;
@@ -6066,12 +6083,43 @@
           });
         return summary;
       }, [closedRows, monthKey]);
-      const weekTotal = closedRows.filter(row => weekDays.includes(row.date)).length;
-      const monthTotal = closedRows.filter(row => row.date.slice(0, 7) === monthKey).length;
-      const unassignedWeek = closedRows.filter(row => weekDays.includes(row.date) && !row.hall);
+      const weekTotal = closedRows.filter(row => weekDays.includes(row.date) && row.hall).length;
+      const monthTotal = closedRows.filter(row => row.date.slice(0, 7) === monthKey && row.hall).length;
       const cellItems = (date, hall) => weekMap[date + "#" + hall] || [];
       const setCurrentWeek = () => setWeekStart(weekStartIso());
       const moveWeek = offset => setWeekStart(isoAddDays(weekStart, offset * 7));
+      const selectedInfo = useMemo(() => {
+        if (!selectedBathroom) return null;
+        const key = transportKey(selectedBathroom.project, selectedBathroom.product);
+        const history = (reports || [])
+          .flatMap(report => (report.lines || [])
+            .filter(line => sameProject(line.project, selectedBathroom.project) && productNo(line.product) === productNo(selectedBathroom.product))
+            .map(line => ({
+              ...line,
+              date: report.date || "",
+              time: reportTime(report),
+              worker: report.workerName || report.worker_name || report.workerLogin || report.worker_code || "",
+              createdBy: report.createdByName || report.created_by_name || report.createdBy || report.created_by || report.workerName || report.workerLogin || ""
+            })))
+          .sort((a, b) => (a.date || "").localeCompare(b.date || "") || stageLabel(a.stage).localeCompare(stageLabel(b.stage), "pl", { numeric: true }));
+        const comments = (bathroomComments || [])
+          .filter(c => sameProject(c.project, selectedBathroom.project) && productNo(c.product) === productNo(selectedBathroom.product))
+          .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+        const quality = qualityStateFor(qualityData, selectedBathroom.project, selectedBathroom.product);
+        const mapCell = mapCellByBathroom[key] || null;
+        const productionHall = normalizeBoardHall(selectedBathroom.hall) || (mapCell && mapCell.hall) || "";
+        return {
+          item: selectedBathroom,
+          meta: bathroomMeta[key] || {},
+          type: bathroomTypeInfo(serverProjects, selectedBathroom.project, selectedBathroom.product),
+          mapCell,
+          productionHall,
+          loadDate: loads[key] || "",
+          quality,
+          comments,
+          history
+        };
+      }, [selectedBathroom, reports, bathroomComments, qualityData, bathroomMeta, loads, mapCellByBathroom, serverProjects]);
       return html`
         <section style=${S.card}>
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", flexWrap: "wrap", marginBottom: "14px" }}>
@@ -6120,9 +6168,9 @@
                           </div>
                           <div style=${{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
                             ${items.map(item => html`
-                              <span key=${item.project + "-" + item.product} title=${item.project + " / Laz. " + item.product} style=${{ display: "inline-flex", border: "1px solid #fed7aa", background: "#ffedd5", color: "#9a3412", borderRadius: "7px", padding: "4px 6px", fontWeight: 900, fontSize: "12px", lineHeight: 1 }}>
+                              <button key=${item.project + "-" + item.product} type="button" onClick=${() => setSelectedBathroom(item)} title=${item.project + " / Laz. " + item.product} style=${{ display: "inline-flex", border: "1px solid " + (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#fed7aa"), background: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? "#eef4ff" : "#ffedd5", color: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#9a3412", borderRadius: "7px", padding: "4px 6px", fontWeight: 900, fontSize: "12px", lineHeight: 1, cursor: "pointer" }}>
                                 ${item.project}/${item.product}
-                              </span>
+                              </button>
                             `)}
                           </div>
                         </td>
@@ -6133,10 +6181,71 @@
               </tbody>
             </table>
           </div>
-          ${unassignedWeek.length ? html`
-            <div style=${{ border: "1px solid #fed7aa", background: "#fff7ed", color: "#9a3412", borderRadius: "8px", padding: "10px 12px", marginBottom: "16px", fontSize: "13px" }}>
-              Bez hali z szachownicy w tym tygodniu: ${unassignedWeek.map(item => item.project + "/" + item.product).join(", ")}
-            </div>
+          ${selectedInfo ? html`
+            <aside style=${{ border: "2px solid " + COLORS.accent, borderRadius: "10px", background: "#eef4ff", padding: "14px", marginBottom: "16px", boxShadow: "0 10px 24px rgba(39,94,254,0.14)" }}>
+              <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", marginBottom: "12px" }}>
+                <div>
+                  <h3 style=${{ ...S.title, fontSize: "20px", marginBottom: "4px" }}>Historia zmian lazienki</h3>
+                  <div style=${{ color: COLORS.text, fontSize: "19px", fontWeight: 900 }}>${selectedInfo.item.project} / Laz. ${selectedInfo.item.product}${selectedInfo.type.rbrTypeShort ? " / " + selectedInfo.type.rbrTypeShort : ""}</div>
+                  <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px", lineHeight: 1.5 }}>
+                    Hala produkcji: ${selectedInfo.mapCell ? selectedInfo.mapCell.hallLabel : (boardHallLabel(selectedInfo.productionHall) || "brak danych")}${selectedInfo.mapCell ? " / pole " + selectedInfo.mapCell.row + "-" + selectedInfo.mapCell.col : ""}<br />
+                    Data wstawienia na szachownice: ${selectedInfo.mapCell && selectedInfo.mapCell.placedDate ? selectedInfo.mapCell.placedDate : "brak"}${selectedInfo.loadDate ? " / Zaladunek: " + selectedInfo.loadDate : ""}
+                  </div>
+                </div>
+                <button style=${S.ghost} onClick=${() => setSelectedBathroom(null)}>Zamknij</button>
+              </div>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "10px", marginBottom: "12px" }}>
+                ${[
+                  ["ID", selectedInfo.meta.externalId],
+                  ["RBR Type", selectedInfo.meta.rbrType],
+                  ["Ventilation Variant", selectedInfo.meta.ventilationVariant],
+                  ["Visible High Walls", selectedInfo.meta.visibleHighWalls],
+                  ["Requested Delivery", selectedInfo.meta.requestedDelivery]
+                ].map(row => html`
+                  <div key=${row[0]} style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "9px" }}>
+                    <div style=${{ color: COLORS.muted, fontSize: "11px", fontWeight: 900 }}>${row[0]}</div>
+                    <div style=${{ fontWeight: 900, marginTop: "3px" }}>${row[1] || "-"}</div>
+                  </div>
+                `)}
+              </div>
+              <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "10px", marginBottom: "12px" }}>
+                <div style=${{ background: COLORS.panel, border: "1px solid " + (selectedInfo.quality.goatActive || selectedInfo.quality.missingActive ? "#fb923c" : COLORS.border), borderRadius: "8px", padding: "10px" }}>
+                  <div style=${{ fontWeight: 900, marginBottom: "6px" }}>Kontrola jakosci</div>
+                  <div style=${{ color: COLORS.muted, fontSize: "13px", lineHeight: 1.6 }}>
+                    ${selectedInfo.quality.record && selectedInfo.quality.record.goat ? (selectedInfo.quality.goatActive ? qualityIcon("goat") + " Koza otwarta" : qualityIcon("goat") + " Koza zrobiona") : "Bez kozy"}
+                    ${selectedInfo.quality.record && selectedInfo.quality.record.missingItems && selectedInfo.quality.record.missingItems.length ? html`
+                      <br />${qualityIcon("missing")} Braki: ${selectedInfo.quality.openMissing.length ? selectedInfo.quality.openMissing.join(", ") : "wszystkie uzupelnione"}
+                    ` : html`<br />Bez brakow`}
+                  </div>
+                </div>
+                <div style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                  <div style=${{ fontWeight: 900, marginBottom: "6px" }}>Komentarze</div>
+                  ${selectedInfo.comments.length ? html`
+                    <div style=${{ display: "grid", gap: "6px", maxHeight: "180px", overflowY: "auto" }}>
+                      ${selectedInfo.comments.map(c => html`
+                        <div key=${c.id} style=${{ border: "1px solid " + COLORS.border, borderRadius: "7px", padding: "7px", background: c.done ? "#f0fdf4" : "#fff7ed" }}>
+                          <div style=${{ fontWeight: 800 }}>${c.comment}</div>
+                          <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "3px" }}>${c.done ? "Zrobione" : "Do zrobienia"} / ${c.authorName || c.authorCode || "-"} / ${(c.createdAt || "").slice(0, 10)}</div>
+                        </div>
+                      `)}
+                    </div>
+                  ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak komentarzy.</div>`}
+                </div>
+              </div>
+              <div style=${{ background: COLORS.panel, border: "1px solid " + COLORS.border, borderRadius: "8px", padding: "10px" }}>
+                <div style=${{ fontWeight: 900, marginBottom: "8px" }}>Raporty i historia</div>
+                ${selectedInfo.history.length ? html`
+                  <div style=${{ display: "grid", gap: "6px", maxHeight: "320px", overflowY: "auto" }}>
+                    ${selectedInfo.history.map((line, idx) => html`
+                      <div key=${idx + "-" + line.date + "-" + line.stage} style=${{ display: "grid", gap: "2px", borderBottom: "1px solid " + COLORS.border, padding: "7px 0" }}>
+                        <strong>${line.date || "-"}${line.time ? " " + line.time : ""} / ${stageLabel(line.stage)}</strong>
+                        <span style=${{ color: COLORS.muted, fontSize: "12px" }}>${line.worker || "-"}${line.createdBy && line.createdBy !== line.worker ? " / dodal: " + line.createdBy : ""}${line.hall ? " / " + line.hall : ""}${line.note ? " / " + line.note : ""}</span>
+                      </div>
+                    `)}
+                  </div>
+                ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak raportow dla tej lazienki.</div>`}
+              </div>
+            </aside>
           ` : null}
           <section style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.panel2, padding: "12px" }}>
             <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Podsumowanie miesiaca ${monthKey}</h3>
@@ -8284,7 +8393,7 @@
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} token=${token} serverProjects=${serverProjects} />
           ` : tab === "board" ? html`
-            <${BoardTab} reports=${reports} token=${token} />
+            <${BoardTab} reports=${reports} token=${token} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
           ` : tab === "transport" ? html`

@@ -147,6 +147,27 @@ function normalizeMapLayouts(rawLayouts) {
   return result;
 }
 
+async function productionHallMapFromLayouts(client) {
+  await ensureMapLayoutsTable();
+  const result = {};
+  const r = await client.query("SELECT layouts FROM map_layouts WHERE id='main'");
+  const layouts = normalizeMapLayouts(r.rows[0]?.layouts || {});
+  for (const hallId of Object.keys(layouts)) {
+    for (const cell of layouts[hallId] || []) {
+      result[`${cell.project}#${Number(cell.product)}`] = hallId;
+    }
+  }
+  return result;
+}
+
+function productionHallForLine(line, hallMap) {
+  const explicit = String(line?.hall || '').trim();
+  if (explicit) return explicit;
+  const project = String(line?.project || '').trim();
+  const product = Number(line?.product);
+  return hallMap[`${project}#${product}`] || '';
+}
+
 function normalizeMapPhotos(rawPhotos) {
   const result = {};
   for (const hallId of Object.keys(MAP_HALLS)) {
@@ -252,6 +273,7 @@ async function ensureUserSessionsTable() {
 
 async function ensureReportsCreatedByColumn() {
   await pool.query("ALTER TABLE reports ADD COLUMN IF NOT EXISTS created_by TEXT");
+  await pool.query("ALTER TABLE report_lines ADD COLUMN IF NOT EXISTS hall TEXT NOT NULL DEFAULT ''");
 }
 
 async function ensureAuditLogsTable() {
@@ -1724,7 +1746,7 @@ app.get('/api/reports', auth, requireTab('reports'), async (req, res) => {
     const q = `
       SELECT r.id, r.worker_code, u.name as worker_name, r.created_by, cu.name as created_by_name, r.report_date::text as date, r.created_at,
         json_agg(json_build_object('id',rl.id,'project',rl.project,'product',rl.product,
-          'stage',rl.stage,'contractor',rl.contractor_code,'note',rl.note) ORDER BY rl.id) as lines
+          'stage',rl.stage,'contractor',rl.contractor_code,'note',rl.note,'hall',rl.hall) ORDER BY rl.id) as lines
       FROM reports r JOIN users u ON r.worker_code=u.code JOIN report_lines rl ON rl.report_id=r.id
       LEFT JOIN users cu ON r.created_by=cu.code
       ${isManager ? '' : 'WHERE r.worker_code=$1'}
@@ -1762,6 +1784,7 @@ app.post('/api/reports', auth, requireTab('reports'), async (req, res) => {
     }
     const r = await client.query('INSERT INTO reports (worker_code, report_date, created_by) VALUES ($1,$2,$3) RETURNING id', [req.user.code, date, req.user.code]);
     const reportId = r.rows[0].id;
+    const productionHallMap = await productionHallMapFromLayouts(client);
 
     const skipped = [];
     const saved = [];
@@ -1780,9 +1803,10 @@ app.post('/api/reports', auth, requireTab('reports'), async (req, res) => {
           continue;
         }
       }
+      const productionHall = productionHallForLine(line, productionHallMap);
       await client.query(
-        'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
-        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '']
+        'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note,hall) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [reportId, line.project, line.product, line.stage, line.contractor || null, line.note || '', productionHall]
       );
       await saveQualityFromLine(client, line, req.user.code);
       saved.push(line);
@@ -1909,6 +1933,7 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
     }
     const r = await client.query('INSERT INTO reports (worker_code, report_date, created_by) VALUES ($1,$2,$3) RETURNING id', [workerCode, date, req.user.code]);
     const reportId = r.rows[0].id;
+    const productionHallMap = await productionHallMapFromLayouts(client);
     const skipped = [], saved = [];
     for (const line of lines) {
       if (!allowDuplicateReportLine(line)) {
@@ -1919,9 +1944,10 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
         );
         if (exists.rows.length > 0) { skipped.push(line); continue; }
       }
+      const productionHall = productionHallForLine(line, productionHallMap);
       await client.query(
-        'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note) VALUES ($1,$2,$3,$4,$5,$6)',
-        [reportId, line.project, line.product, line.stage, line.contractor || workerCode, line.note || '']
+        'INSERT INTO report_lines (report_id,project,product,stage,contractor_code,note,hall) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [reportId, line.project, line.product, line.stage, line.contractor || workerCode, line.note || '', productionHall]
       );
       await saveQualityFromLine(client, line, workerCode);
       saved.push(line);
@@ -2446,7 +2472,7 @@ async function sendReport(date) {
   if (!recipients.length) return;
   const result = await pool.query(`
     SELECT r.id, r.worker_code, u.name as worker_name, r.report_date::text as date,
-      json_agg(json_build_object('project',rl.project,'product',rl.product,'stage',rl.stage,'contractor_code',rl.contractor_code,'note',rl.note) ORDER BY rl.id) as lines
+      json_agg(json_build_object('project',rl.project,'product',rl.product,'stage',rl.stage,'contractor_code',rl.contractor_code,'note',rl.note,'hall',rl.hall) ORDER BY rl.id) as lines
     FROM reports r JOIN users u ON r.worker_code=u.code JOIN report_lines rl ON rl.report_id=r.id
     WHERE r.report_date=$1 GROUP BY r.id, u.name`, [date]);
   if (!result.rows.length) return;
@@ -2732,8 +2758,8 @@ app.post('/api/restore', auth, requireTab('database'), managerOnly, async (req, 
       const exists = await client.query('SELECT id FROM report_lines WHERE id=$1', [l.id]);
       if (exists.rows.length === 0) {
         await client.query(
-          'INSERT INTO report_lines (id, report_id, project, product, stage, contractor_code, note, photos, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
-          [l.id, l.report_id, l.project, l.product, l.stage, l.contractor_code, l.note||'', l.photos||null, l.created_at]
+          'INSERT INTO report_lines (id, report_id, project, product, stage, contractor_code, note, photos, created_at, hall) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+          [l.id, l.report_id, l.project, l.product, l.stage, l.contractor_code, l.note||'', l.photos||null, l.created_at, l.hall || '']
         );
         linesAdded++;
       }
