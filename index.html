@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.93</title>
+  <title>FlowRBR 1.94</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -459,6 +459,21 @@
       }
       return count;
     };
+    const nextBusinessDateIso = iso => {
+      const parsed = parseDateIsoValue(iso);
+      if (!parsed) return "";
+      const d = new Date(parsed + "T00:00:00");
+      do {
+        d.setDate(d.getDate() + 1);
+      } while (!isBusinessDate(d));
+      return localDateIso(d);
+    };
+    const isFreshTransportChange = info => {
+      const changed = parseDateIsoValue(info && (info.updatedAt || info.updated_at));
+      if (!changed) return false;
+      const current = today();
+      return current === changed || current === nextBusinessDateIso(changed);
+    };
     const transportAlert = date => {
       const days = daysUntil(date);
       if (days == null || days > 16) return null;
@@ -755,7 +770,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.93</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.94</span>` : null}
         </div>
       `;
     }
@@ -2653,6 +2668,7 @@
       const removedFromMapStages = new Set(["19", "20", "21"]);
       const selectedHall = halls.find(h => h.id === hall) || halls[0];
       const loadDateByBathroom = useMemo(() => transportMap((transportDates || []).filter(item => !item.extra)), [transportDates]);
+      const loadInfoByBathroom = useMemo(() => transportInfoMap((transportDates || []).filter(item => !item.extra)), [transportDates]);
       const projectCounts = useMemo(() => projectCountMap(serverProjects), [serverProjects]);
       const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
       const saveLayouts = (next, nextDates = mapDates, nextWidths = mapWidths, nextStarts = mapStarts) => {
@@ -3294,8 +3310,11 @@
                 const bg = hex(st.background);
                 const tx = hex(st.color);
                 const bKey = bathroomKey(cell.project, cell.product);
-                const loadDate = loadDateByBathroom[transportKey(cell.project, cell.product)];
+                const loadKey = transportKey(cell.project, cell.product);
+                const loadDate = loadDateByBathroom[loadKey];
+                const freshTransportChange = isFreshTransportChange(loadInfoByBathroom[loadKey]);
                 const alert = transportAlert(loadDate);
+                const trainWarning = trainWarningForCell(cell, loadDate);
                 const commentStatus = commentStatusByBathroom[bKey];
                 const needsTilingCheck = tilingByBathroom.has(bKey);
                 const tilingCheck = needsTilingCheck ? bathroomChecksByKey[bKey + "#tiling"] : null;
@@ -3306,6 +3325,7 @@
                 const typeInfo = bathroomTypeInfo(serverProjects, cell.project, cell.product);
                 const productLabel = typeInfo.rbrTypeShort ? cell.product + "/" + typeInfo.rbrTypeShort : String(cell.product);
                 const sampleEnabled = sampleEnabledForCell(cell);
+                const dependencyMarkers = dependencyMarkersForCell(cell);
                 doc.setFillColor(bg[0], bg[1], bg[2]);
                 doc.roundedRect(x, cy, cellW, colorH, 1.6, 1.6, "F");
                 doc.setFillColor(255, 255, 255);
@@ -3328,68 +3348,104 @@
                 const stageLines = doc.splitTextToSize(st.shortLabel || st.label || "Brak", cellW - 3).slice(0, large ? 2 : 2);
                 doc.text(stageLines, x + cellW / 2, cy + cellH * 0.315, { align: "center", lineHeightFactor: 1.04 });
 
-                if (alert) {
-                  const ar = hex(alert.color);
-                  const atr = hex(alert.text);
-                  const alertR = Math.max(2.4, cellW * 0.105);
-                  doc.setFillColor(ar[0], ar[1], ar[2]);
-                  doc.circle(x + cellW - alertR - 0.6, cy - alertR * 0.42, alertR, "F");
-                  doc.setTextColor(atr[0], atr[1], atr[2]);
+                const px = cellW / 74;
+                const drawRoundIcon = (leftPx, topPx, sizePx, bgColor, textColor, borderColor, label, fontPx, borderPx = 1) => {
+                  const size = sizePx * px;
+                  const left = x + leftPx * px;
+                  const top = cy + topPx * px;
+                  const centerX = left + size / 2;
+                  const centerY = top + size / 2;
+                  const bgc = hex(bgColor);
+                  const txtc = hex(textColor);
+                  const brc = hex(borderColor || COLORS.border);
+                  doc.setFillColor(bgc[0], bgc[1], bgc[2]);
+                  doc.setDrawColor(brc[0], brc[1], brc[2]);
+                  doc.setLineWidth(Math.max(0.15, borderPx * px));
+                  doc.circle(centerX, centerY, size / 2, "FD");
+                  doc.setTextColor(txtc[0], txtc[1], txtc[2]);
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(alertR * 2.05);
-                  doc.text("!", x + cellW - alertR - 1.25, cy + alertR * 0.46);
+                  doc.setFontSize(Math.max(3, fontPx * px));
+                  doc.text(label, centerX, centerY + size * 0.23, { align: "center" });
+                  doc.setLineWidth(0.2);
+                };
+                const drawDependencyIcon = (leftPx, topPx, marker, fontPx) => {
+                  if (!marker) return;
+                  const size = 38 * px;
+                  const left = x + leftPx * px;
+                  const top = cy + topPx * px;
+                  const centerX = left + size / 2;
+                  const centerY = top + size / 2;
+                  const txtc = hex(marker.textColor);
+                  const strike = hex(marker.strikeColor);
+                  doc.setFillColor(255, 255, 255);
+                  doc.setDrawColor(229, 231, 235);
+                  doc.setLineWidth(Math.max(0.25, 2 * px));
+                  doc.circle(centerX, centerY, size / 2, "FD");
+                  doc.setTextColor(txtc[0], txtc[1], txtc[2]);
+                  doc.setFont("helvetica", "bold");
+                  doc.setFontSize(Math.max(4, fontPx * px));
+                  doc.text(marker.text, centerX, centerY + size * 0.24, { align: "center" });
+                  doc.setDrawColor(strike[0], strike[1], strike[2]);
+                  doc.setLineWidth(Math.max(0.35, 3 * px));
+                  doc.line(left + 7 * px, top + 24 * px, left + 31 * px, top + 14 * px);
+                  doc.setLineWidth(0.2);
+                };
+                if (alert) {
+                  drawRoundIcon(cellW / px - 43, -18, 41, alert.color, alert.text, COLORS.border, freshTransportChange ? "!!" : "!", freshTransportChange ? 23 : 30, 1);
+                }
+                if (trainWarning) {
+                  drawRoundIcon(alert ? cellW / px - 84 : cellW / px - 43, -16, 41, trainWarning.color, trainWarning.text, trainWarning.border, String.fromCodePoint(0x1F686), 23, 2);
                 }
                 if (sampleEnabled) {
                   doc.setTextColor(245, 158, 11);
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(Math.max(7, cellW * 0.36));
-                  doc.text(String.fromCharCode(9733), x - 1.8, cy + Math.max(2.8, cellH * 0.03));
+                  doc.setFontSize(Math.max(4, 30 * px));
+                  doc.text(String.fromCharCode(9733), x + 8.5 * px, cy + 15.5 * px, { align: "center" });
                 }
-                const markerSize = Math.max(3.8, Math.min(7.2, cellW * 0.21));
-                const markerY = cy + cellH - markerSize - 2.1;
-                const markerCenters = {
-                  check: x + cellW * 0.22,
-                  helmet: x + cellW * 0.5,
-                  comment: x + cellW * 0.78
-                };
+                drawDependencyIcon(cellW / px - 41, cellH / px * 0.58 - 19, dependencyMarkers.plaster, 26);
+                drawDependencyIcon(3, cellH / px * 0.58 - 19, dependencyMarkers.electric, 25);
                 if (needsTilingCheck) {
                   const csBg = hex(tileCheckStyle.bg);
                   const csBorder = hex(tileCheckStyle.border);
                   const csText = hex(tileCheckStyle.color);
-                  const size = markerSize;
+                  const size = Math.max(4.5, 32 * px);
+                  const markerY = cy + cellH - size - 8 * px;
+                  const markerX = x + 10 * px;
                   doc.setDrawColor(csBorder[0], csBorder[1], csBorder[2]);
                   doc.setFillColor(csBg[0], csBg[1], csBg[2]);
-                  doc.rect(markerCenters.check - size / 2, markerY, size, size, "FD");
+                  doc.roundedRect(markerX, markerY, size, size, Math.max(0.35, 3 * px), Math.max(0.35, 3 * px), "FD");
                   if (tileCheckStyle.mark) {
                     doc.setTextColor(csText[0], csText[1], csText[2]);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(size * 0.76);
-                    doc.text(tileCheckStyle.mark, markerCenters.check - size * 0.24, markerY + size * 0.74);
+                    doc.setFontSize(Math.max(4, 24 * px));
+                    doc.text(tileCheckStyle.mark, markerX + size / 2, markerY + size * 0.72, { align: "center" });
                   }
                 }
                 const hsBg = hex(helmetStyle.bg);
                 const hsBorder = hex(helmetStyle.border);
                 const hsText = hex(helmetStyle.color);
-                const helmetR = markerSize / 2;
+                const helmetSize = Math.max(4.5, 32 * px);
+                const helmetR = helmetSize / 2;
+                const helmetCenterY = cy + cellH - 8 * px - helmetR;
                 doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
                 doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
-                doc.circle(markerCenters.helmet, markerY + markerSize / 2, helmetR, "FD");
+                doc.circle(x + cellW / 2, helmetCenterY, helmetR, "FD");
                 doc.setTextColor(hsText[0], hsText[1], hsText[2]);
                 doc.setFont("helvetica", "bold");
-                doc.setFontSize(markerSize * 0.95);
-                doc.text(String.fromCodePoint(0x26D1), markerCenters.helmet, markerY + markerSize * 0.76, { align: "center" });
+                doc.setFontSize(Math.max(4, 22 * px));
+                doc.text(String.fromCodePoint(0x26D1), x + cellW / 2, helmetCenterY + helmetSize * 0.23, { align: "center" });
                 if (commentStatus) {
-                  const cr = markerSize / 2;
+                  const cr = Math.max(3.2, 12 * px);
                   doc.setDrawColor(255, 255, 255);
                   doc.setFillColor(commentStatus.open ? 239 : 34, commentStatus.open ? 68 : 197, commentStatus.open ? 68 : 94);
-                  doc.circle(markerCenters.comment, markerY + markerSize / 2, cr, "FD");
+                  doc.circle(x + cellW - 22 * px, cy + cellH - 22 * px, cr, "FD");
                 }
                 if (qState.goatActive || qState.missingActive) {
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(Math.max(6.2, cellW * 0.2));
+                  doc.setFontSize(Math.max(4.4, 24 * px));
                   doc.setTextColor(20, 30, 45);
                   const icons = (qState.goatActive ? qualityIcon("goat") : "") + (qState.missingActive ? " " + qualityIcon("missing") : "");
-                  doc.text(icons.trim(), x + cellW - Math.max(8, cellW * 0.25), markerY - 2.5, { align: "right" });
+                  doc.text(icons.trim(), x + cellW - 8 * px, cy + cellH - 44 * px + 8 * px, { align: "right" });
                 }
               });
             });
@@ -3698,6 +3754,38 @@
                   ! ${item.label}
                 </span>
               `)}
+              <span style=${{ background: "#fff", color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                gdy termin jest nowy/zmieniony, ten sam znak pokazuje sie jako !!
+              </span>
+            </div>
+          </div>
+          <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "12px", paddingTop: "10px" }}>
+            <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda ostrzezen produkcji</div>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              ${[
+                { icon: String.fromCodePoint(0x1F686), label: "brakuje 1-2 dni rob.", bg: "#fff", color: "#111827", border: "#cbd5e1" },
+                { icon: String.fromCodePoint(0x1F686), label: "brakuje 3-5 dni rob.", bg: "#fde047", color: "#111827", border: "#ca8a04" },
+                { icon: String.fromCodePoint(0x1F686), label: "brakuje 6+ dni rob.", bg: "#dc2626", color: "#fff", border: "#991b1b" }
+              ].map(item => html`
+                <span key=${item.label} style=${{ display: "inline-flex", alignItems: "center", gap: "6px", background: "#fff", color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                  <span style=${{ width: "22px", height: "22px", borderRadius: "999px", display: "grid", placeItems: "center", background: item.bg, color: item.color, border: "2px solid " + item.border, fontSize: "13px", lineHeight: 1 }}>${item.icon}</span>
+                  ${item.label}
+                </span>
+              `)}
+              ${[
+                { icon: "T", label: "brak tynkowania przy szpachlowaniu", color: "#facc15", strike: "#dc2626" },
+                { icon: "T", label: "brak tynkowania od malowania dalej", color: "#dc2626", strike: "#facc15" },
+                { icon: String.fromCodePoint(0x26A1), label: "brak elektryki Grob przy szpachlowaniu", color: "#facc15", strike: "#dc2626" },
+                { icon: String.fromCodePoint(0x26A1), label: "brak elektryki Grob od malowania dalej", color: "#dc2626", strike: "#dc2626" }
+              ].map(item => html`
+                <span key=${item.label} style=${{ display: "inline-flex", alignItems: "center", gap: "6px", background: "#fff", color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                  <span style=${{ position: "relative", width: "22px", height: "22px", borderRadius: "999px", display: "grid", placeItems: "center", background: "#fff", color: item.color, border: "2px solid #e5e7eb", fontSize: item.icon === "T" ? "16px" : "14px", fontWeight: 1000, lineHeight: 1 }}>
+                    ${item.icon}
+                    <span style=${{ position: "absolute", left: "4px", right: "4px", top: "10px", height: "2px", background: item.strike, borderRadius: "999px", transform: "rotate(-28deg)" }}></span>
+                  </span>
+                  ${item.label}
+                </span>
+              `)}
             </div>
           </div>
           <${Message} msg=${msg} />
@@ -3873,8 +3961,10 @@
                     const st = styleForCell(cell);
                     const isDragging = dragCell && cell && cellKey(dragCell) === cellKey(cell);
                     const isSelected = selectedCell && cell && bathroomKey(selectedCell.project, selectedCell.product) === bathroomKey(cell.project, cell.product);
-                    const loadDate = cell ? loadDateByBathroom[transportKey(cell.project, cell.product)] : "";
+                    const loadKey = cell ? transportKey(cell.project, cell.product) : "";
+                    const loadDate = cell ? loadDateByBathroom[loadKey] : "";
                     const alert = transportAlert(loadDate);
+                    const freshTransportChange = cell ? isFreshTransportChange(loadInfoByBathroom[loadKey]) : false;
                     const trainWarning = trainWarningForCell(cell, loadDate);
                     const commentStatus = cell ? commentStatusByBathroom[bathroomKey(cell.project, cell.product)] : null;
                     const checkKey = cell ? bathroomKey(cell.project, cell.product) : "";
@@ -3929,7 +4019,7 @@
                       >
                         ${cell ? html`
                           ${alert ? html`
-                            <span title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{
+                            <span title=${"Zaladunek " + loadDate + " / " + alert.label + (freshTransportChange ? " / nowy lub zmieniony termin" : "")} style=${{
                               position: "absolute",
                               top: "-18px",
                               right: "-2px",
@@ -3941,10 +4031,10 @@
                               display: "grid",
                               placeItems: "center",
                               fontWeight: 900,
-                              fontSize: "30px",
+                              fontSize: freshTransportChange ? "23px" : "30px",
                               border: "1px solid " + COLORS.border,
                               zIndex: 2
-                            }}>!</span>
+                            }}>${freshTransportChange ? "!!" : "!"}</span>
                           ` : null}
                           ${trainWarning ? html`
                             <span title=${trainWarning.label + " / potrzeba " + trainWarning.remaining + " dni rob., do zaladunku " + trainWarning.available + " dni rob."} style=${{
