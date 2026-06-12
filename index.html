@@ -2492,7 +2492,7 @@
       const PHOTO_KEY = "flowrbr_maps_photos_1_01";
       const WIDTH_KEY = "flowrbr_maps_widths_1_7";
       const START_KEY = "flowrbr_maps_starts_1_71";
-      const MAP_ZOOM_KEY = "flowrbr_maps_zoom_1_83";
+      const MAP_ZOOM_KEY = "flowrbr_maps_zoom_1_9";
       const VIEWER_CHECKS_KEY = "flowrbr_viewer_local_checks_1_8";
       const [hall, setHall] = useState("betonowanie");
       const [edit, setEdit] = useState(false);
@@ -2506,7 +2506,7 @@
       });
       const [mapZoom, setMapZoom] = useState(() => {
         const stored = Number(localStorage.getItem(MAP_ZOOM_KEY));
-        return stored >= 0.45 && stored <= 1.5 ? stored : 1;
+        return stored >= 0.45 && stored <= 1.5 ? stored : 0.5;
       });
       const [mapStarts, setMapStarts] = useState(() => {
         try { return JSON.parse(localStorage.getItem(START_KEY) || "{}"); } catch (_) { return {}; }
@@ -3784,17 +3784,17 @@
                           ${alert ? html`
                             <span title=${"Zaladunek " + loadDate + " / " + alert.label} style=${{
                               position: "absolute",
-                              top: "-14px",
-                              right: "2px",
-                              width: "33px",
-                              height: "33px",
+                              top: "-18px",
+                              right: "-2px",
+                              width: "41px",
+                              height: "41px",
                               borderRadius: "999px",
                               background: alert.color,
                               color: alert.text,
                               display: "grid",
                               placeItems: "center",
                               fontWeight: 900,
-                              fontSize: "24px",
+                              fontSize: "30px",
                               border: "1px solid " + COLORS.border,
                               zIndex: 2
                             }}>!</span>
