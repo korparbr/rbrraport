@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.9</title>
+  <title>FlowRBR 1.91</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -240,6 +240,7 @@
       ["reports", "Raporty"],
       ["fertilization", "Nawozenie"],
       ["production", "Produkcja"],
+      ["board", "Tablica"],
       ["warehouse", "Magazyn"],
       ["transport", "Transport"],
       ["quality", "Kontrola jakosci"],
@@ -256,6 +257,7 @@
     const VIEWER_DA_LABELS = {
       reports: "Rapporter",
       production: "Produktion",
+      board: "Tavle",
       warehouse: "Lager",
       transport: "Transport",
       quality: "Kvalitetskontrol",
@@ -278,11 +280,11 @@
     const DEFAULT_ROLE_TABS = {
       worker: ["reports", "maps", "sessions", "account"],
       "worker+": ["reports", "maps", "sessions", "account"],
-      kontroler: ["reports", "maps", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
-      manager: ["reports", "maps", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
-      viewer: ["reports", "maps", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
-      supervisor: ["reports", "maps", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"],
-      admin: ["reports", "maps", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"]
+      kontroler: ["board", "maps", "reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
+      manager: ["board", "maps", "reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
+      viewer: ["board", "maps", "reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
+      supervisor: ["board", "maps", "reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"],
+      admin: ["board", "maps", "reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"]
     };
     const rolePermissionsMap = rows => {
       const map = {};
@@ -373,6 +375,17 @@
     };
     const today = () => dateOffset(0);
     const yesterday = () => dateOffset(-1);
+    const isoAddDays = (iso, days) => {
+      const d = new Date((iso || today()) + "T00:00:00");
+      d.setDate(d.getDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    const weekStartIso = (iso = today()) => {
+      const d = new Date(iso + "T00:00:00");
+      const day = d.getDay() || 7;
+      d.setDate(d.getDate() - day + 1);
+      return d.toISOString().slice(0, 10);
+    };
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const productNo = value => Number(value);
@@ -691,7 +704,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.9</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.91</span>` : null}
         </div>
       `;
     }
@@ -2084,6 +2097,7 @@
       const canEditWorkerMaps = user.role === "worker+" || workerCode === "POM80" || workerCode === "POM82";
       const workerVisibleTabs = useMemo(() => {
         const roleTabs = new Set(tabsForRole(user?.role, rolePermissions));
+        if (user?.role === "worker" || user?.role === "worker+") roleTabs.add("reports");
         const result = [];
         if (roleTabs.has("reports")) {
           result.push(["add", "Dodaj raport"]);
@@ -5947,6 +5961,169 @@
       `;
     }
 
+    function BoardTab({ reports }) {
+      const [weekStart, setWeekStart] = useState(() => weekStartIso());
+      const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => isoAddDays(weekStart, i)), [weekStart]);
+      const monthKey = today().slice(0, 7);
+      const weekdayLabel = date => {
+        const names = ["Pon", "Wt", "Sr", "Czw", "Pt", "Sob", "Nd"];
+        const d = new Date(date + "T00:00:00");
+        return names[(d.getDay() + 6) % 7] + " " + date.slice(5);
+      };
+      const hallRank = hall => {
+        const h = String(hall || "").toLowerCase();
+        if (h.includes("namiot 1") || h === "n1") return 1;
+        if (h.includes("beton") || h.includes("hala")) return 2;
+        if (h.includes("namiot 2") || h === "n2") return 3;
+        return 9;
+      };
+      const closedRows = useMemo(() => {
+        const hallByBathroom = {};
+        (reports || [])
+          .slice()
+          .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")))
+          .forEach(report => (report.lines || []).forEach(line => {
+            const key = transportKey(line.project, line.product);
+            if (line.hall && key) hallByBathroom[key] = String(line.hall).trim();
+          }));
+        const seen = new Set();
+        const rows = [];
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          if (canonicalStageId(line.stage) !== "18") return;
+          const date = report.date || "";
+          const project = String(line.project || "").trim();
+          const product = productNo(line.product);
+          if (!date || !project || !product) return;
+          const key = date + "#" + transportKey(project, product);
+          if (seen.has(key)) return;
+          seen.add(key);
+          rows.push({
+            date,
+            project,
+            product,
+            hall: String(line.hall || hallByBathroom[transportKey(project, product)] || "Bez hali").trim()
+          });
+        }));
+        return rows.sort((a, b) =>
+          a.date.localeCompare(b.date) ||
+          hallRank(a.hall) - hallRank(b.hall) ||
+          String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) ||
+          a.product - b.product
+        );
+      }, [reports]);
+      const halls = useMemo(() => [...new Set(closedRows.map(row => row.hall || "Bez hali"))].sort((a, b) => hallRank(a) - hallRank(b) || a.localeCompare(b, "pl", { numeric: true })), [closedRows]);
+      const weekMap = useMemo(() => {
+        const map = {};
+        closedRows
+          .filter(row => weekDays.includes(row.date))
+          .forEach(row => {
+            const key = row.hall + "#" + row.date;
+            if (!map[key]) map[key] = [];
+            map[key].push(row);
+          });
+        return map;
+      }, [closedRows, weekDays]);
+      const monthSummary = useMemo(() => {
+        const summary = {};
+        closedRows
+          .filter(row => row.date.slice(0, 7) === monthKey)
+          .forEach(row => {
+            if (!summary[row.hall]) summary[row.hall] = { count: 0, projects: {} };
+            summary[row.hall].count += 1;
+            summary[row.hall].projects[row.project] = (summary[row.hall].projects[row.project] || 0) + 1;
+          });
+        return summary;
+      }, [closedRows, monthKey]);
+      const weekTotal = closedRows.filter(row => weekDays.includes(row.date)).length;
+      const monthTotal = closedRows.filter(row => row.date.slice(0, 7) === monthKey).length;
+      const activeHalls = halls.length ? halls : ["Bez hali"];
+      const cellItems = (hall, date) => weekMap[hall + "#" + date] || [];
+      const setCurrentWeek = () => setWeekStart(weekStartIso());
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", flexWrap: "wrap", marginBottom: "14px" }}>
+            <div>
+              <h2 style=${S.title}>Tablica</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 18 - Kontrola jakosci, z podzialem na hale i dni.</div>
+            </div>
+            <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap" }}>
+              <div>
+                <label style=${S.label}>Tydzien od</label>
+                <input type="date" style=${S.input} value=${weekStart} onInput=${e => setWeekStart(e.target.value || weekStartIso())} />
+              </div>
+              <button style=${S.ghost} onClick=${setCurrentWeek}>Biezacy tydzien</button>
+            </div>
+          </div>
+          <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px", marginBottom: "14px" }}>
+            <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: "#eef4ff", padding: "12px" }}>
+              <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 900 }}>Biezacy tydzien</div>
+              <div style=${{ fontSize: "30px", fontWeight: 900, lineHeight: 1 }}>${weekTotal}</div>
+            </div>
+            <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: "#ecfdf5", padding: "12px" }}>
+              <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 900 }}>Biezacy miesiac ${monthKey}</div>
+              <div style=${{ fontSize: "30px", fontWeight: 900, lineHeight: 1 }}>${monthTotal}</div>
+            </div>
+          </div>
+          <div style=${{ overflowX: "auto", marginBottom: "16px" }}>
+            <table style=${{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: "980px", border: "1px solid " + COLORS.border, borderRadius: "10px", overflow: "hidden" }}>
+              <thead>
+                <tr>
+                  <th style=${{ textAlign: "left", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, width: "150px" }}>Hala</th>
+                  ${weekDays.map(day => html`<th key=${day} style=${{ textAlign: "left", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, minWidth: "118px" }}>${weekdayLabel(day)}</th>`)}
+                </tr>
+              </thead>
+              <tbody>
+                ${activeHalls.map(hall => html`
+                  <tr key=${hall}>
+                    <td style=${{ padding: "11px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900, background: COLORS.panel2, verticalAlign: "top" }}>${hall}</td>
+                    ${weekDays.map(day => {
+                      const items = cellItems(hall, day);
+                      return html`
+                        <td key=${hall + day} style=${{ padding: "8px", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, verticalAlign: "top", minHeight: "90px", background: items.length ? "#fff7ed" : COLORS.panel }}>
+                          <div style=${{ display: "flex", justifyContent: "space-between", gap: "6px", marginBottom: "6px", color: COLORS.muted, fontSize: "11px", fontWeight: 900 }}>
+                            <span>${items.length ? items.length + " szt." : ""}</span>
+                          </div>
+                          <div style=${{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
+                            ${items.map(item => html`
+                              <span key=${item.project + "-" + item.product} title=${item.project + " / Laz. " + item.product} style=${{ display: "inline-flex", border: "1px solid #fed7aa", background: "#ffedd5", color: "#9a3412", borderRadius: "7px", padding: "4px 6px", fontWeight: 900, fontSize: "12px", lineHeight: 1 }}>
+                                ${item.project}/${item.product}
+                              </span>
+                            `)}
+                          </div>
+                        </td>
+                      `;
+                    })}
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          </div>
+          <section style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.panel2, padding: "12px" }}>
+            <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Podsumowanie miesiaca ${monthKey}</h3>
+            <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "10px" }}>
+              ${activeHalls.map(hall => {
+                const info = monthSummary[hall] || { count: 0, projects: {} };
+                const projects = Object.entries(info.projects).sort((a, b) => String(a[0]).localeCompare(String(b[0]), "pl", { numeric: true }));
+                return html`
+                  <div key=${hall} style=${{ border: "1px solid " + COLORS.border, background: COLORS.panel, borderRadius: "8px", padding: "11px" }}>
+                    <div style=${{ display: "flex", justifyContent: "space-between", gap: "8px", alignItems: "center", marginBottom: "8px" }}>
+                      <strong>${hall}</strong>
+                      <span style=${{ ...S.badge, background: "#eef4ff", color: COLORS.accent, borderColor: "#bfdbfe" }}>${info.count} szt.</span>
+                    </div>
+                    ${projects.length ? html`
+                      <div style=${{ display: "grid", gap: "4px", color: COLORS.muted, fontSize: "13px" }}>
+                        ${projects.map(([project, count]) => html`<div key=${project}>Projekt ${project}: <strong style=${{ color: COLORS.text }}>${count}</strong></div>`)}
+                      </div>
+                    ` : html`<div style=${{ color: COLORS.dim, fontSize: "13px" }}>Brak kontroli jakosci w tym miesiacu.</div>`}
+                  </div>
+                `;
+              })}
+            </div>
+          </section>
+        </section>
+      `;
+    }
+
     function WarehouseTab({ reports, transportDates, qualityData, serverProjects, bathroomComments }) {
       const [selectedBathroom, setSelectedBathroom] = useState(null);
       const packed = useMemo(() => packedBathrooms(reports), [reports]);
@@ -7839,7 +8016,7 @@
     }
 
     function ManagerView({ user, token, reports, users, transportDates, transportReplacements, bathroomComments, bathroomChecks, qualityData, serverProjects, stagePermissions, rolePermissions, reportControls, materialUsages, materialStages, userStagePreferences, reloadUserStagePreferences, reloadProjects, reloadBathroomComments, reloadBathroomChecks, reloadQuality, reloadStagePermissions, reloadRolePermissions, reloadReportControls, reloadTransportDates, reloadTransportReplacements, reloadReports, reloadMaterialUsages, reloadMaterialStages, reloadUsers, logout }) {
-      const [tab, setTab] = useState("reports");
+      const [tab, setTab] = useState("board");
       const [msg, setMsg] = useState(null);
       const [reportsResetToken, setReportsResetToken] = useState(0);
       const [newUser, setNewUser] = useState({ code: "", name: "", password: "zmien123", role: "worker" });
@@ -7859,19 +8036,25 @@
       const visibleTabs = useMemo(() => {
         const tabs = [...tabsForRole(user?.role, rolePermissions)];
         if (canSeePermissions && !tabs.includes("fertilization")) tabs.splice(1, 0, "fertilization");
+        if (canSeeProduction && !tabs.includes("board")) {
+          const mapsIndex = tabs.indexOf("maps");
+          tabs.splice(mapsIndex >= 0 ? mapsIndex + 1 : Math.min(2, tabs.length), 0, "board");
+        }
         const filtered = tabs.filter(t => {
           if (t === "permissions") return canSeePermissions;
           if (t === "database" && isViewer) return false;
           if (t === "fertilization") return canSeePermissions;
-          if (["production", "warehouse", "transport", "quality", "calculations"].includes(t)) return canSeeProduction;
+          if (["production", "board", "warehouse", "transport", "quality", "calculations"].includes(t)) return canSeeProduction;
           return true;
         });
-        if (filtered.includes("maps")) {
-          const withoutMaps = filtered.filter(t => t !== "maps");
+        let ordered = filtered;
+        if (ordered.includes("board")) ordered = ["board", ...ordered.filter(t => t !== "board")];
+        if (ordered.includes("maps")) {
+          const withoutMaps = ordered.filter(t => t !== "maps");
           withoutMaps.splice(Math.min(1, withoutMaps.length), 0, "maps");
           return withoutMaps;
         }
-        return filtered;
+        return ordered;
       }, [user, rolePermissions, canSeePermissions, isViewer, canSeeProduction]);
       useEffect(() => {
         if (visibleTabs.length && !visibleTabs.includes(tab)) setTab(visibleTabs[0]);
@@ -8060,6 +8243,8 @@
             <${MapsTab} reports=${reports} token=${token} canEditMaps=${true} canAddComments=${true} transportDates=${transportDates} bathroomComments=${bathroomComments} bathroomChecks=${bathroomChecks} qualityData=${qualityData} serverProjects=${serverProjects} reloadBathroomComments=${reloadBathroomComments} reloadBathroomChecks=${reloadBathroomChecks} />
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} token=${token} serverProjects=${serverProjects} />
+          ` : tab === "board" ? html`
+            <${BoardTab} reports=${reports} />
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
           ` : tab === "transport" ? html`
