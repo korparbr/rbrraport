@@ -850,6 +850,19 @@ function requireTab(tab) {
   };
 }
 
+function requireAnyTab(tabs) {
+  return async (req, res, next) => {
+    try {
+      for (const tab of tabs) {
+        if (await roleHasTab(req.user.role, tab)) return next();
+      }
+      return res.status(403).json({ error: 'Brak uprawnien do wymaganej zakladki' });
+    } catch (err) {
+      return res.status(500).json({ error: 'Nie udalo sie sprawdzic uprawnien zakladki' });
+    }
+  };
+}
+
 function normalizeUserRole(role) {
   const value = String(role || 'worker').trim().toLowerCase();
   return ['worker', 'worker+', 'kontroler', 'manager', 'viewer', 'supervisor', 'admin'].includes(value) ? value : 'worker';
@@ -2045,7 +2058,7 @@ app.delete('/api/report-controls', auth, requireTab('projects'), managerOnly, as
   }
 });
 
-app.get('/api/transport-dates', auth, requireTab('transport'), async (req, res) => {
+app.get('/api/transport-dates', auth, requireAnyTab(['transport', 'maps', 'warehouse']), async (req, res) => {
   try {
     await ensureTransportDatesTable();
     await ensureTransportExtrasTable();
