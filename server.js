@@ -844,12 +844,12 @@ function supervisorOrAdminOnly(req, res, next) {
 
 const DEFAULT_ROLE_TABS = {
   worker: ['reports', 'maps', 'sessions', 'account'],
-  'worker+': ['reports', 'maps', 'sessions', 'account'],
-  kontroler: ['reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
-  manager: ['reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
-  viewer: ['reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
-  supervisor: ['reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account'],
-  admin: ['reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account']
+  'worker+': ['reports', 'board', 'maps', 'sessions', 'account'],
+  kontroler: ['board', 'reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
+  manager: ['board', 'reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
+  viewer: ['board', 'reports', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'sessions', 'account'],
+  supervisor: ['board', 'reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account'],
+  admin: ['board', 'reports', 'fertilization', 'production', 'warehouse', 'transport', 'quality', 'calculations', 'projects', 'maps', 'users', 'permissions', 'database', 'sessions', 'account']
 };
 
 async function roleHasTab(role, tab) {
@@ -1970,7 +1970,7 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
 });
 
 // ─── EMAIL RECIPIENTS ─────────────────────────────────────────────────────────
-app.put('/api/board-hall', auth, requireAnyTab(['board']), async (req, res) => {
+app.put('/api/board-hall', auth, requireAnyTab(['board', 'maps']), canManageMaps, async (req, res) => {
   try {
     await ensureReportsCreatedByColumn();
     const project = String(req.body?.project || '').trim();
