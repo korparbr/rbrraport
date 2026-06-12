@@ -394,6 +394,28 @@
       d.setDate(d.getDate() - day + 1);
       return localDateIso(d);
     };
+    const parseDateIsoValue = value => {
+      if (value instanceof Date && !isNaN(value.getTime())) return localDateIso(value);
+      if (typeof value === "number" && isFinite(value) && value > 20000 && value < 80000) {
+        const d = new Date(Date.UTC(1899, 11, 30));
+        d.setUTCDate(d.getUTCDate() + Math.floor(value));
+        return localDateIso(new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+      }
+      const text = String(value == null ? "" : value).trim();
+      if (!text) return "";
+      const iso = text.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+      if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, "0")}-${String(iso[3]).padStart(2, "0")}`;
+      const eu = text.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
+      if (eu) {
+        const first = Number(eu[1]);
+        const second = Number(eu[2]);
+        const year = Number(eu[3].length === 2 ? "20" + eu[3] : eu[3]);
+        const day = first > 12 ? first : (second > 12 ? second : first);
+        const month = first > 12 ? second : (second > 12 ? first : second);
+        if (year && month >= 1 && month <= 12 && day >= 1 && day <= 31) return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      }
+      return "";
+    };
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const productNo = value => Number(value);
@@ -4192,8 +4214,8 @@
       const ORDER_DATE = "2099-12-31";
       const isOrderDate = date => date === "kolejnosc" || date === ORDER_DATE;
       const dateKey = value => {
-        const raw = String(value || "").trim().slice(0, 10);
-        return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : ORDER_DATE;
+        const parsed = parseDateIsoValue(value);
+        return parsed || ORDER_DATE;
       };
       const ruleDateLabel = date => isOrderDate(date) ? "wg kolejnosci" : date;
       const ruleMap = useMemo(() => {
@@ -4211,7 +4233,10 @@
       const projectOptions = useMemo(() => activeProjectItems(serverProjects).map(p => p.project).sort((a, b) => a.localeCompare(b, "pl", { numeric: true })), [serverProjects]);
       const projectBathroomEntries = project => {
         const importedMap = {};
-        (project.bathrooms || []).forEach(b => { importedMap[productNo(b.product)] = b; });
+        (project.bathrooms || []).forEach(b => {
+          const delivery = b.requestedDelivery ?? b.requested_delivery ?? b.deliveryDate ?? b.delivery_date ?? b["Requested Delivery"] ?? b.requested_delivery_date ?? "";
+          importedMap[productNo(b.product)] = { ...b, requestedDelivery: delivery };
+        });
         const count = Number(project.count || 0);
         const products = [...new Set([
           ...Array.from({ length: count }, (_, i) => i + 1),
@@ -4604,7 +4629,7 @@
                         <td style=${cellStyle}>${meta.rbrType || type.rbrTypeShort || "-"}</td>
                         <td style=${cellStyle}>${meta.ventilationVariant || "-"}</td>
                         <td style=${cellStyle}>${meta.visibleHighWalls || "-"}</td>
-                        <td style=${cellStyle}>${meta.requestedDelivery ? String(meta.requestedDelivery).slice(0, 10) : "-"}</td>
+                        <td style=${cellStyle}>${parseDateIsoValue(meta.requestedDelivery) || (meta.requestedDelivery ? String(meta.requestedDelivery).slice(0, 10) : "-")}</td>
                         <td style=${{ ...cellStyle, fontWeight: 900 }}>${status.label}</td>
                         <td style=${cellStyle}>${assemblyDate || "-"}</td>
                       </tr>
@@ -4945,6 +4970,7 @@
         if (value instanceof Date && !isNaN(value.getTime())) return value.toISOString().slice(0, 10);
         return String(value == null ? "" : value).trim();
       };
+      const formatExcelDateValue = value => parseDateIsoValue(value) || formatExcelValue(value);
       const rowsFromWorksheet = sheet => {
         const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
         const headerIndex = raw.findIndex(row => {
@@ -4978,7 +5004,7 @@
             rbrType: String(pickValue(row, ["RBR Type"]) || ""),
             ventilationVariant: String(pickValue(row, ["Ventilation Variant", "Ventylation Variant"]) || ""),
             visibleHighWalls: String(pickValue(row, ["Visible High Walls"]) || ""),
-            requestedDelivery: formatExcelValue(pickValue(row, ["Requested Delivery"]))
+            requestedDelivery: formatExcelDateValue(pickValue(row, ["Requested Delivery", "Requested delivery", "Delivery Date", "Delivery"]))
           })).filter(row => row.product > 0);
           if (!bathrooms.length) throw new Error("Nie znaleziono numerow lazienek w pliku.");
           const count = Math.max(...bathrooms.map(row => row.product));
