@@ -5969,6 +5969,9 @@
       const [selectedBathroom, setSelectedBathroom] = useState(null);
       const [boardMsg, setBoardMsg] = useState(null);
       const [savingBoardHall, setSavingBoardHall] = useState(false);
+      const [editBoard, setEditBoard] = useState(false);
+      const [dragBoardItem, setDragBoardItem] = useState(null);
+      const touchBoardDragRef = useRef(null);
       const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => isoAddDays(weekStart, i)), [weekStart]);
       const monthKey = today().slice(0, 7);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
@@ -6118,6 +6121,26 @@
           setSavingBoardHall(false);
         }
       };
+      const moveBoardItem = (item, targetHall) => {
+        if (!editBoard || !item || targetHall === unresolvedBoardHall.id || item.hall === targetHall) return;
+        changeBathroomHall(item.project, item.product, targetHall);
+      };
+      const startBoardDrag = item => {
+        if (!editBoard || !item) return;
+        touchBoardDragRef.current = item;
+        setDragBoardItem(item);
+      };
+      const finishBoardTouchDrag = e => {
+        if (!editBoard || !touchBoardDragRef.current) return;
+        const touch = e.changedTouches && e.changedTouches[0];
+        const target = touch ? document.elementFromPoint(touch.clientX, touch.clientY) : null;
+        const drop = target && target.closest ? target.closest("[data-board-hall]") : null;
+        const hall = drop ? drop.getAttribute("data-board-hall") : "";
+        const item = touchBoardDragRef.current;
+        touchBoardDragRef.current = null;
+        setDragBoardItem(null);
+        if (hall) moveBoardItem(item, hall);
+      };
       const selectedInfo = useMemo(() => {
         if (!selectedBathroom) return null;
         const key = transportKey(selectedBathroom.project, selectedBathroom.product);
@@ -6158,6 +6181,9 @@
               <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 18 - Kontrola jakosci. Hala jest pobierana z raportu, historii szachownicy albo aktualnej szachownicy.</div>
             </div>
             <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap" }}>
+              <button style=${editBoard ? S.btn : S.ghost} disabled=${savingBoardHall} onClick=${() => setEditBoard(v => !v)}>
+                ${editBoard ? "Zakoncz modyfikacje" : "Modyfikuj"}
+              </button>
               <button style=${S.ghost} onClick=${() => moveWeek(-1)}>Poprzedni KW</button>
               <div>
                 <label style=${S.label}>KW ${isoWeekNumber(weekStart)} / tydzien od</label>
@@ -6193,13 +6219,70 @@
                     ${visibleBoardHalls.map(hall => {
                       const items = cellItems(day, hall.id);
                       return html`
-                        <td key=${day + hall.id} style=${{ padding: "8px", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, verticalAlign: "top", minHeight: "108px", background: items.length ? "#fff7ed" : COLORS.panel }}>
+                        <td
+                          key=${day + hall.id}
+                          data-board-hall=${hall.id}
+                          onDragOver=${e => { if (editBoard && hall.id !== unresolvedBoardHall.id) e.preventDefault(); }}
+                          onDrop=${e => {
+                            if (!editBoard || hall.id === unresolvedBoardHall.id) return;
+                            e.preventDefault();
+                            let item = dragBoardItem;
+                            try {
+                              const raw = e.dataTransfer && e.dataTransfer.getData("application/json");
+                              if (raw) item = JSON.parse(raw);
+                            } catch (_) {}
+                            moveBoardItem(item, hall.id);
+                            setDragBoardItem(null);
+                          }}
+                          style=${{
+                            padding: "8px",
+                            borderBottom: "1px solid " + COLORS.border,
+                            borderLeft: "1px solid " + COLORS.border,
+                            verticalAlign: "top",
+                            minHeight: "108px",
+                            background: editBoard && hall.id !== unresolvedBoardHall.id ? "#f8fbff" : (items.length ? "#fff7ed" : COLORS.panel),
+                            outline: editBoard && hall.id !== unresolvedBoardHall.id ? "1px dashed #bfdbfe" : "none",
+                            outlineOffset: "-4px"
+                          }}
+                        >
                           <div style=${{ display: "flex", justifyContent: "space-between", gap: "6px", marginBottom: "6px", color: COLORS.muted, fontSize: "11px", fontWeight: 900 }}>
                             <span>${items.length ? items.length + " szt." : ""}</span>
+                            ${editBoard && hall.id !== unresolvedBoardHall.id ? html`<span>upuść tutaj</span>` : null}
                           </div>
                           <div style=${{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
                             ${items.map(item => html`
-                              <button key=${item.project + "-" + item.product} type="button" onClick=${() => setSelectedBathroom(item)} title=${item.project + " / Laz. " + item.product} style=${{ display: "inline-flex", border: "1px solid " + (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#fed7aa"), background: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? "#eef4ff" : "#ffedd5", color: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#9a3412", borderRadius: "7px", padding: "4px 6px", fontWeight: 900, fontSize: "12px", lineHeight: 1, cursor: "pointer" }}>
+                              <button
+                                key=${item.project + "-" + item.product}
+                                type="button"
+                                draggable=${editBoard}
+                                onDragStart=${e => {
+                                  if (!editBoard) return;
+                                  setDragBoardItem(item);
+                                  if (e.dataTransfer) {
+                                    e.dataTransfer.effectAllowed = "move";
+                                    e.dataTransfer.setData("application/json", JSON.stringify(item));
+                                  }
+                                }}
+                                onDragEnd=${() => setDragBoardItem(null)}
+                                onTouchStart=${() => startBoardDrag(item)}
+                                onTouchEnd=${finishBoardTouchDrag}
+                                onClick=${() => editBoard ? null : setSelectedBathroom(item)}
+                                title=${editBoard ? "Przeciagnij na inna hale" : item.project + " / Laz. " + item.product}
+                                style=${{
+                                  display: "inline-flex",
+                                  border: "1px solid " + (dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product) ? COLORS.accent : (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#fed7aa")),
+                                  background: dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product) ? "#dbeafe" : (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? "#eef4ff" : "#ffedd5"),
+                                  color: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#9a3412",
+                                  borderRadius: "7px",
+                                  padding: "4px 6px",
+                                  fontWeight: 900,
+                                  fontSize: "12px",
+                                  lineHeight: 1,
+                                  cursor: editBoard ? "grab" : "pointer",
+                                  touchAction: editBoard ? "none" : "manipulation",
+                                  opacity: dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product) ? 0.65 : 1
+                                }}
+                              >
                                 ${item.project}/${item.product}
                               </button>
                             `)}
@@ -6221,23 +6304,6 @@
                   <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px", lineHeight: 1.5 }}>
                     Hala produkcji: ${selectedInfo.mapCell ? selectedInfo.mapCell.hallLabel : (boardHallLabel(selectedInfo.productionHall) || "brak danych")}${selectedInfo.mapCell ? " / pole " + selectedInfo.mapCell.row + "-" + selectedInfo.mapCell.col : ""}<br />
                     Data wstawienia na szachownice: ${selectedInfo.mapCell && selectedInfo.mapCell.placedDate ? selectedInfo.mapCell.placedDate : "brak"}${selectedInfo.loadDate ? " / Zaladunek: " + selectedInfo.loadDate : ""}
-                  </div>
-                  <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap", marginTop: "10px" }}>
-                    <label style=${{ display: "grid", gap: "4px", minWidth: "220px" }}>
-                      <span style=${S.label}>Przenies na hale</span>
-                      <select
-                        style=${S.input}
-                        value=${normalizeBoardHall(selectedInfo.item.hall) || selectedInfo.productionHall || ""}
-                        disabled=${savingBoardHall}
-                        onChange=${e => changeBathroomHall(selectedInfo.item.project, selectedInfo.item.product, e.target.value)}
-                      >
-                        <option value="">Wybierz hale</option>
-                        ${boardHalls.map(hall => html`<option key=${hall.id} value=${hall.id}>${hall.label}</option>`)}
-                      </select>
-                    </label>
-                    <div style=${{ color: COLORS.muted, fontSize: "12px", paddingBottom: "10px" }}>
-                      ${savingBoardHall ? "Zapisywanie..." : "Zmiana zapisuje hale dla tej lazienki i przesuwa ja w tabeli."}
-                    </div>
                   </div>
                 </div>
                 <button style=${S.ghost} onClick=${() => setSelectedBathroom(null)}>Zamknij</button>
