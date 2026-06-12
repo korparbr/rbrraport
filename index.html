@@ -4265,6 +4265,14 @@
         });
         return map;
       }, [packedSet, loadedSet]);
+      const loadedCounts = useMemo(() => {
+        const map = {};
+        loadedSet.forEach(key => {
+          const [project] = key.split("#");
+          map[project] = (map[project] || 0) + 1;
+        });
+        return map;
+      }, [loadedSet]);
       const assemblyDateByKey = useMemo(() => {
         const map = {};
         (reports || []).forEach(report => (report.lines || []).forEach(line => {
@@ -4323,6 +4331,13 @@
         if (productionKeys.has(key)) return { id: "produkcja", label: "Produkcja", ...warehousePalette("produkcja") };
         return { id: "rolling", label: "Rolling", ...warehousePalette("rolling") };
       };
+      const carShipmentDate = bathrooms => {
+        const dates = (bathrooms || [])
+          .map(row => row.realDate || row.date)
+          .filter(date => date && !isOrderDate(date))
+          .sort();
+        return dates[0] || ORDER_DATE;
+      };
 
       const groups = useMemo(() => {
         const base = {};
@@ -4340,7 +4355,7 @@
             const chunks = [];
             for (let i = 0; i < group.bathrooms.length; i += capacity) {
               const chunk = group.bathrooms.slice(i, i + capacity);
-              chunks.push({ ...group, groupId: group.project + "#" + group.date + "#" + chunks.length, hall, capacity, note: rule.note || "", bathrooms: chunk, bathroomsWithFill: chunk, fillCount: 0 });
+              chunks.push({ ...group, groupId: group.project + "#" + group.date + "#" + chunks.length, hall, capacity, note: rule.note || "", bathrooms: chunk, bathroomsWithFill: chunk, fillCount: 0, shipmentDate: carShipmentDate(chunk) });
             }
             return chunks;
           }
@@ -4350,7 +4365,8 @@
             .flatMap(next => next.bathrooms)
             .filter(row => row.project === group.project)
             .slice(0, extraNeeded) : [];
-          return [{ ...group, groupId: group.project + "#" + group.date, hall, capacity, note: rule.note || "", bathroomsWithFill: [...group.bathrooms, ...extras], fillCount: extras.length }];
+          const bathroomsWithFill = [...group.bathrooms, ...extras];
+          return [{ ...group, groupId: group.project + "#" + group.date, hall, capacity, note: rule.note || "", bathroomsWithFill, fillCount: extras.length, shipmentDate: carShipmentDate(bathroomsWithFill) }];
         });
       }, [bathroomRows, ruleMap]);
       const fertilizationBoard = useMemo(() => {
@@ -4366,14 +4382,15 @@
           const item = {
             ...group,
             text: group.project + " " + group.bathroomsWithFill.map(b => b.product).join(",")
-              + (group.fillCount ? " (" + group.fillCount + ")" : "")
+              + (group.fillCount ? " (" + group.fillCount + ")" : ""),
+            sentCount: loadedCounts[group.project] || 0
           };
           if (byHall[group.hall]) byHall[group.hall].push(item);
           else other.push(item);
         });
         const rowCount = Math.max(1, ...columns.map(col => byHall[col.id].length));
         return { columns, byHall, other, rowCount };
-      }, [groups]);
+      }, [groups, loadedCounts]);
 
       const saveRule = async () => {
         if (!editing) return;
@@ -4505,6 +4522,7 @@
                 </div>
                 <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "5px" }}>Produkcja: ${productionCounts[project] || 0}</div>
                 <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Magazyn: ${warehouseCounts[project] || 0}</div>
+                <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Wyslane: ${loadedCounts[project] || 0}</div>
               </button>
             `;
             })}
@@ -4619,11 +4637,11 @@
                         return html`
                           <td key=${col.id} style=${{ border: "1px solid #111827", minHeight: "42px", padding: "8px", textAlign: "center", verticalAlign: "middle", color: COLORS.text, background: "#fff" }}>
                             ${group ? html`
-                              <button type="button" onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })} title=${"Termin " + ruleDateLabel(group.date) + " / auto " + (group.capacity || "-")} style=${{ border: "0", background: "transparent", color: COLORS.text, fontWeight: 800, fontSize: "14px", cursor: "pointer", width: "100%", lineHeight: 1.35 }}>
+                              <button type="button" onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })} title=${"Wysylka auta " + ruleDateLabel(group.shipmentDate || group.date) + " / termin " + ruleDateLabel(group.date) + " / auto " + (group.capacity || "-")} style=${{ border: "0", background: "transparent", color: COLORS.text, fontWeight: 800, fontSize: "14px", cursor: "pointer", width: "100%", lineHeight: 1.35 }}>
                                 ${group.text}
                               </button>
                               <div style=${{ color: COLORS.muted, fontSize: "11px", marginTop: "3px" }}>
-                                ${ruleDateLabel(group.date)}${group.capacity ? " / auto " + group.capacity : ""}${group.note ? " / " + group.note : ""}
+                                Wysylka auta: ${ruleDateLabel(group.shipmentDate || group.date)}${group.capacity ? " / auto " + group.capacity : ""}${group.fillCount ? " / dolad. " + group.fillCount : ""} / wyslane: ${group.sentCount || 0}${group.note ? " / " + group.note : ""}
                               </div>
                             ` : html`<span style=${{ color: COLORS.dim }}> </span>`}
                           </td>
@@ -4639,7 +4657,7 @@
                   <div style=${{ display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "8px" }}>
                     ${fertilizationBoard.other.map(group => html`
                       <button key=${group.groupId || group.project + group.date} style=${S.ghost} onClick=${() => setEditing({ project: group.project, date: group.date, hall: group.hall, capacity: group.capacity || group.bathrooms.length, note: group.note || "" })}>
-                        ${group.text} / ${ruleDateLabel(group.date)}
+                        ${group.text} / wysylka ${ruleDateLabel(group.shipmentDate || group.date)} / wyslane ${group.sentCount || 0}
                       </button>
                     `)}
                   </div>
