@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.89</title>
+  <title>FlowRBR 1.9</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -685,7 +685,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.89</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.9</span>` : null}
         </div>
       `;
     }
@@ -3103,13 +3103,24 @@
             const rowHeader = 8;
             const gap = 1.8;
             const colCount = Math.max(1, columns.length);
-            const availableW = pageW - margin * 2 - rowHeader - (colCount - 1) * gap;
-            const availableH = pageH - y - margin - 5 - (hallDef.rows.length - 1) * gap;
+            const pdfSafeBottom = 9;
+            const pdfSafeRight = 5;
+            const availableW = pageW - margin * 2 - pdfSafeRight - rowHeader - (colCount - 1) * gap;
+            const availableH = pageH - y - margin - pdfSafeBottom - (hallDef.rows.length - 1) * gap;
             const largeHall = hallDef.rows.length <= 2;
             const screenRatio = 190 / 74;
             const maxCellWByHeight = availableH / Math.max(1, hallDef.rows.length) / screenRatio;
-            const cellW = Math.min(largeHall ? 36 : 18, availableW / colCount, maxCellWByHeight);
-            const cellH = Math.min(largeHall ? 92 : 47, availableH / Math.max(1, hallDef.rows.length), cellW * screenRatio);
+            let cellW = Math.max(4, Math.min(largeHall ? 36 : 18, availableW / colCount, maxCellWByHeight));
+            let cellH = Math.max(9, Math.min(largeHall ? 92 : 47, availableH / Math.max(1, hallDef.rows.length), cellW * screenRatio));
+            const gridHeight = hallDef.rows.length * cellH + (hallDef.rows.length - 1) * gap;
+            const gridWidth = rowHeader + colCount * cellW + (colCount - 1) * gap;
+            const widthScale = (pageW - margin * 2 - pdfSafeRight) / Math.max(1, gridWidth);
+            const heightScale = (pageH - y - margin - pdfSafeBottom) / Math.max(1, gridHeight);
+            const fitScale = Math.min(1, widthScale, heightScale);
+            if (fitScale < 1) {
+              cellW *= fitScale;
+              cellH *= fitScale;
+            }
             const colorH = cellH * 0.5;
             const gridW = rowHeader + colCount * cellW + (colCount - 1) * gap;
             const startX = Math.max(margin, (pageW - gridW) / 2);
