@@ -3090,7 +3090,7 @@
             doc.setDrawColor(249, 115, 22); doc.setFillColor(255, 255, 255); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.text("kontrola", lx + 6, y); lx += 26;
             doc.setDrawColor(22, 163, 74); doc.setFillColor(220, 252, 231); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.text(String.fromCharCode(10003), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("sprawdz.", lx + 6, y); lx += 25;
             doc.setDrawColor(220, 38, 38); doc.setFillColor(254, 226, 226); doc.rect(lx, y - 4, 4.2, 4.2, "FD"); doc.setTextColor(153, 27, 27); doc.text(String.fromCharCode(10005), lx + 0.8, y - 0.6); doc.setTextColor(20, 30, 45); doc.text("poprawka", lx + 6, y); lx += 30;
-            doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.circle(lx + 2, y - 2, 2.3, "FD"); doc.setTextColor(51, 65, 85); doc.setFont("helvetica", "bold"); doc.text("K", lx + 0.8, y - 0.5); doc.setFont("helvetica", "normal"); doc.setTextColor(20, 30, 45); doc.text("kask", lx + 6, y); lx += 20;
+            doc.setDrawColor(203, 213, 225); doc.setFillColor(255, 255, 255); doc.circle(lx + 2, y - 2, 2.3, "FD"); doc.setTextColor(51, 65, 85); doc.setFont("helvetica", "bold"); doc.text(String.fromCodePoint(0x26D1), lx + 2, y - 0.5, { align: "center" }); doc.setFont("helvetica", "normal"); doc.setTextColor(20, 30, 45); doc.text("kask", lx + 6, y); lx += 20;
             doc.setTextColor(245, 158, 11); doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.text(String.fromCharCode(9733), lx, y); doc.setTextColor(20, 30, 45); doc.setFont("helvetica", "normal"); doc.setFontSize(6.4); doc.text("musztrowka", lx + 5, y);
             return y + 5.5;
           };
@@ -3110,7 +3110,7 @@
             const maxCellWByHeight = availableH / Math.max(1, hallDef.rows.length) / screenRatio;
             const cellW = Math.min(largeHall ? 36 : 18, availableW / colCount, maxCellWByHeight);
             const cellH = Math.min(largeHall ? 92 : 47, availableH / Math.max(1, hallDef.rows.length), cellW * screenRatio);
-            const colorH = cellH * 0.66;
+            const colorH = cellH * 0.5;
             const gridW = rowHeader + colCount * cellW + (colCount - 1) * gap;
             const startX = Math.max(margin, (pageW - gridW) / 2);
             doc.setFontSize(7);
@@ -3189,12 +3189,12 @@
                   doc.setFontSize(Math.max(7, cellW * 0.36));
                   doc.text(String.fromCharCode(9733), x - 1.8, cy + Math.max(2.8, cellH * 0.03));
                 }
-                const markerSize = Math.max(3.2, Math.min(5.8, cellW * 0.16));
+                const markerSize = Math.max(3.8, Math.min(7.2, cellW * 0.21));
                 const markerY = cy + cellH - markerSize - 2.1;
                 const markerCenters = {
-                  check: x + cellW * 0.23,
+                  check: x + cellW * 0.22,
                   helmet: x + cellW * 0.5,
-                  comment: x + cellW * 0.77
+                  comment: x + cellW * 0.78
                 };
                 if (needsTilingCheck) {
                   const csBg = hex(tileCheckStyle.bg);
@@ -3220,8 +3220,8 @@
                 doc.circle(markerCenters.helmet, markerY + markerSize / 2, helmetR, "FD");
                 doc.setTextColor(hsText[0], hsText[1], hsText[2]);
                 doc.setFont("helvetica", "bold");
-                doc.setFontSize(markerSize * 0.62);
-                doc.text("K", markerCenters.helmet - markerSize * 0.18, markerY + markerSize * 0.71);
+                doc.setFontSize(markerSize * 0.95);
+                doc.text(String.fromCodePoint(0x26D1), markerCenters.helmet, markerY + markerSize * 0.76, { align: "center" });
                 if (commentStatus) {
                   const cr = markerSize / 2;
                   doc.setDrawColor(255, 255, 255);
@@ -3230,10 +3230,10 @@
                 }
                 if (qState.goatActive || qState.missingActive) {
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(Math.max(5.5, cellW * 0.18));
+                  doc.setFontSize(Math.max(6.2, cellW * 0.2));
                   doc.setTextColor(20, 30, 45);
-                  const icons = (qState.goatActive ? "G" : "") + (qState.missingActive ? " B" : "");
-                  doc.text(icons.trim(), x + cellW - Math.max(9, cellW * 0.35), cy + cellH - Math.max(8, cellH * 0.17));
+                  const icons = (qState.goatActive ? qualityIcon("goat") : "") + (qState.missingActive ? " " + qualityIcon("missing") : "");
+                  doc.text(icons.trim(), x + cellW - Math.max(8, cellW * 0.25), markerY - 2.5, { align: "right" });
                 }
               });
             });
