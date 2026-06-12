@@ -1970,6 +1970,28 @@ app.post('/api/reports/as-worker', auth, requireTab('reports'), managerOnly, asy
 });
 
 // ─── EMAIL RECIPIENTS ─────────────────────────────────────────────────────────
+app.put('/api/board-hall', auth, requireAnyTab(['board']), async (req, res) => {
+  try {
+    await ensureReportsCreatedByColumn();
+    const project = String(req.body?.project || '').trim();
+    const product = Number(req.body?.product);
+    const hall = String(req.body?.hall || '').trim().toLowerCase();
+    const allowedHalls = new Set(['namiot1', 'betonowanie', 'namiot2']);
+    if (!project || !Number.isFinite(product) || !allowedHalls.has(hall)) {
+      return res.status(400).json({ error: 'Brak projektu, lazienki lub poprawnej hali' });
+    }
+    const result = await pool.query(
+      'UPDATE report_lines SET hall=$1 WHERE project=$2 AND product=$3 RETURNING id',
+      [hall, project, product]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Nie znaleziono raportow tej lazienki' });
+    await auditLog(req, 'board_hall_changed', `${project}/${product}`, { hall, updatedLines: result.rowCount });
+    res.json({ success: true, project, product, hall, updatedLines: result.rowCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Blad zapisu hali produkcji' });
+  }
+});
+
 app.get('/api/maps-layouts', auth, requireTab('maps'), async (req, res) => {
   try {
     await ensureMapLayoutsTable();

@@ -137,6 +137,7 @@
       setBathroomCommentDone: (token, id, done) => apiRequest("PUT", "/api/bathroom-comments/" + id + "/done", { done }, token),
       getBathroomChecks: token => apiRequest("GET", "/api/bathroom-checks", null, token),
       setBathroomCheck: (token, project, product, checkType, checked, status, comment) => apiRequest("PUT", "/api/bathroom-checks", { project, product, checkType, checked, status, comment }, token),
+      setBoardHall: (token, project, product, hall) => apiRequest("PUT", "/api/board-hall", { project, product, hall }, token),
       getMapLayouts: token => apiRequest("GET", "/api/maps-layouts", null, token),
       saveMapLayouts: (token, layouts, mapDates, mapWidths, mapStarts) => apiRequest("PUT", "/api/maps-layouts", { layouts, mapDates, mapWidths, mapStarts }, token),
       saveMapPhotos: (token, photos) => apiRequest("PUT", "/api/maps-photos", { photos }, token),
@@ -5962,10 +5963,12 @@
       `;
     }
 
-    function BoardTab({ reports, token, transportDates, qualityData, serverProjects, bathroomComments }) {
+    function BoardTab({ reports, token, transportDates, qualityData, serverProjects, bathroomComments, reloadReports }) {
       const [weekStart, setWeekStart] = useState(() => weekStartIso());
       const [mapLayouts, setMapLayouts] = useState({});
       const [selectedBathroom, setSelectedBathroom] = useState(null);
+      const [boardMsg, setBoardMsg] = useState(null);
+      const [savingBoardHall, setSavingBoardHall] = useState(false);
       const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => isoAddDays(weekStart, i)), [weekStart]);
       const monthKey = today().slice(0, 7);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
@@ -6066,9 +6069,9 @@
         );
       }, [reports, hallByBathroomFromMap]);
       const visibleBoardHalls = useMemo(() => {
-        const hasUnresolved = closedRows.some(row => (weekDays.includes(row.date) || row.date.slice(0, 7) === monthKey) && row.hall === unresolvedBoardHall.id);
+        const hasUnresolved = closedRows.some(row => weekDays.includes(row.date) && row.hall === unresolvedBoardHall.id);
         return hasUnresolved ? [...boardHalls, unresolvedBoardHall] : boardHalls;
-      }, [closedRows, weekDays, monthKey]);
+      }, [closedRows, weekDays]);
       const weekMap = useMemo(() => {
         const map = {};
         closedRows
@@ -6096,6 +6099,25 @@
       const cellItems = (date, hall) => weekMap[date + "#" + hall] || [];
       const setCurrentWeek = () => setWeekStart(weekStartIso());
       const moveWeek = offset => setWeekStart(weekStartIso(isoAddDays(weekStart, offset * 7)));
+      const changeBathroomHall = async (project, product, hall) => {
+        const normalizedHall = normalizeBoardHall(hall);
+        if (!normalizedHall) return;
+        setSavingBoardHall(true);
+        setBoardMsg(null);
+        try {
+          await api.setBoardHall(token, project, product, normalizedHall);
+          setSelectedBathroom(prev => prev && sameProject(prev.project, project) && productNo(prev.product) === productNo(product)
+            ? { ...prev, hall: normalizedHall }
+            : prev
+          );
+          if (reloadReports) await reloadReports();
+          setBoardMsg({ type: "success", text: "Hala produkcji zapisana. Lazienka zostala przeniesiona na Tablicy." });
+        } catch (e) {
+          setBoardMsg({ type: "error", text: e.message || "Nie udalo sie zapisac hali." });
+        } finally {
+          setSavingBoardHall(false);
+        }
+      };
       const selectedInfo = useMemo(() => {
         if (!selectedBathroom) return null;
         const key = transportKey(selectedBathroom.project, selectedBathroom.product);
@@ -6145,6 +6167,7 @@
               <button style=${S.ghost} onClick=${setCurrentWeek}>Biezacy tydzien</button>
             </div>
           </div>
+          <${Message} msg=${boardMsg} />
           <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px", marginBottom: "14px" }}>
             <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: "#eef4ff", padding: "12px" }}>
               <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 900 }}>Biezacy tydzien</div>
@@ -6198,6 +6221,23 @@
                   <div style=${{ color: COLORS.muted, fontSize: "13px", marginTop: "4px", lineHeight: 1.5 }}>
                     Hala produkcji: ${selectedInfo.mapCell ? selectedInfo.mapCell.hallLabel : (boardHallLabel(selectedInfo.productionHall) || "brak danych")}${selectedInfo.mapCell ? " / pole " + selectedInfo.mapCell.row + "-" + selectedInfo.mapCell.col : ""}<br />
                     Data wstawienia na szachownice: ${selectedInfo.mapCell && selectedInfo.mapCell.placedDate ? selectedInfo.mapCell.placedDate : "brak"}${selectedInfo.loadDate ? " / Zaladunek: " + selectedInfo.loadDate : ""}
+                  </div>
+                  <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap", marginTop: "10px" }}>
+                    <label style=${{ display: "grid", gap: "4px", minWidth: "220px" }}>
+                      <span style=${S.label}>Przenies na hale</span>
+                      <select
+                        style=${S.input}
+                        value=${normalizeBoardHall(selectedInfo.item.hall) || selectedInfo.productionHall || ""}
+                        disabled=${savingBoardHall}
+                        onChange=${e => changeBathroomHall(selectedInfo.item.project, selectedInfo.item.product, e.target.value)}
+                      >
+                        <option value="">Wybierz hale</option>
+                        ${boardHalls.map(hall => html`<option key=${hall.id} value=${hall.id}>${hall.label}</option>`)}
+                      </select>
+                    </label>
+                    <div style=${{ color: COLORS.muted, fontSize: "12px", paddingBottom: "10px" }}>
+                      ${savingBoardHall ? "Zapisywanie..." : "Zmiana zapisuje hale dla tej lazienki i przesuwa ja w tabeli."}
+                    </div>
                   </div>
                 </div>
                 <button style=${S.ghost} onClick=${() => setSelectedBathroom(null)}>Zamknij</button>
@@ -8401,7 +8441,7 @@
           ` : tab === "production" ? html`
             <${ProductionTab} reports=${reports} token=${token} serverProjects=${serverProjects} />
           ` : tab === "board" ? html`
-            <${BoardTab} reports=${reports} token=${token} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
+            <${BoardTab} reports=${reports} token=${token} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} reloadReports=${reloadReports} />
           ` : tab === "warehouse" ? html`
             <${WarehouseTab} reports=${reports} transportDates=${transportDates} qualityData=${qualityData} serverProjects=${serverProjects} bathroomComments=${bathroomComments} />
           ` : tab === "transport" ? html`
