@@ -366,7 +366,13 @@
         return { ...line, note: [line.note, suffix].filter(Boolean).join(" | ") };
       });
     };
-    const today = () => new Date().toISOString().slice(0, 10);
+    const dateOffset = days => {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    const today = () => dateOffset(0);
+    const yesterday = () => dateOffset(-1);
     const sameProject = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const sameStage = (a, b) => String(a ?? "").trim() === String(b ?? "").trim();
     const productNo = value => Number(value);
@@ -1748,8 +1754,8 @@
     }
 
     function ManagerReports({ reports, users, onDelete, token, serverProjects, stagePermissions, reportControls, qualityData, materialUsages, materialStages, resetFiltersToken, reloadReports, reloadQuality, reloadMaterialUsages }) {
-      const [dateFrom, setDateFrom] = useState("");
-      const [dateTo, setDateTo] = useState("");
+      const [dateFrom, setDateFrom] = useState(yesterday());
+      const [dateTo, setDateTo] = useState(yesterday());
       const [worker, setWorker] = useState("all");
       const [project, setProject] = useState("all");
       const [stage, setStage] = useState("all");
@@ -1798,7 +1804,7 @@
       }))), [filteredReports, users]);
 
       const clearFilters = () => {
-        setDateFrom(""); setDateTo(""); setWorker("all"); setProject("all"); setStage("all"); setMsg(null);
+        setDateFrom(yesterday()); setDateTo(yesterday()); setWorker("all"); setProject("all"); setStage("all"); setMsg(null);
       };
       useEffect(() => {
         if (resetFiltersToken) clearFilters();
@@ -1812,9 +1818,16 @@
         const text = String(value == null ? "" : value);
         return /[",\n;]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
       };
+      const stageNameOnly = id => {
+        const label = stageLabel(id);
+        const stageId = String(id || "").trim();
+        const prefix = stageId ? stageId + " - " : "";
+        if (prefix && label.startsWith(prefix)) return label.slice(prefix.length);
+        return label.replace(/^\s*[\d.]+\s*-\s*/, "");
+      };
       const exportCsv = () => {
         try {
-          const header = ["Data", "Godzina dodania", "Pracownik kod", "Pracownik", "Dodane przez kod", "Dodane przez", "Zlecenie", "Lazienka", "Etap", "Hala", "Uwagi"];
+          const header = ["Data", "Godzina dodania", "Pracownik kod", "Pracownik", "Dodane przez kod", "Dodane przez", "Zlecenie", "Lazienka", "Nr etapu", "Nazwa etapu", "Hala", "Uwagi"];
           const rows = filteredLines.map(line => [
             line.date,
             reportTime(line),
@@ -1824,7 +1837,8 @@
             line.createdByName,
             line.project,
             line.product,
-            stageLabel(line.stage),
+            line.stage || "",
+            stageNameOnly(line.stage),
             line.hall || "",
             line.note || ""
           ]);
@@ -1833,7 +1847,7 @@
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = "flowrbr_raporty_" + today() + ".csv";
+          a.download = "flowrbr_raporty_" + (dateFrom || "od") + "_" + (dateTo || "do") + ".csv";
           a.click();
           URL.revokeObjectURL(url);
           setMsg({ type: "success", text: "CSV wyeksportowany: " + rows.length + " pozycji." });
