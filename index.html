@@ -5983,6 +5983,8 @@
       const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => isoAddDays(weekStart, i)), [weekStart]);
       const monthKey = today().slice(0, 7);
       const loads = useMemo(() => transportMap(transportDates), [transportDates]);
+      const packedSet = useMemo(() => new Set(packedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
+      const loadedSet = useMemo(() => new Set(loadedBathrooms(reports).map(item => transportKey(item.project, item.product))), [reports]);
       const bathroomMeta = useMemo(() => bathroomMetaMap(serverProjects), [serverProjects]);
       const boardHalls = [
         { id: "namiot1", label: "Namiot 1" },
@@ -6112,6 +6114,12 @@
       const weekTotal = closedRows.filter(row => weekDays.includes(row.date)).length;
       const monthTotal = closedRows.filter(row => row.date.slice(0, 7) === monthKey).length;
       const cellItems = (date, hall) => weekMap[date + "#" + hall] || [];
+      const boardTileState = item => {
+        const key = transportKey(item.project, item.product);
+        if (loadedSet.has(key)) return { id: "wyslane", label: "Zaladowane", ...warehousePalette("wyslane") };
+        if (packedSet.has(key)) return { id: "magazyn", label: "Magazyn", ...warehousePalette("magazyn") };
+        return { id: "produkcja", label: "Zamkniete", ...warehousePalette("produkcja") };
+      };
       const setCurrentWeek = () => setWeekStart(weekStartIso());
       const moveWeek = offset => setWeekStart(weekStartIso(isoAddDays(weekStart, offset * 7)));
       const changeBathroomHall = async (project, product, hall) => {
@@ -6220,6 +6228,18 @@
             </div>
           </div>
           <${Message} msg=${boardMsg} />
+          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginBottom: "12px", fontSize: "12px", fontWeight: 900 }}>
+            ${[
+              ["produkcja", "zolty - zamkniete / produkcja"],
+              ["magazyn", "zielony - magazyn"],
+              ["wyslane", "niebieski - zaladowane"]
+            ].map(([id, label]) => {
+              const p = warehousePalette(id);
+              return html`<span key=${id} style=${{ background: p.color, color: p.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>${label}</span>`;
+            })}
+            <span style=${{ background: COLORS.panel, color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>${qualityIcon("goat")} koza</span>
+            <span style=${{ background: COLORS.panel, color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px" }}>${qualityIcon("missing")} braki</span>
+          </div>
           <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "10px", marginBottom: "14px" }}>
             <div style=${{ border: "1px solid " + COLORS.border, borderRadius: "8px", background: "#eef4ff", padding: "12px" }}>
               <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 900 }}>Biezacy tydzien</div>
@@ -6281,7 +6301,13 @@
                             ${editBoard && hall.id !== unresolvedBoardHall.id ? html`<span>upuść tutaj</span>` : null}
                           </div>
                           <div style=${{ display: "flex", flexWrap: "wrap", gap: "5px" }}>
-                            ${items.map(item => html`
+                            ${items.map(item => {
+                              const tileState = boardTileState(item);
+                              const qState = qualityStateFor(qualityData, item.project, item.product);
+                              const hasQualityIcons = qState.goatActive || qState.missingActive;
+                              const selected = selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product);
+                              const dragging = dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product);
+                              return html`
                               <button
                                 key=${item.project + "-" + item.product}
                                 type="button"
@@ -6304,23 +6330,38 @@
                                 }}
                                 title=${editBoard ? "Przeciagnij albo kliknij, potem kliknij hale docelowa" : item.project + " / Laz. " + item.product}
                                 style=${{
-                                  display: "inline-flex",
-                                  border: "1px solid " + (dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product) ? COLORS.accent : (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#fed7aa")),
-                                  background: dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product) ? "#dbeafe" : (selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? "#eef4ff" : "#ffedd5"),
-                                  color: selectedBathroom && sameProject(selectedBathroom.project, item.project) && productNo(selectedBathroom.product) === productNo(item.product) ? COLORS.accent : "#9a3412",
-                                  borderRadius: "7px",
-                                  padding: "4px 6px",
+                                  display: "grid",
+                                  gap: "4px",
+                                  minWidth: "94px",
+                                  minHeight: "58px",
+                                  textAlign: "left",
+                                  border: "2px solid " + (dragging || selected ? COLORS.accent : COLORS.border),
+                                  background: dragging ? "#dbeafe" : tileState.color,
+                                  color: tileState.text,
+                                  borderRadius: "8px",
+                                  padding: "7px 8px",
                                   fontWeight: 900,
                                   fontSize: "12px",
-                                  lineHeight: 1,
+                                  lineHeight: 1.08,
                                   cursor: editBoard ? "grab" : "pointer",
                                   touchAction: editBoard ? "none" : "manipulation",
-                                  opacity: dragBoardItem && sameProject(dragBoardItem.project, item.project) && productNo(dragBoardItem.product) === productNo(item.product) ? 0.65 : 1
+                                  opacity: dragging ? 0.65 : 1,
+                                  boxShadow: hasQualityIcons ? "0 0 0 2px rgba(251,146,60,0.22)" : "none"
                                 }}
                               >
-                                ${item.project}/${item.product}
+                                <span style=${{ display: "flex", justifyContent: "space-between", gap: "6px", alignItems: "start" }}>
+                                  <span>${item.project}<br />Laz. ${item.product}</span>
+                                  ${hasQualityIcons ? html`
+                                    <span style=${{ display: "inline-flex", gap: "2px", fontSize: "15px", lineHeight: 1 }}>
+                                      ${qState.goatActive ? html`<span title="Koza">${qualityIcon("goat")}</span>` : null}
+                                      ${qState.missingActive ? html`<span title=${"Braki: " + qState.openMissing.join(", ")}>${qualityIcon("missing")}</span>` : null}
+                                    </span>
+                                  ` : null}
+                                </span>
+                                <span style=${{ fontSize: "10px", fontWeight: 900, opacity: 0.9 }}>${tileState.label}</span>
                               </button>
-                            `)}
+                            `;
+                            })}
                           </div>
                         </td>
                       `;
