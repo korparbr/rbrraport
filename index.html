@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.91</title>
+  <title>FlowRBR 1.92</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -705,7 +705,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.91</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.92</span>` : null}
         </div>
       `;
     }
@@ -5975,7 +5975,12 @@
         { id: "betonowanie", label: "Hala Betonowanie" },
         { id: "namiot2", label: "Namiot 2" }
       ];
-      const boardHallLabel = id => (boardHalls.find(h => h.id === id) || {}).label || "";
+      const unresolvedBoardHall = { id: "unknown", label: "Do ustalenia" };
+      const boardHallLabel = id => (boardHalls.find(h => h.id === id) || (id === unresolvedBoardHall.id ? unresolvedBoardHall : {})).label || "";
+      const boardHallSortIndex = id => {
+        const idx = boardHalls.findIndex(h => h.id === id);
+        return idx >= 0 ? idx : 99;
+      };
       const weekdayLabel = date => {
         const names = ["Pon", "Wt", "Sr", "Czw", "Pt", "Sob", "Nd"];
         const d = new Date(date + "T00:00:00");
@@ -6050,16 +6055,20 @@
             date,
             project,
             product,
-            hall: normalizeBoardHall(line.hall) || hallByBathroomFromMap[transportKey(project, product)] || reportHallByBathroom[transportKey(project, product)] || ""
+            hall: normalizeBoardHall(line.hall) || hallByBathroomFromMap[transportKey(project, product)] || reportHallByBathroom[transportKey(project, product)] || unresolvedBoardHall.id
           });
         }));
         return rows.sort((a, b) =>
           a.date.localeCompare(b.date) ||
-          boardHalls.findIndex(h => h.id === a.hall) - boardHalls.findIndex(h => h.id === b.hall) ||
+          boardHallSortIndex(a.hall) - boardHallSortIndex(b.hall) ||
           String(a.project).localeCompare(String(b.project), "pl", { numeric: true }) ||
           a.product - b.product
         );
       }, [reports, hallByBathroomFromMap]);
+      const visibleBoardHalls = useMemo(() => {
+        const hasUnresolved = closedRows.some(row => (weekDays.includes(row.date) || row.date.slice(0, 7) === monthKey) && row.hall === unresolvedBoardHall.id);
+        return hasUnresolved ? [...boardHalls, unresolvedBoardHall] : boardHalls;
+      }, [closedRows, weekDays, monthKey]);
       const weekMap = useMemo(() => {
         const map = {};
         closedRows
@@ -6075,7 +6084,6 @@
         const summary = {};
         closedRows
           .filter(row => row.date.slice(0, 7) === monthKey)
-          .filter(row => row.hall)
           .forEach(row => {
             if (!summary[row.hall]) summary[row.hall] = { count: 0, projects: {} };
             summary[row.hall].count += 1;
@@ -6083,11 +6091,11 @@
           });
         return summary;
       }, [closedRows, monthKey]);
-      const weekTotal = closedRows.filter(row => weekDays.includes(row.date) && row.hall).length;
-      const monthTotal = closedRows.filter(row => row.date.slice(0, 7) === monthKey && row.hall).length;
+      const weekTotal = closedRows.filter(row => weekDays.includes(row.date)).length;
+      const monthTotal = closedRows.filter(row => row.date.slice(0, 7) === monthKey).length;
       const cellItems = (date, hall) => weekMap[date + "#" + hall] || [];
       const setCurrentWeek = () => setWeekStart(weekStartIso());
-      const moveWeek = offset => setWeekStart(isoAddDays(weekStart, offset * 7));
+      const moveWeek = offset => setWeekStart(weekStartIso(isoAddDays(weekStart, offset * 7)));
       const selectedInfo = useMemo(() => {
         if (!selectedBathroom) return null;
         const key = transportKey(selectedBathroom.project, selectedBathroom.product);
@@ -6125,13 +6133,13 @@
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", flexWrap: "wrap", marginBottom: "14px" }}>
             <div>
               <h2 style=${S.title}>Tablica</h2>
-              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 18 - Kontrola jakosci. Hala jest pobierana z aktualnej szachownicy.</div>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 18 - Kontrola jakosci. Hala jest pobierana z raportu, historii szachownicy albo aktualnej szachownicy.</div>
             </div>
             <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap" }}>
               <button style=${S.ghost} onClick=${() => moveWeek(-1)}>Poprzedni KW</button>
               <div>
                 <label style=${S.label}>KW ${isoWeekNumber(weekStart)} / tydzien od</label>
-                <input type="date" style=${S.input} value=${weekStart} onInput=${e => setWeekStart(e.target.value || weekStartIso())} />
+                <input type="date" style=${S.input} value=${weekStart} onInput=${e => setWeekStart(weekStartIso(e.target.value || today()))} />
               </div>
               <button style=${S.ghost} onClick=${() => moveWeek(1)}>Nastepny KW</button>
               <button style=${S.ghost} onClick=${setCurrentWeek}>Biezacy tydzien</button>
@@ -6152,14 +6160,14 @@
               <thead>
                 <tr>
                   <th style=${{ textAlign: "left", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, width: "150px" }}>Dzien</th>
-                  ${boardHalls.map(hall => html`<th key=${hall.id} style=${{ textAlign: "center", padding: "11px", background: "#f8fafc", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, minWidth: "230px" }}>${hall.label}</th>`)}
+                  ${visibleBoardHalls.map(hall => html`<th key=${hall.id} style=${{ textAlign: "center", padding: "11px", background: hall.id === unresolvedBoardHall.id ? "#fff7ed" : "#f8fafc", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, minWidth: "230px" }}>${hall.label}</th>`)}
                 </tr>
               </thead>
               <tbody>
                 ${weekDays.map(day => html`
                   <tr key=${day}>
                     <td style=${{ padding: "11px", borderBottom: "1px solid " + COLORS.border, fontWeight: 900, background: COLORS.panel2, verticalAlign: "top" }}>${weekdayLabel(day)}</td>
-                    ${boardHalls.map(hall => {
+                    ${visibleBoardHalls.map(hall => {
                       const items = cellItems(day, hall.id);
                       return html`
                         <td key=${day + hall.id} style=${{ padding: "8px", borderBottom: "1px solid " + COLORS.border, borderLeft: "1px solid " + COLORS.border, verticalAlign: "top", minHeight: "108px", background: items.length ? "#fff7ed" : COLORS.panel }}>
@@ -6250,7 +6258,7 @@
           <section style=${{ border: "1px solid " + COLORS.border, borderRadius: "10px", background: COLORS.panel2, padding: "12px" }}>
             <h3 style=${{ ...S.title, fontSize: "18px", marginBottom: "10px" }}>Podsumowanie miesiaca ${monthKey}</h3>
             <div style=${{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "10px" }}>
-              ${boardHalls.map(hall => {
+              ${visibleBoardHalls.map(hall => {
                 const info = monthSummary[hall.id] || { count: 0, projects: {} };
                 const projects = Object.entries(info.projects).sort((a, b) => String(a[0]).localeCompare(String(b[0]), "pl", { numeric: true }));
                 return html`
