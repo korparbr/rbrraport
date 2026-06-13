@@ -7205,6 +7205,12 @@
             </div>
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+            <label style=${{ display: "grid", gap: "4px", minWidth: "240px" }}>
+              <span style=${S.label}>Typ powiadomienia</span>
+              <select style=${S.input} value=${filter} onChange=${e => setFilter(e.target.value)}>
+                ${filters.map(([id, label, count]) => html`<option key=${id} value=${id}>${label} (${count})</option>`)}
+              </select>
+            </label>
             ${filters.map(([id, label, count]) => html`
               <button key=${id} style=${filter === id ? S.btn : S.ghost} onClick=${() => setFilter(id)}>${label} (${count})</button>
             `)}
