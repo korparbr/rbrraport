@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.25, maximum-scale=5, user-scalable=yes" />
-  <title>FlowRBR 1.94</title>
+  <title>FlowRBR 1.95</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
@@ -238,6 +238,7 @@
       return (parts[0] || String(user?.code || user?.login || "")).toLocaleLowerCase("pl");
     };
     const ROLE_TABS = [
+      ["notifications", "Powiadomienia"],
       ["reports", "Raporty"],
       ["fertilization", "Nawozenie"],
       ["production", "Produkcja"],
@@ -284,8 +285,8 @@
       kontroler: ["board", "maps", "reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
       manager: ["board", "maps", "reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
       viewer: ["board", "maps", "reports", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "sessions", "account"],
-      supervisor: ["board", "maps", "reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"],
-      admin: ["board", "maps", "reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"]
+      supervisor: ["notifications", "board", "maps", "reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"],
+      admin: ["notifications", "board", "maps", "reports", "fertilization", "production", "warehouse", "transport", "quality", "calculations", "projects", "users", "permissions", "database", "sessions", "account"]
     };
     const rolePermissionsMap = rows => {
       const map = {};
@@ -770,7 +771,7 @@
               boxShadow: compact ? "none" : "0 10px 24px rgba(29,64,112,0.16)"
             }}
           />
-          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.94</span>` : null}
+          ${compact ? html`<span style=${{ color: COLORS.dim, fontSize: "12px", whiteSpace: "nowrap" }}>wersja 1.95</span>` : null}
         </div>
       `;
     }
@@ -7071,6 +7072,164 @@
       `;
     }
 
+    function NotificationsTab({ reports, transportDates, bathroomComments, qualityData, materialUsages, serverProjects }) {
+      const [filter, setFilter] = useState("all");
+      const notifications = useMemo(() => {
+        const rows = [];
+        const push = item => rows.push({ id: rows.length + "-" + item.type + "-" + (item.key || ""), priority: item.priority || 3, ...item });
+        (bathroomComments || []).filter(c => !c.done).forEach(c => push({
+          type: "comments",
+          label: "Komentarz",
+          priority: 2,
+          title: "Komentarz do zrobienia",
+          text: "Projekt " + c.project + " / Laz. " + c.product + " - " + String(c.comment || "").slice(0, 120),
+          meta: [c.authorName || c.authorCode || "", (c.createdAt || "").slice(0, 10)].filter(Boolean).join(" / "),
+          key: transportKey(c.project, c.product),
+          color: "#ef4444"
+        }));
+        ((qualityData && qualityData.records) || []).forEach(record => {
+          const state = qualityStateFor(qualityData, record.project, record.product);
+          if (state.goatActive) push({
+            type: "quality",
+            label: "Koza",
+            priority: 2,
+            title: "Koza otwarta",
+            text: "Projekt " + record.project + " / Laz. " + record.product,
+            meta: record.workerName || record.workerCode || record.updatedBy || "",
+            key: transportKey(record.project, record.product),
+            color: "#2563eb"
+          });
+          if (state.missingActive) push({
+            type: "quality",
+            label: "Braki",
+            priority: 1,
+            title: "Otwarte braki",
+            text: "Projekt " + record.project + " / Laz. " + record.product + " - " + state.openMissing.join(", "),
+            meta: record.workerName || record.workerCode || record.updatedBy || "",
+            key: transportKey(record.project, record.product),
+            color: "#b45309"
+          });
+        });
+        (transportDates || []).filter(item => !item.extra).forEach(item => {
+          const days = daysUntil(item.loadDate);
+          if (days == null || days < 0 || days > 3) return;
+          const alert = transportAlert(item.loadDate);
+          push({
+            type: "transport",
+            label: "Załadunek",
+            priority: days <= 1 ? 1 : 2,
+            title: "Termin załadunku " + (alert ? alert.label : item.loadDate),
+            text: "Projekt " + item.project + " / Laz. " + item.product + (item.lkwNumber ? " / LKW " + item.lkwNumber : ""),
+            meta: "Data: " + item.loadDate + (item.updatedAt ? " / zmiana: " + String(item.updatedAt).slice(0, 10) : ""),
+            key: transportKey(item.project, item.product),
+            color: alert ? alert.color : "#111827",
+            textColor: alert ? alert.text : "#fff"
+          });
+        });
+        (materialUsages || []).filter(item => !item.approvedAt).forEach(item => push({
+          type: "calculations",
+          label: "Kalkulacja",
+          priority: 2,
+          title: "Kalkulacja do zatwierdzenia",
+          text: "Projekt " + item.project + " / Laz. " + item.product + " / " + stageLabel(item.stage),
+          meta: [item.typeLabel || item.typeKey || "", item.workerName || item.workerCode || "", item.reportDate || ""].filter(Boolean).join(" / "),
+          key: String(item.id || "") || transportKey(item.project, item.product),
+          color: "#f97316"
+        }));
+        const rank = { "4": 1, "4.1": 1.5, "6.1": 2, "7.1": 3, "11.2": 4, "13.1": 5, "9": 6, "10": 7, "15.1": 8, "13.2": 9, "17": 10, "19": 11, "20": 12, "21": 13 };
+        const stageSets = {};
+        const latest = {};
+        (reports || []).forEach(report => (report.lines || []).forEach(line => {
+          const key = transportKey(line.project, line.product);
+          const stage = canonicalStageId(line.stage);
+          if (!key || !stage) return;
+          if (!stageSets[key]) stageSets[key] = new Set();
+          stageSets[key].add(stage);
+          const score = rank[stage] || 0;
+          const current = latest[key];
+          if (!current || score > current.score || (score === current.score && (report.date || "") >= (current.date || ""))) {
+            latest[key] = { project: String(line.project || ""), product: productNo(line.product), stage, date: report.date || "", score };
+          }
+        }));
+        Object.entries(latest).forEach(([key, current]) => {
+          if (current.score < (rank["9"] || 0)) return;
+          const stages = stageSets[key] || new Set();
+          const severe = current.score >= (rank["10"] || 0);
+          if (!stages.has("16")) push({
+            type: "production",
+            label: severe ? "BRAK TYNKOWANIA!" : "brak tynkowania",
+            priority: severe ? 1 : 2,
+            title: severe ? "BRAK TYNKOWANIA!" : "brak tynkowania",
+            text: "Projekt " + current.project + " / Laz. " + current.product + " / aktualnie " + stageLabel(current.stage),
+            meta: "Ostatni raport: " + (current.date || "-"),
+            key: key + "#plaster",
+            color: severe ? "#dc2626" : "#facc15",
+            textColor: severe ? "#fff" : "#111827"
+          });
+          if (!stages.has("8.2")) push({
+            type: "production",
+            label: severe ? "BRAK OKABLOWANIA!" : "brak okablowania",
+            priority: severe ? 1 : 2,
+            title: severe ? "BRAK OKABLOWANIA!" : "brak okablowania",
+            text: "Projekt " + current.project + " / Laz. " + current.product + " / aktualnie " + stageLabel(current.stage),
+            meta: "Ostatni raport: " + (current.date || "-"),
+            key: key + "#electric",
+            color: severe ? "#dc2626" : "#facc15",
+            textColor: severe ? "#fff" : "#111827"
+          });
+        });
+        return rows.sort((a, b) => a.priority - b.priority || String(a.title).localeCompare(String(b.title), "pl", { numeric: true }));
+      }, [reports, transportDates, bathroomComments, qualityData, materialUsages, serverProjects]);
+      const filtered = filter === "all" ? notifications : notifications.filter(item => item.type === filter);
+      const counts = notifications.reduce((map, item) => ({ ...map, [item.type]: (map[item.type] || 0) + 1 }), {});
+      const filters = [
+        ["all", "Wszystkie", notifications.length],
+        ["transport", "Załadunki", counts.transport || 0],
+        ["quality", "Jakość", counts.quality || 0],
+        ["comments", "Komentarze", counts.comments || 0],
+        ["production", "Produkcja", counts.production || 0],
+        ["calculations", "Kalkulacje", counts.calculations || 0]
+      ];
+      return html`
+        <section style=${S.card}>
+          <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "start", flexWrap: "wrap", marginBottom: "12px" }}>
+            <div>
+              <h2 style=${S.title}>Centrum powiadomień</h2>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Na razie widoczne tylko dla admina i supervisora. To jest lista spraw w aplikacji, bez powiadomień push na telefon.</div>
+            </div>
+            <div style=${{ background: notifications.length ? "#fee2e2" : "#dcfce7", color: notifications.length ? "#991b1b" : "#166534", border: "1px solid " + (notifications.length ? "#fecaca" : "#86efac"), borderRadius: "999px", padding: "8px 12px", fontWeight: 900 }}>
+              ${notifications.length} aktywnych
+            </div>
+          </div>
+          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
+            ${filters.map(([id, label, count]) => html`
+              <button key=${id} style=${filter === id ? S.btn : S.ghost} onClick=${() => setFilter(id)}>${label} (${count})</button>
+            `)}
+          </div>
+          <div style=${{ display: "grid", gap: "8px" }}>
+            ${filtered.map(item => html`
+              <article key=${item.id} style=${{ border: "1px solid " + COLORS.border, borderLeft: "6px solid " + (item.color || COLORS.accent), borderRadius: "8px", background: item.priority === 1 ? "#fff7ed" : COLORS.panel, padding: "11px 12px" }}>
+                <div style=${{ display: "flex", justifyContent: "space-between", gap: "10px", alignItems: "start", flexWrap: "wrap" }}>
+                  <div>
+                    <div style=${{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                      <span style=${{ background: item.color || COLORS.accent, color: item.textColor || "#fff", borderRadius: "999px", padding: "3px 8px", fontSize: "11px", fontWeight: 900 }}>${item.label}</span>
+                      <strong>${item.title}</strong>
+                    </div>
+                    <div style=${{ marginTop: "5px", fontWeight: 800 }}>${item.text}</div>
+                    ${item.meta ? html`<div style=${{ color: COLORS.muted, fontSize: "12px", marginTop: "3px" }}>${item.meta}</div>` : null}
+                  </div>
+                  <span style=${{ color: item.priority === 1 ? "#991b1b" : COLORS.muted, fontSize: "12px", fontWeight: 900 }}>
+                    ${item.priority === 1 ? "Pilne" : "Do sprawdzenia"}
+                  </span>
+                </div>
+              </article>
+            `)}
+            ${filtered.length ? null : html`<div style=${{ color: COLORS.dim, textAlign: "center", padding: "28px", border: "1px dashed " + COLORS.border, borderRadius: "8px" }}>Brak powiadomień w tym filtrze.</div>`}
+          </div>
+        </section>
+      `;
+    }
+
     function CalculationsTab({ materialUsages, serverProjects, token, materialStages, reloadMaterialUsages, reloadMaterialStages }) {
       const [filters, setFilters] = useState({ project: "all", stage: "all", type: "all", calc: "all" });
       const [msg, setMsg] = useState(null);
@@ -8805,14 +8964,17 @@
       const canSeeProduction = user && (user.role === "admin" || user.role === "manager" || user.role === "kontroler" || user.role === "viewer" || user.role === "supervisor" || (user.code || user.login || "").toUpperCase() === "RBR056");
       const roleOptions = ["worker", "worker+", "kontroler", "manager", "viewer", "supervisor"];
       const canSeePermissions = canManageRolePermissions(user);
+      const canSeeNotifications = canSeePermissions;
       const visibleTabs = useMemo(() => {
         const tabs = [...tabsForRole(user?.role, rolePermissions)];
+        if (canSeeNotifications && !tabs.includes("notifications")) tabs.unshift("notifications");
         if (canSeePermissions && !tabs.includes("fertilization")) tabs.splice(1, 0, "fertilization");
         if (canSeeProduction && !tabs.includes("board")) {
           const mapsIndex = tabs.indexOf("maps");
           tabs.splice(mapsIndex >= 0 ? mapsIndex + 1 : Math.min(2, tabs.length), 0, "board");
         }
         const filtered = tabs.filter(t => {
+          if (t === "notifications") return canSeeNotifications;
           if (t === "permissions") return canSeePermissions;
           if (t === "database" && isViewer) return false;
           if (t === "fertilization") return canSeePermissions;
@@ -8821,13 +8983,14 @@
         });
         let ordered = filtered;
         if (ordered.includes("board")) ordered = ["board", ...ordered.filter(t => t !== "board")];
+        if (ordered.includes("notifications")) ordered = ["notifications", ...ordered.filter(t => t !== "notifications")];
         if (ordered.includes("maps")) {
           const withoutMaps = ordered.filter(t => t !== "maps");
           withoutMaps.splice(Math.min(1, withoutMaps.length), 0, "maps");
           return withoutMaps;
         }
         return ordered;
-      }, [user, rolePermissions, canSeePermissions, isViewer, canSeeProduction]);
+      }, [user, rolePermissions, canSeePermissions, canSeeNotifications, isViewer, canSeeProduction]);
       useEffect(() => {
         if (visibleTabs.length && !visibleTabs.includes(tab)) setTab(visibleTabs[0]);
       }, [visibleTabs.join("|"), tab]);
@@ -8995,7 +9158,9 @@
             </div>
           ` : null}
           <${Message} msg=${msg} />
-          ${tab === "reports" ? (
+          ${tab === "notifications" ? html`
+            <${NotificationsTab} reports=${reports} transportDates=${transportDates} bathroomComments=${bathroomComments} qualityData=${qualityData} materialUsages=${materialUsages} serverProjects=${serverProjects} />
+          ` : tab === "reports" ? (
             isController
               ? html`<${SelfReportTab} user=${user} token=${token} reports=${reports} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} userStagePreferences=${userStagePreferences} reloadReports=${reloadReports} reloadMaterialUsages=${reloadMaterialUsages} reloadQuality=${reloadQuality} />`
               : html`<${ManagerReports} reports=${reports} users=${users} onDelete=${remove} token=${token} serverProjects=${serverProjects} stagePermissions=${stagePermissions} reportControls=${reportControls} qualityData=${qualityData} materialUsages=${materialUsages} materialStages=${materialStages} resetFiltersToken=${reportsResetToken} reloadReports=${reloadReports} reloadQuality=${reloadQuality} reloadMaterialUsages=${reloadMaterialUsages} />`
