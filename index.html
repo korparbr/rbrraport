@@ -6443,7 +6443,7 @@
         const seen = new Set();
         const rows = [];
         (reports || []).forEach(report => (report.lines || []).forEach(line => {
-          if (canonicalStageId(line.stage) !== "18") return;
+          if (canonicalStageId(line.stage) !== "19") return;
           const date = report.date || "";
           const project = String(line.project || "").trim();
           const product = productNo(line.product);
@@ -6592,7 +6592,7 @@
           <div className="toolbar" style=${{ display: "flex", justifyContent: "space-between", alignItems: "start", gap: "12px", flexWrap: "wrap", marginBottom: "14px" }}>
             <div>
               <h2 style=${S.title}>Tablica</h2>
-              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 18 - Kontrola jakosci. Hala jest pobierana z raportu, historii szachownicy albo aktualnej szachownicy.</div>
+              <div style=${{ color: COLORS.muted, fontSize: "13px" }}>Lazienki z raportu etapu 19 - Pakowanie. Hala produkcji jest pobierana z raportu, historii szachownicy albo aktualnej szachownicy.</div>
             </div>
             <div style=${{ display: "flex", gap: "8px", alignItems: "end", flexWrap: "wrap" }}>
               <button style=${editBoard ? S.btn : S.ghost} disabled=${savingBoardHall} onClick=${() => setEditBoard(v => !v)}>
