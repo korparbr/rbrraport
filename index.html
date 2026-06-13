@@ -3349,10 +3349,12 @@
                 doc.text(stageLines, x + cellW / 2, cy + cellH * 0.315, { align: "center", lineHeightFactor: 1.04 });
 
                 const px = cellW / 74;
+                const iconPx = px * 0.82;
                 const drawRoundIcon = (leftPx, topPx, sizePx, bgColor, textColor, borderColor, label, fontPx, borderPx = 1) => {
-                  const size = sizePx * px;
-                  const left = x + leftPx * px;
-                  const top = cy + topPx * px;
+                  const p = iconPx;
+                  const size = sizePx * p;
+                  const left = x + leftPx * px + (sizePx * px - size) / 2;
+                  const top = cy + topPx * px + (sizePx * px - size) / 2;
                   const centerX = left + size / 2;
                   const centerY = top + size / 2;
                   const bgc = hex(bgColor);
@@ -3360,11 +3362,11 @@
                   const brc = hex(borderColor || COLORS.border);
                   doc.setFillColor(bgc[0], bgc[1], bgc[2]);
                   doc.setDrawColor(brc[0], brc[1], brc[2]);
-                  doc.setLineWidth(Math.max(0.15, borderPx * px));
+                  doc.setLineWidth(Math.max(0.15, borderPx * p));
                   doc.circle(centerX, centerY, size / 2, "FD");
                   doc.setTextColor(txtc[0], txtc[1], txtc[2]);
                   doc.setFont("helvetica", "bold");
-                  doc.setFontSize(Math.max(3, fontPx * px));
+                  doc.setFontSize(Math.max(3, fontPx * p));
                   doc.text(label, centerX, centerY + size * 0.23, { align: "center" });
                   doc.setLineWidth(0.2);
                 };
@@ -3381,16 +3383,17 @@
                   doc.setLineWidth(0.2);
                 };
                 const drawTrainIcon = (leftPx, topPx, bgColor, textColor, borderColor, borderPx = 2) => {
-                  const size = 41 * px;
-                  const left = x + leftPx * px;
-                  const top = cy + topPx * px;
+                  const p = iconPx;
+                  const size = 41 * p;
+                  const left = x + leftPx * px + (41 * px - size) / 2;
+                  const top = cy + topPx * px + (41 * px - size) / 2;
                   const centerX = left + size / 2;
                   const centerY = top + size / 2;
                   const bgc = hex(bgColor);
                   const brc = hex(borderColor || COLORS.border);
                   doc.setFillColor(bgc[0], bgc[1], bgc[2]);
                   doc.setDrawColor(brc[0], brc[1], brc[2]);
-                  doc.setLineWidth(Math.max(0.15, borderPx * px));
+                  doc.setLineWidth(Math.max(0.15, borderPx * p));
                   doc.circle(centerX, centerY, size / 2, "FD");
                   drawTrainShape(centerX, centerY, size, textColor);
                 };
@@ -3432,28 +3435,29 @@
                 };
                 const drawDependencyIcon = (leftPx, topPx, marker, fontPx) => {
                   if (!marker) return;
-                  const size = 38 * px;
-                  const left = x + leftPx * px;
-                  const top = cy + topPx * px;
+                  const p = iconPx;
+                  const size = 34 * p;
+                  const left = x + leftPx * px + (38 * px - size) / 2;
+                  const top = cy + topPx * px + (38 * px - size) / 2;
                   const centerX = left + size / 2;
                   const centerY = top + size / 2;
                   const txtc = hex(marker.textColor);
                   const strike = hex(marker.strikeColor);
                   doc.setFillColor(255, 255, 255);
                   doc.setDrawColor(229, 231, 235);
-                  doc.setLineWidth(Math.max(0.25, 2 * px));
+                  doc.setLineWidth(Math.max(0.25, 2 * p));
                   doc.circle(centerX, centerY, size / 2, "FD");
                   if (marker.text === "T") {
                     doc.setTextColor(txtc[0], txtc[1], txtc[2]);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(Math.max(4, fontPx * px));
+                    doc.setFontSize(Math.max(4, fontPx * p));
                     doc.text(marker.text, centerX, centerY + size * 0.24, { align: "center" });
                   } else {
                     drawLightningShape(centerX, centerY, size, marker.textColor);
                   }
                   doc.setDrawColor(strike[0], strike[1], strike[2]);
-                  doc.setLineWidth(Math.max(0.35, 3 * px));
-                  doc.line(left + 7 * px, top + 24 * px, left + 31 * px, top + 14 * px);
+                  doc.setLineWidth(Math.max(0.35, 3 * p));
+                  doc.line(left + 6.2 * p, top + 21.5 * p, left + 27.8 * p, top + 12.5 * p);
                   doc.setLineWidth(0.2);
                 };
                 if (alert) {
@@ -3474,31 +3478,31 @@
                   const csBg = hex(tileCheckStyle.bg);
                   const csBorder = hex(tileCheckStyle.border);
                   const csText = hex(tileCheckStyle.color);
-                  const size = Math.max(4.5, 32 * px);
-                  const markerY = cy + cellH - size - 8 * px;
-                  const markerX = x + 10 * px;
+                  const size = Math.max(4.5, 28 * iconPx);
+                  const markerY = cy + cellH - size - 9 * px;
+                  const markerX = x + 12 * px;
                   doc.setDrawColor(csBorder[0], csBorder[1], csBorder[2]);
                   doc.setFillColor(csBg[0], csBg[1], csBg[2]);
                   doc.roundedRect(markerX, markerY, size, size, Math.max(0.35, 3 * px), Math.max(0.35, 3 * px), "FD");
                   if (tileCheckStyle.mark) {
                     doc.setTextColor(csText[0], csText[1], csText[2]);
                     doc.setFont("helvetica", "bold");
-                    doc.setFontSize(Math.max(4, 24 * px));
+                    doc.setFontSize(Math.max(4, 20 * iconPx));
                     doc.text(tileCheckStyle.mark, markerX + size / 2, markerY + size * 0.72, { align: "center" });
                   }
                 }
                 const hsBg = hex(helmetStyle.bg);
                 const hsBorder = hex(helmetStyle.border);
                 const hsText = hex(helmetStyle.color);
-                const helmetSize = Math.max(4.5, 32 * px);
+                const helmetSize = Math.max(4.5, 28 * iconPx);
                 const helmetR = helmetSize / 2;
-                const helmetCenterY = cy + cellH - 8 * px - helmetR;
+                const helmetCenterY = cy + cellH - 9 * px - helmetR;
                 doc.setDrawColor(hsBorder[0], hsBorder[1], hsBorder[2]);
                 doc.setFillColor(hsBg[0], hsBg[1], hsBg[2]);
                 doc.circle(x + cellW / 2, helmetCenterY, helmetR, "FD");
                 drawHelmetShape(x + cellW / 2, helmetCenterY, helmetSize, helmetStyle.color);
                 if (commentStatus) {
-                  const cr = Math.max(3.2, 12 * px);
+                  const cr = Math.max(2.6, 10 * iconPx);
                   doc.setDrawColor(255, 255, 255);
                   doc.setFillColor(commentStatus.open ? 239 : 34, commentStatus.open ? 68 : 197, commentStatus.open ? 68 : 94);
                   doc.circle(x + cellW - 22 * px, cy + cellH - 22 * px, cr, "FD");
@@ -3507,11 +3511,11 @@
                   const qY = cy + cellH - 44 * px + 8 * px;
                   let qX = x + cellW - 14 * px;
                   if (qState.missingActive) {
-                    drawBoxShape(qX, qY, 22 * px);
-                    qX -= 25 * px;
+                    drawBoxShape(qX, qY, 18 * iconPx);
+                    qX -= 21 * px;
                   }
                   if (qState.goatActive) {
-                    drawDropShape(qX, qY, 22 * px);
+                    drawDropShape(qX, qY, 18 * iconPx);
                   }
                 }
               });
