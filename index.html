@@ -7074,6 +7074,7 @@
 
     function NotificationsTab({ reports, transportDates, bathroomComments, qualityData, materialUsages, serverProjects }) {
       const [filter, setFilter] = useState("all");
+      const [detailFilter, setDetailFilter] = useState("all");
       const notifications = useMemo(() => {
         const rows = [];
         const push = item => rows.push({ id: rows.length + "-" + item.type + "-" + (item.key || ""), priority: item.priority || 3, ...item });
@@ -7183,7 +7184,20 @@
         });
         return rows.sort((a, b) => a.priority - b.priority || String(a.title).localeCompare(String(b.title), "pl", { numeric: true }));
       }, [reports, transportDates, bathroomComments, qualityData, materialUsages, serverProjects]);
-      const filtered = filter === "all" ? notifications : notifications.filter(item => item.type === filter);
+      const typeFiltered = filter === "all" ? notifications : notifications.filter(item => item.type === filter);
+      const detailOptions = useMemo(() => {
+        const map = {};
+        typeFiltered.forEach(item => {
+          const key = String(item.label || item.title || item.type || "").trim();
+          if (!key) return;
+          map[key] = (map[key] || 0) + 1;
+        });
+        return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], "pl", { numeric: true }));
+      }, [typeFiltered]);
+      useEffect(() => {
+        if (detailFilter !== "all" && !detailOptions.some(([label]) => label === detailFilter)) setDetailFilter("all");
+      }, [detailFilter, detailOptions.map(([label, count]) => label + ":" + count).join("|")]);
+      const filtered = detailFilter === "all" ? typeFiltered : typeFiltered.filter(item => String(item.label || item.title || item.type || "").trim() === detailFilter);
       const counts = notifications.reduce((map, item) => ({ ...map, [item.type]: (map[item.type] || 0) + 1 }), {});
       const filters = [
         ["all", "Wszystkie", notifications.length],
@@ -7205,15 +7219,21 @@
             </div>
           </div>
           <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "12px" }}>
-            <label style=${{ display: "grid", gap: "4px", minWidth: "240px" }}>
-              <span style=${S.label}>Typ powiadomienia</span>
-              <select style=${S.input} value=${filter} onChange=${e => setFilter(e.target.value)}>
-                ${filters.map(([id, label, count]) => html`<option key=${id} value=${id}>${label} (${count})</option>`)}
-              </select>
-            </label>
             ${filters.map(([id, label, count]) => html`
-              <button key=${id} style=${filter === id ? S.btn : S.ghost} onClick=${() => setFilter(id)}>${label} (${count})</button>
+              <button key=${id} style=${filter === id ? S.btn : S.ghost} onClick=${() => { setFilter(id); setDetailFilter("all"); }}>${label} (${count})</button>
             `)}
+          </div>
+          <div style=${{ display: "grid", gridTemplateColumns: "minmax(220px, 340px) 1fr", gap: "10px", alignItems: "end", marginBottom: "12px" }}>
+            <div>
+              <label style=${S.label}>Typ w wybranej zakladce</label>
+              <select style=${S.input} value=${detailFilter} onChange=${e => setDetailFilter(e.target.value)}>
+                <option value="all">Wszystkie typy (${typeFiltered.length})</option>
+                ${detailOptions.map(([label, count]) => html`<option key=${label} value=${label}>${label} (${count})</option>`)}
+              </select>
+            </div>
+            <div style=${{ color: COLORS.muted, fontSize: "13px", paddingBottom: "8px" }}>
+              ${filter === "all" ? "Najpierw mozesz wybrac kategorie, np. Produkcja, a potem konkretny typ." : "Pokazujesz: " + (filters.find(([id]) => id === filter) || ["", ""])[1] + (detailFilter !== "all" ? " / " + detailFilter : "")}
+            </div>
           </div>
           <div style=${{ display: "grid", gap: "8px" }}>
             ${filtered.map(item => html`
