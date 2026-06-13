@@ -3745,6 +3745,58 @@
         { label: "9-12 dni", color: "#16a34a", text: "#fff" },
         { label: "13-16 dni", color: "#99f6e4", text: "#134e4a" }
       ];
+      const mapLegends = html`
+        <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "14px", paddingTop: "12px", display: "grid", gap: "10px" }}>
+          <div>
+            <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda etapow</div>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              ${stageColors.filter(s => !s.hiddenLegend).map(s => html`<span key=${s.stage} style=${{ background: s.color, color: s.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 800 }}>${s.label}</span>`)}
+            </div>
+          </div>
+          <div>
+            <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda zaladunku</div>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              ${transportLegend.map(item => html`
+                <span key=${item.label} style=${{ background: item.color, color: item.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                  ! ${item.label}
+                </span>
+              `)}
+              <span style=${{ background: "#fff", color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                gdy termin jest nowy/zmieniony, ten sam znak pokazuje sie jako !!
+              </span>
+            </div>
+          </div>
+          <div>
+            <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda ostrzezen produkcji</div>
+            <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+              ${[
+                { icon: String.fromCodePoint(0x1F686), label: "brakuje 1-2 dni rob.", bg: "#fff", color: "#111827", border: "#cbd5e1" },
+                { icon: String.fromCodePoint(0x1F686), label: "brakuje 3-5 dni rob.", bg: "#fde047", color: "#111827", border: "#ca8a04" },
+                { icon: String.fromCodePoint(0x1F686), label: "brakuje 6+ dni rob.", bg: "#dc2626", color: "#fff", border: "#991b1b" }
+              ].map(item => html`
+                <span key=${item.label} style=${{ display: "inline-flex", alignItems: "center", gap: "6px", background: "#fff", color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                  <span style=${{ width: "22px", height: "22px", borderRadius: "999px", display: "grid", placeItems: "center", background: item.bg, color: item.color, border: "2px solid " + item.border, fontSize: "13px", lineHeight: 1 }}>${item.icon}</span>
+                  ${item.label}
+                </span>
+              `)}
+              ${[
+                { icon: "T", label: "brak tynkowania", color: "#facc15", strike: "#dc2626" },
+                { icon: "T", label: "BRAK TYNKOWANIA!", color: "#dc2626", strike: "#facc15" },
+                { icon: String.fromCodePoint(0x26A1), label: "brak okablowania", color: "#facc15", strike: "#dc2626" },
+                { icon: String.fromCodePoint(0x26A1), label: "BRAK OKABLOWANIA!", color: "#dc2626", strike: "#dc2626" }
+              ].map(item => html`
+                <span key=${item.label} style=${{ display: "inline-flex", alignItems: "center", gap: "6px", background: "#fff", color: COLORS.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 900 }}>
+                  <span style=${{ position: "relative", width: "22px", height: "22px", borderRadius: "999px", display: "grid", placeItems: "center", background: "#fff", color: item.color, border: "2px solid #e5e7eb", fontSize: item.icon === "T" ? "16px" : "14px", fontWeight: 1000, lineHeight: 1 }}>
+                    ${item.icon}
+                    <span style=${{ position: "absolute", left: "4px", right: "4px", top: "10px", height: "2px", background: item.strike, borderRadius: "999px", transform: "rotate(-28deg)" }}></span>
+                  </span>
+                  ${item.label}
+                </span>
+              `)}
+            </div>
+          </div>
+        </div>
+      `;
 
       return html`
         <section style=${S.card}>
@@ -3792,7 +3844,7 @@
               ${selectedHallDate ? "Układ hali z dnia: " + selectedHallDate : "Brak daty calej szachownicy dla tej hali."}
             </div>
           </div>
-          <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+          <div style=${{ display: "none", gap: "8px", flexWrap: "wrap" }}>
               ${stageColors.filter(s => !s.hiddenLegend).map(s => html`<span key=${s.stage} style=${{ background: s.color, color: s.text, border: "1px solid " + COLORS.border, borderRadius: "999px", padding: "5px 9px", fontSize: "12px", fontWeight: 800 }}>${s.label}</span>`)}
           </div>
           <div className="grid-3" style=${{ ...S.row3, marginTop: "12px" }}>
@@ -3817,7 +3869,7 @@
               </label>
             </div>
           </div>
-          <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "12px", paddingTop: "10px" }}>
+          <div style=${{ display: "none", borderTop: "1px solid " + COLORS.border, marginTop: "12px", paddingTop: "10px" }}>
             <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda zaladunku</div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               ${transportLegend.map(item => html`
@@ -3830,7 +3882,7 @@
               </span>
             </div>
           </div>
-          <div style=${{ borderTop: "1px solid " + COLORS.border, marginTop: "12px", paddingTop: "10px" }}>
+          <div style=${{ display: "none", borderTop: "1px solid " + COLORS.border, marginTop: "12px", paddingTop: "10px" }}>
             <div style=${{ color: COLORS.muted, fontSize: "12px", fontWeight: 800, marginBottom: "6px" }}>Legenda ostrzezen produkcji</div>
             <div style=${{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
               ${[
@@ -4305,6 +4357,7 @@
               </div>
             </div>
           `}
+          ${mapLegends}
         </section>
         ${selectedCell ? html`
           <section style=${{ ...S.card, border: "2px solid " + COLORS.accent, background: "#eef4ff" }}>
